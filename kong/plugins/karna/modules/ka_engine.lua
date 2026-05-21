@@ -465,18 +465,7 @@ _M.loop_rules_old = function(self, plugin_conf, raw_rules, phase, local_rules, i
                         end
 
                         if rule.action.set_variable then
-                            debug("set variable action found")
-                            if rule.action.set_variable.name and rule.action.set_variable.value ~= nil then
-                                if rule.action.set_variable.type then
-                                    if rule.action.set_variable.type == "plugin" then
-                                        debug("Setting plugin variable: " .. rule.action.set_variable.name .. " with value: " .. tostring(rule.action.set_variable.value))
-                                        kong.ctx.plugin[rule.action.set_variable.name] = rule.action.set_variable.value
-                                    elseif rule.action.set_variable.type == "shared" then
-                                        debug("Setting shared variable: " .. rule.action.set_variable.name .. " with value: " .. tostring(rule.action.set_variable.value))
-                                        kong.ctx.shared[rule.action.set_variable.name] = rule.action.set_variable.value
-                                    end
-                                end
-                            end
+                            self:apply_set_variable(rule.action.set_variable, kong.ctx.plugin, kong.ctx.shared)
                         end
 
                     end -- end if rule.action
@@ -4166,6 +4155,37 @@ _M.resolve_variable = function(self, variable)
     end
 
     return value
+end
+
+-- Apply a `set_variable` rule action. Writes the resolved value into either
+-- `ctx_plugin` (type="plugin") or `ctx_shared` (type="shared"). Other / missing
+-- type values are ignored — callers must pass an explicit scope. When `value`
+-- is a string containing `%{var}` template placeholders, the placeholders are
+-- replaced from the engine's inspection table before assignment. Non-string
+-- values (numbers, booleans, tables) are written through unchanged.
+--
+-- ctx_plugin and ctx_shared are passed in explicitly so the helper stays
+-- straightforward to unit test against plain Lua tables.
+_M.apply_set_variable = function(self, sv, ctx_plugin, ctx_shared)
+    if type(sv) ~= "table" then return false end
+    if type(sv.name) ~= "string" or sv.name == "" then return false end
+    if sv.value == nil then return false end
+
+    local resolved_value = sv.value
+    if type(resolved_value) == "string" and string_find(resolved_value, "%%{", 1, false) then
+        resolved_value = self:replace_variable_in_string(resolved_value)
+    end
+
+    if sv.type == "plugin" then
+        if type(ctx_plugin) ~= "table" then return false end
+        ctx_plugin[sv.name] = resolved_value
+        return true
+    elseif sv.type == "shared" then
+        if type(ctx_shared) ~= "table" then return false end
+        ctx_shared[sv.name] = resolved_value
+        return true
+    end
+    return false
 end
 
 _M.replace_variable_in_string = function(self, str)

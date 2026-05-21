@@ -585,6 +585,83 @@ Behaviour notes:
 - `external_matches` is a v2-only feature. The v1 (ModSecurity-compatible)
   format is unaffected.
 
+## Setting variables from a rule
+
+A rule can write into Kong's request-scoped context tables, letting a
+sibling plugin downstream of Karna pick up the value and change its
+own behaviour. The action shape:
+
+```json
+"action": {
+    "set_variable": {
+        "name":  "<key>",
+        "value": <any literal — string / number / boolean / object>,
+        "type":  "shared" | "plugin"
+    }
+}
+```
+
+| `type`   | Destination                  | Lifetime                              | Use case |
+|----------|------------------------------|---------------------------------------|----------|
+| `shared` | `kong.ctx.shared[<name>]`    | until the response is sent            | Communicate a decision to a sibling plugin in the same request. |
+| `plugin` | `kong.ctx.plugin[<name>]`    | until the response is sent (per plugin) | Stash a value for later phases of Karna itself (rarely needed). |
+
+`type` is **required**. If it's missing or not one of the two values
+above, the action is a no-op.
+
+The `value` can be any JSON-encodable literal. When it's a string
+containing `%{<rule-variable>}` placeholders, those placeholders are
+resolved against Karna's inspection table before the assignment, so
+you can carry a piece of the request into the shared context:
+
+```json
+{
+    "id": "set-host-on-skip",
+    "phase": "access",
+    "conditions": [
+        { "op": "beginsWith", "value": "/internal/", "variables": ["request.raw_path"] }
+    ],
+    "action": {
+        "set_variable": {
+            "name":  "skip_js_challenge",
+            "value": true,
+            "type":  "shared"
+        }
+    },
+    "log": false
+}
+```
+
+A sibling Kong plugin chained after Karna can then read
+`kong.ctx.shared.skip_js_challenge` and short-circuit accordingly. The
+plugin chosen as the consumer of the variable is entirely a property
+of how the plugins are wired together — Karna does not know or care
+which plugin (if any) will read the value, and works fine when nothing
+reads it.
+
+A template-resolving example:
+
+```json
+{
+    "id": "stash-host-header",
+    "phase": "access",
+    "conditions": [
+        { "op": "isSet", "value": "", "variables": ["request.header.value:host"] }
+    ],
+    "action": {
+        "set_variable": {
+            "name":  "karna_observed_host",
+            "value": "%{request.header.value:host}",
+            "type":  "shared"
+        }
+    }
+}
+```
+
+Note: `value: false` is a legitimate "off-switch" assignment and is
+applied normally. `value` is only treated as missing when it is `nil`
+(absent from the JSON).
+
 ## Redis actions
 
 ### Increment a counter on a failed login
