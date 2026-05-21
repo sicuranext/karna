@@ -244,3 +244,52 @@ python3 start.py --testfile tests/REQUEST-920-PROTOCOL-ENFORCEMENT/920120.yaml -
 ```
 
 ---
+
+## #4 — Phantom chained conditions accumulating across unrelated rules (open) (2026-05-21)
+
+**Symptom.** Rule 942550 ("JSON-Based SQL Injection") reports
+`#conditions=6` at evaluation time, even though the CRS .conf carries
+exactly one SecRule for the rule id with no `chain` action. Rule 944120
+("Java serialization") similarly shows `#conditions=2` despite being a
+single 1+1 chain in CRS (one chained pair, not two). Net effect: a
+positive first-condition match increments `matched_conditions` to 1,
+fails the `matched_conditions == #rule.conditions` gate, and the rule
+silently doesn't fire.
+
+For 944120 the second condition is a real chain (MATCHED_VARS); after
+the matched.value branch added in commit 0f1a54b the rule now fires
+correctly when both halves match. But for 942550 — and likely for
+several others in the residual "expect" failures of the PL1 suite —
+there is no legitimate second condition: Karna's parser is appending
+phantom continuations.
+
+**Suspected source.** `seclang.parse` carries a `rule_is_chained` flag
+between iterations of the rule loop. The flag is updated *after*
+parsing each rule via `seclang.__is_chained(rule)`, which scans the
+raw rule text for the literals `,chain`, `chain,`, or `chain"`. Any
+SecRule that happens to contain one of those substrings in its
+operator regex, its message, its tag list, or its actions section will
+flip the flag on, and the next SecRule will be parsed as if it were a
+chained continuation of the previous one — its variables become
+conditions appended to the previous rule's id.
+
+Confirmation would require tracing which raw rule before 942550 sets
+the chain flag spuriously, and similarly back-tracking each of the
+rules in the residual failure list to see if they share the same
+shape (parsed with phantom extra conditions).
+
+**Why this matters for PL1 coverage.** With #conditions inflated,
+single-condition rules can never fire (matched_conditions=1 never
+equals #conditions>=2). Several of the residual 304 "expect" failures
+of the PL1 suite (942550=45, 943110=36, 920120=20, 920420=19,
+922110=17, 920660=17, …) are plausibly variants of the same root
+cause.
+
+**Mitigation candidates** (not implemented in this round):
+1. Tighten `__is_chained` to look only at the actions section, not
+   the whole raw rule.
+2. Anchor on word boundaries: match `\bchain\b` rather than the loose
+   substring match.
+3. Reset `rule_is_chained` at the *start* of each rule, only set it
+   true when actually evaluating the actions string post-extraction.
+
