@@ -566,36 +566,53 @@ _M.__get_values_request_body = function(try_b64)
 
         -- parse request body
         if request_body and request_body ~= "" then
+            -- Normalise every body parser's output to a flat
+            -- `{ [variable_name] = value }` dict. The parsers are inconsistent:
+            -- urlencoded already returns flat, multipart / xml return an array
+            -- of single-key tables, json returns an array of single-key tables
+            -- too. Flatten uniformly here so the caller can iterate with
+            -- `for k,v in pairs()` and treat every body shape the same way.
+            local function flatten_into(dst, src)
+                if type(src) ~= "table" then return end
+                for k, v in pairs(src) do
+                    if type(k) == "number" and type(v) == "table" then
+                        for kk, vv in pairs(v) do
+                            dst[kk] = vv
+                        end
+                    else
+                        dst[k] = v
+                    end
+                end
+            end
+
             -- get request body type
             local request_body_type = utils:request_body_parser_type()
 
             if request_body_type == "json" then
                 local json_flattened, err = body_parser:json("request.body.json", request_body, try_b64)
                 if json_flattened then
-                    result_values = json_flattened
+                    flatten_into(values, json_flattened)
+                    result_values = values
                 else
                     result_values = nil
                     result_err = err
                 end
             elseif request_body_type == "xml" then
-                -- NB: legacy behavior — xml parsing result is not currently used as values
-                body_parser:xml("request.body.xml", request_body)
+                -- Flatten XML the same way the other body types do —
+                -- previously the parser was called and its return value
+                -- discarded, so rules targeting XML attribute / element
+                -- content never saw the data.
+                local xml_flattened = body_parser:xml("request.body.xml", request_body)
+                flatten_into(values, xml_flattened)
+                result_values = values
             elseif request_body_type == "urlencoded" then
                 local urlencoded_flattened = body_parser:urlencoded("request.body.urlencode", request_body, try_b64)
-                if urlencoded_flattened then
-                    result_values = urlencoded_flattened
-                end
+                flatten_into(values, urlencoded_flattened)
+                result_values = values
             elseif request_body_type == "multipart" then
                 local multipart_flattened = body_parser:multipart("request.body.multipart", request_body, try_b64)
-                if multipart_flattened then
-                    -- convert array of tables to flat table
-                    for _, entry in pairs(multipart_flattened) do
-                        for k, v in pairs(entry) do
-                            values[k] = v
-                        end
-                    end
-                    result_values = values
-                end
+                flatten_into(values, multipart_flattened)
+                result_values = values
             end
         end
     end
@@ -607,6 +624,51 @@ _M.__get_values_request_body = function(try_b64)
 
     return result_values, result_err
 end
+-- Scalar body variables — request.body (raw bytes), request.body.length,
+-- request.body.processor. Kept separate from __get_values_request_body so
+-- that callers feeding the ARGS namespace (which by ModSec semantics only
+-- contains parsed args, not the raw body) don't accidentally pick the raw
+-- body up as a synthetic ARG. Cached per-request like the structured
+-- getter.
+_M.__get_values_request_body_scalars = function()
+    if get_phase() == "init_worker" then
+        return {}
+    end
+
+    if kong.ctx.plugin and kong.ctx.plugin.body_scalars_cache then
+        return kong.ctx.plugin.body_scalars_cache
+    end
+
+    local values = {}
+    local content_length_header = kong.request.get_header("content-length")
+    if content_length_header and tonumber(content_length_header) > 0 then
+        local request_body = request_get_raw_body()
+        if not request_body then
+            local body_file = ngx_req_get_body_file()
+            if body_file then
+                local file = io.open(body_file, "r")
+                if file then
+                    request_body = file:read("*a")
+                    file:close()
+                end
+            end
+        end
+        if request_body and request_body ~= "" then
+            values["request.body"] = request_body
+            values["request.body.length"] = tostring(#request_body)
+            local request_body_type = utils:request_body_parser_type()
+            if request_body_type then
+                values["request.body.processor"] = request_body_type
+            end
+        end
+    end
+
+    if kong.ctx.plugin then
+        kong.ctx.plugin.body_scalars_cache = values
+    end
+    return values
+end
+
 _M.__get_values_request_query_value = function(try_b64)
     -- skip if phase init_worker
     if get_phase() == "init_worker" then
@@ -998,8 +1060,16 @@ end
 _M.__match_op_pmFromFile = function(variable_name, value_to_match_on, condition_value)
     local ka_dfiles = _M._ka_dfiles
     if ka_dfiles and ka_dfiles[condition_value] then
+        local subject = value_to_match_on:lower()
         for _,dvalue in pairs(ka_dfiles[condition_value]) do
-            if string_match(value_to_match_on:lower(), dvalue:lower()) then
+            -- Plain substring search (no pattern interpretation). Entries in
+            -- CRS .data files routinely contain Lua-pattern metacharacters —
+            -- `.` (any char), `-` (lazy quantifier), `(`, `)`, `+`, `?`, `*`,
+            -- `[`, `]`, `^`, `$`, `%`. Treating them as patterns widens the
+            -- match (FP surface: `com.x` would match `comAx`) and risks
+            -- catastrophic backtracking on long subjects. CRS's @pmFromFile
+            -- is a phrase match, not a regex.
+            if string_find(subject, dvalue:lower(), 1, true) then
                 local matched_table = {
                     ["matched_on"] = variable_name,
                     ["matched_value"] = string.sub(value_to_match_on, 1, 100)
@@ -1155,6 +1225,47 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     local body_values = self.__get_values_request_body()
                     if body_values and body_values[variable] then
                         values = { [variable] = body_values[variable] }
+                    end
+                end
+
+                -- Scalar body variables. CRS rules routinely target
+                -- REQUEST_BODY (the raw body as a single string) with
+                -- @pmFromFile / @rx / libinjection_* to catch attacks
+                -- regardless of body shape — urlencoded, JSON, XML, plain
+                -- text, anything. The scalars getter is separate from
+                -- __get_values_request_body so the ARGS namespace doesn't
+                -- accidentally pick up the raw body.
+                if variable == "request.body"
+                   or variable == "request.body.length"
+                   or variable == "request.body.processor" then
+                    local scalars = self.__get_values_request_body_scalars()
+                    if scalars and scalars[variable] ~= nil then
+                        values = { [variable] = tostring(scalars[variable]) }
+                    end
+                end
+
+                -- Flattened body structures (XML / JSON / urlencode). The body
+                -- parsers in ka_body_parser produce entries keyed like
+                -- `request.body.xml.value.1`, `request.body.xml.attr.value.2`,
+                -- `request.body.json.value:foo`, `request.body.urlencode.value:bar`.
+                -- A rule that targets the whole namespace (e.g. CRS XML:/*
+                -- mapped to request.body.xml.value) wants every key whose
+                -- name starts with the namespace prefix.
+                if string_find(variable, "^request%.body%.xml%.")
+                   or string_find(variable, "^request%.body%.json%.")
+                   or string_find(variable, "^request%.body%.urlencode%.") then
+                    local body_values = self.__get_values_request_body(false)
+                    if body_values then
+                        local escaped = variable:gsub("([%-%.%%%+%*%?%[%]%(%)%^%$])", "%%%1")
+                        local collected
+                        for k, v in pairs(body_values) do
+                            if k == variable
+                               or string_find(k, "^" .. escaped .. "[%.:]") then
+                                collected = collected or {}
+                                collected[k] = tostring(v)
+                            end
+                        end
+                        if collected then values = collected end
                     end
                 end
 

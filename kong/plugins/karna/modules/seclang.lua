@@ -93,16 +93,21 @@ function seclang.collect_data_file(path)
         for line in data_file_content:gmatch("[^\r\n]+") do
             -- if line start with %s*# then skip
             if not line:match("^%s*%#") then
-                
+
                 -- if line start with %s* then remove spaces
                 line = line:gsub("^%s*", "")
-                
+
                 -- if line end with %s* then remove spaces
                 line = line:gsub("%s*$", "")
-                
-                -- prepend % to all specia character for lua match
-                line = line:gsub("([%(%)%.%%%+%-%*%?%[%^%$])", "%%%1")
-                
+
+                -- Phrase entries are stored raw, not pre-escaped as a Lua
+                -- pattern. The operator dispatch in ka_engine handles them
+                -- as plain substring (`@pmFromFile`) or escapes them on
+                -- demand (`@pm`); pre-escaping here would force a `%`-laden
+                -- string into `string.find(..., plain=true)` and the search
+                -- would fail to find a substring that contains real `.`,
+                -- `-`, `+` etc. instead of escapes.
+
                 -- if line is empty then skip
                 if line ~= "" then
                     --print("data file: " .. data_file_name .. " line: " .. line)
@@ -143,7 +148,7 @@ function seclang.__get_variable_name(varname)
         ["&ARGS"]                   = "request.arg.count",
         ["ARGS_COMBINED_SIZE"]      = "request.arg.combined_size",
 
-        ["XML"]                     = nil,
+        ["XML"]                     = "request.body.xml.value",
         ["MATCHED_VARS"]            = "matched.value",
         ["MATCHED_VAR"]             = "matched.value",
 
@@ -239,9 +244,24 @@ function seclang.__variables_to_conditions(variables)
                     table.insert(variable_list, vname)
                 end
             else
-                local vname = seclang.__get_variable_name(variable_name)
-                if vname then
-                    table.insert(variable_list,vname..":"..variable_arg)
+                -- ModSecurity XML:<xpath> variables. We don't run a real XPath
+                -- engine; we recognise the two patterns CRS rules use in
+                -- practice — `/*` (every element value) and `//@*` (every
+                -- attribute value) — and map them to the flattened
+                -- request.body.xml.* namespace the body parser produces.
+                -- Anything else under XML falls back to element values as a
+                -- best-effort approximation.
+                if variable_name == "XML" then
+                    if variable_arg == "//@*" then
+                        table.insert(variable_list, "request.body.xml.attr.value")
+                    else
+                        table.insert(variable_list, "request.body.xml.value")
+                    end
+                else
+                    local vname = seclang.__get_variable_name(variable_name)
+                    if vname then
+                        table.insert(variable_list,vname..":"..variable_arg)
+                    end
                 end
             end
         elseif variable_name and not variable_arg then
