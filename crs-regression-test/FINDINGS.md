@@ -6,6 +6,92 @@ not a theoretical concern. New finding = new entry at the top.
 
 ---
 
+## #3 — pmFromFile doesn't match against `request.body` raw (open, biggest gap) (2026-05-21)
+
+**Symptom.** When the PL1 regression suite is filtered to the supported
+production posture (see `README.md` → "Why we bench at paranoia level
+1"), the top failing single rule is **944130 — Suspicious Java class
+detected** with **152 failures out of 418 test cases**. Same picture
+on **932140 (152 failures)**, **944120 (104)**, **933100 (58)** — all
+sharing the same shape: a `pmFromFile` operator with a wide set of
+target variables including `REQUEST_BODY`, with payloads that put the
+keyword inside an XML body, JSON body, or raw text body rather than
+inside a form arg.
+
+**Smoking-gun curl.**
+```sh
+# urlencoded → matches (rule fires, HTTP 403, body includes "id":"944130")
+curl -X POST -d 'test=com.opensymphony.xwork2' \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     -H 'Host: integration.local' -H 'X-Karna-Test: true' \
+     http://127.0.0.1:28000/post
+
+# same keyword but in body raw → no match (HTTP 200 from request-termination)
+curl -X POST --data-binary 'this has com.opensymphony.xwork2 inside as raw text' \
+     -H 'Content-Type: text/plain' \
+     -H 'Host: integration.local' -H 'X-Karna-Test: true' \
+     http://127.0.0.1:28000/post
+
+# same keyword in an XML attribute → no match
+curl -X POST --data-binary '<?xml version="1.0"?><a x="com.opensymphony.xwork2"/>' \
+     -H 'Content-Type: application/xml' \
+     -H 'Host: integration.local' -H 'X-Karna-Test: true' \
+     http://127.0.0.1:28000/post
+```
+
+**Three contributing causes identified, all need fixing:**
+
+1. **`seclang.lua:146` maps `["XML"] = nil`** — the ModSecurity XPath
+   variables `XML:/*` (all elements) and `XML://@*` (all attributes)
+   are dropped at parse time. CRS rules that target XML-borne attacks
+   (944130 test_id ≥ 6 explicitly use XML attributes) lose those
+   target variables. **Fix:** map `XML` → `request.body.xml.value`
+   and handle `XML://@*` → `request.body.xml.attr.value`. The
+   underlying flattening already exists in `ka_body_parser.lua`
+   (see L449–477).
+
+2. **`pmFromFile` doesn't iterate on `request.body` as a single value.**
+   `ka_engine.lua:2987` populates `request.body = <raw body>` in the
+   inspection table for any non-empty body — so the variable IS
+   present — but the rule-loop iteration evidently doesn't apply the
+   phrase match against scalar inspection entries the way it does
+   against per-key flattened structures (`request.arg.value:test`,
+   `request.body.json.value:foo`, …). Net effect: `REQUEST_BODY` as a
+   pmFromFile target is silently dead. **Fix:** ensure the
+   condition-evaluation loop treats `request.body` as a legitimate
+   pmFromFile target.
+
+3. **`__match_op_pmFromFile` uses `string.match`, not literal substring.**
+   `ka_engine.lua:1002` does `string_match(value:lower(), dvalue:lower())`
+   which interprets `dvalue` as a Lua pattern, not a plain phrase.
+   Entries in `java-classes.data` such as `com.opensymphony.xwork2`
+   contain Lua metacharacters (`.`, `-`, `+`, `(`, `)` are all
+   metachars). `.` matches any single character, so the match is
+   wider than CRS intends — every legitimate match still works, but
+   we may match strings that shouldn't (e.g. `com_opensymphony_xwork2`
+   would also match). False-positive surface, plus pathological
+   patterns could be slow. **Fix:** use `string.find(v, dvalue, 1, true)`
+   (the `true` flag is "plain text search, no pattern interpretation").
+
+**Combined impact:** fixing (2) alone unblocks the bulk of the 944130 /
+932140 / 944120 / 933100 failures. Fixing (1) on top covers XML-shaped
+payloads cleanly. Fixing (3) is cheap and removes a latent FP surface
+that will only get noisier as more rules adopt pmFromFile against raw
+body. Order of operations probably: (3) first (one-line safety win),
+then (2) (the big detection unlock), then (1) (extends coverage to
+XML attack variants).
+
+**Why this took a while to spot.** The 944130 first test_id (urlencoded
+arg) passes cleanly, so the rule reads as "implemented". Only inspecting
+the per-test-id breakdown reveals that test_ids 1–5 (arg-shaped) pass
+while 6+ (body-shaped) fail. Default suite reporting collapses these
+into a single rule pass/fail count.
+
+**Status.** Open. Documented for the next iteration — fix is a multi-step
+engine change, not appropriate for an incidental commit.
+
+---
+
 ## #2 — Multipart parser injects raw boundary into a Lua pattern → catastrophic backtracking (2026-05-21)
 
 **Symptom.** Same as #1 — Kong workers stuck near 100% CPU, no
