@@ -2740,6 +2740,14 @@ _M.get_inspection_table = function(self, plugin_conf)
         table_insert(kong.ctx.plugin.inspection_table, { ["geoip.continent_name"] = tostring(kong.ctx.shared.geoip_continent_name) })
     end
 
+    -- set ASN information about source IP (if available)
+    if kong.ctx.shared.asn_id then
+        table_insert(kong.ctx.plugin.inspection_table, { ["asn.id"] = tostring(kong.ctx.shared.asn_id) })
+    end
+    if kong.ctx.shared.asn_org then
+        table_insert(kong.ctx.plugin.inspection_table, { ["asn.org"] = tostring(kong.ctx.shared.asn_org) })
+    end
+
     -- MCP variables (mcp.transport, mcp.method, mcp.tool.name, mcp.params.*, ...).
     -- Populated only when ka_mcp.detect+parse_request ran in the access phase
     -- (i.e. plugin_conf.mcp_enabled was true and the request matched).

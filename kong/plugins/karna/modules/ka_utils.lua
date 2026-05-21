@@ -362,6 +362,61 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
     return json_log
 end
 
+-- Build the request enrichment block for audit log v2. Reads brand-neutral
+-- well-known keys from kong.ctx.shared.* (set by sibling plugins) and a
+-- free-form bucket from kong.ctx.shared.karna.enrichment for non-standard
+-- fields. Returns nil if no enrichment data is present, so the caller can
+-- omit the field entirely from the JSON output.
+--
+-- `shared` is the kong.ctx.shared table; passed in explicitly so the function
+-- stays testable without an ngx/kong global.
+_M.build_enrichment_block = function(self, shared)
+    if type(shared) ~= "table" then return nil end
+
+    local block = {}
+    local has_any = false
+
+    -- geoip
+    if shared.geoip_country_code or shared.geoip_country_name
+       or shared.geoip_continent_code or shared.geoip_continent_name then
+        local geoip = {}
+        if shared.geoip_country_code   then geoip.country_code   = tostring(shared.geoip_country_code)   end
+        if shared.geoip_country_name   then geoip.country_name   = tostring(shared.geoip_country_name)   end
+        if shared.geoip_continent_code then geoip.continent_code = tostring(shared.geoip_continent_code) end
+        if shared.geoip_continent_name then geoip.continent_name = tostring(shared.geoip_continent_name) end
+        block.geoip = geoip
+        has_any = true
+    end
+
+    -- asn
+    if shared.asn_id or shared.asn_org then
+        local asn = {}
+        if shared.asn_id  then asn.id  = tostring(shared.asn_id)  end
+        if shared.asn_org then asn.org = tostring(shared.asn_org) end
+        block.asn = asn
+        has_any = true
+    end
+
+    -- useragent: pass through unchanged when a table, skip otherwise
+    if type(shared.useragent) == "table" then
+        block.useragent = shared.useragent
+        has_any = true
+    end
+
+    -- free-form custom bucket
+    if type(shared.karna) == "table" and type(shared.karna.enrichment) == "table" then
+        local n = 0
+        for _ in pairs(shared.karna.enrichment) do n = n + 1; break end
+        if n > 0 then
+            block.custom = shared.karna.enrichment
+            has_any = true
+        end
+    end
+
+    if not has_any then return nil end
+    return block
+end
+
 -- Normalize sibling-plugin log entries written to
 -- kong.ctx.shared.karna.log_entries. Each accepted entry must carry string
 -- `source`, `rule_id` and `message`; `tags` (array) and `metadata` (table) are
@@ -484,6 +539,9 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     end
     local external_matches = self:build_external_matches(raw_external)
 
+    -- collect request enrichment (geoip / asn / useragent / custom), if any
+    local enrichment = self:build_enrichment_block(kong.ctx.shared)
+
     local json_log = {
         version = "2.0",
         timestamp = os.date("!%Y-%m-%dT%H:%M:%S", os.time()) .. "." .. string.format("%03d", (ngx.now() % 1) * 1000) .. "Z",
@@ -518,6 +576,10 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
         matches = matches,
         external_matches = external_matches
     }
+
+    if enrichment then
+        json_log.enrichment = enrichment
+    end
 
     return json_log
 end

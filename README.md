@@ -464,6 +464,68 @@ use `remove_variable_rx` rule controls:
 }
 ```
 
+## Request enrichment
+
+When a sibling plugin (geoip resolver, ASN matcher, fingerprint module,
+threat-intel feed, …) annotates the request in `kong.ctx.shared`, Karna
+includes those annotations in audit log v2 under a top-level
+`enrichment` field, and exposes well-known geo/ASN fields as rule
+variables.
+
+Two flavours: **well-known keys** (Karna recognises them by name and
+gives them rule variables + a typed slot in the log) and a **free-form
+custom bucket** (anything else the sibling wants to record).
+
+### Well-known shared-context keys
+
+| `kong.ctx.shared.<key>` | Type | Rule variable | Audit log v2 path |
+|---|---|---|---|
+| `geoip_country_code`   | string | `geoip.country_code`   | `enrichment.geoip.country_code`   |
+| `geoip_country_name`   | string | `geoip.country_name`   | `enrichment.geoip.country_name`   |
+| `geoip_continent_code` | string | `geoip.continent_code` | `enrichment.geoip.continent_code` |
+| `geoip_continent_name` | string | `geoip.continent_name` | `enrichment.geoip.continent_name` |
+| `asn_id`               | string | `asn.id`               | `enrichment.asn.id`               |
+| `asn_org`              | string | `asn.org`              | `enrichment.asn.org`              |
+| `useragent`            | table  | (not exposed)          | `enrichment.useragent` (pass-through) |
+
+Karna reads these *opportunistically*: when a key is absent (`nil` or
+`false`) it's simply omitted, and the corresponding rule variable is
+not registered. Karna works fine when no sibling plugin sets any of
+these — `enrichment` is omitted from the audit log entirely if every
+slot is empty.
+
+### Free-form custom bucket
+
+For everything else, sibling plugins can write into
+`kong.ctx.shared.karna.enrichment`:
+
+```lua
+kong.ctx.shared.karna            = kong.ctx.shared.karna            or {}
+kong.ctx.shared.karna.enrichment = kong.ctx.shared.karna.enrichment or {}
+
+kong.ctx.shared.karna.enrichment.fingerprint_id = "abc123"
+kong.ctx.shared.karna.enrichment.tor            = true
+kong.ctx.shared.karna.enrichment.threat_score   = 78
+```
+
+These end up in `enrichment.custom` in the audit log:
+
+```json
+{
+    "version": "2.0",
+    "enrichment": {
+        "geoip":     { "country_code": "IT", "country_name": "Italy" },
+        "asn":       { "id": "12345", "org": "Example ISP" },
+        "useragent": { "name": "Chrome", "version": "131.0" },
+        "custom":    { "fingerprint_id": "abc123", "tor": true, "threat_score": 78 }
+    }
+}
+```
+
+The custom bucket is passed through unchanged — Karna does not
+validate or clip its contents. If it's missing or empty, `custom` is
+omitted.
+
 ## External plugin logging
 
 Any sibling Kong plugin can record its own log events through Karna's audit
