@@ -9,6 +9,7 @@ local ngx_re_gmatch         = ngx.re.gmatch
 local string_gsub           = string.gsub
 local string_match          = string.match
 local string_gmatch         = string.gmatch
+local string_find           = string.find
 
 local cjson                 = require "cjson"
 local b64                   = require("ngx.base64")
@@ -50,6 +51,21 @@ _M.urlencoded = function(self, prefix, raw_body, try_base64decode_if_possible)
             -- if there's at least 1 key=value, parse them
             local key,value = string_match(keyval, "([^=]+)=?(.*)")
             if key and value then
+                -- URL-decode keys and values once. The URLENCODED body
+                -- processor in ModSec urldecodes ARGS automatically — that's
+                -- the canonical form rules see (regex/pmFromFile/libinjection
+                -- all expect decoded ARGS, with `+` already converted to
+                -- space, `%XX` already converted to the underlying byte). We
+                -- mirror that here using ngx.unescape_uri (which handles `+`
+                -- → space and `%XX` together). Skip on failure / no-op for
+                -- values that don't contain `%` or `+`.
+                if string_find(key, "[%%+]", 1, false) then
+                    key = ngx.unescape_uri(key)
+                end
+                if string_find(value, "[%%+]", 1, false) then
+                    value = ngx.unescape_uri(value)
+                end
+
                 local label_plain_name = prefix .. ".name:"..key:lower()
                 local label_plain_value = prefix .. ".value:"..key:lower()
 
