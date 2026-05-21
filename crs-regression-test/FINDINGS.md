@@ -293,3 +293,43 @@ cause.
 3. Reset `rule_is_chained` at the *start* of each rule, only set it
    true when actually evaluating the actions string post-extraction.
 
+
+## #5 — Residual PL1 long tail at 89.9% pass rate (2026-05-21)
+
+After the cascade of engine fixes in this session (urldecode ARGS,
+matched.value for chains, MULTIPART_PART_HEADERS mapping, PL2-skip
+chain reset, ARGS_NAMES branch in the modern loop, gate-relaxation
+config for the bench), Karna's PL1 CRS regression pass rate stands at
+**89.9% (2478/2757)**. The residual ~280 failures are scattered
+across many rules with low individual cardinality (top single is now
+20). They share a few patterns:
+
+- **TX variable chains** — rules like 920420 set
+  `setvar:'tx.content_type=|%{tx.0}|'` then evaluate a chained
+  condition `TX:content_type !@within %{tx.allowed_request_content_type}`.
+  Karna's `setvar:tx.*` plumbing works, the `%{tx.*}` macro resolver
+  works, but the resolution chain across multiple chained conditions
+  with stateful TX writes isn't fully aligned with ModSec semantics
+  for some specific patterns.
+
+- **Cookie-borne attacks** — several 920* and 944* tests put the
+  attack payload inside a Cookie header value. Karna parses cookies
+  into `request.cookie.value:<name>` but a handful of edge cases
+  (multi-value cookies, quoted cookies, oversized cookies) don't
+  surface the right value to the rule.
+
+- **`%{request_headers.host}` macro resolution** in operator values
+  works for `endsWith` (943110 confirms), but doesn't yet for every
+  operator variant.
+
+- **Capture group propagation across chain conditions** mostly works
+  (943110 confirms it). Edge cases where the captured group is then
+  fed back into `%{tx.N}` macros in deeper conditions are spotty.
+
+Investigation for each of these is single-rule-deep and the
+detection unlock per round of work is low. Recommendation: ship the
+current baseline, wire CI to assert ≥89.9% on every commit, and
+chase the long tail rule-by-rule with focused commits over time
+instead of trying to push the percentage higher in this same
+session.
+
