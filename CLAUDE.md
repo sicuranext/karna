@@ -46,7 +46,7 @@ plugin with no required dependency on other plugins.
 
 - **Rule format**: Rules are Lua tables with `id`, `phase`, `conditions` (array of `{variables, op, value, transform}`), `action`, `message`, `tags`, `paranoia_level`, and optional `rule_control`.
 - **Rule controls**: Mechanism to remove rules, remove specific targets from rules, or modify rule conditions at runtime (similar to ModSecurity `ctl:ruleRemoveById`).
-- **Operators**: `rx` (regex), `eq`, `gt`, `lt`, `beginsWith`, `endsWith`, `contains`, `pm`/`pmFromFile` (phrase match), `within`, `libinjection_sqli`, `libinjection_xss`, `validateUrlEncoding`, `validateUtf8Encoding`, `validateByteRange`, `ipMatch`.
+- **Operators**: `rx`, `!rx`, `grx`, `eq`, `!eq`, `ge`, `gt`, `lt`, `beginsWith`, `!beginsWith`, `endsWith`, `!endsWith`, `contains`, `string_match`, `isSet`, `!isSet`, `pm`, `!pm`, `pmFromFile`, `within`, `!within`, `libinjection_sqli`, `libinjection_xss`, `validateUrlEncoding`, `validateByteRange`, `mcp_method_in`, `mcp_jsonrpc_valid`. (CRS-targeted gaps to watch: `@ipMatch`, `@ipMatchF[romFile]`, `@verifyCC`, `@unconditionalMatch`, `@geoLookup` — not implemented. `validateUtf8Encoding` exists only as a transformation function, not an operator.)
 - **Transformation functions**: `urlDecodeUni`, `lowercase`, `htmlEntityDecode`, etc. — applied to values before operator matching.
 - **Variables**: Internal naming convention like `request.arg.value`, `request.header.value:host`, `request.cookie.name`, `request.body`, etc.
 - **Phases**: Rules run in Kong phases — `access` (request), `header_filter` (response headers), `body_filter` (response body).

@@ -9,6 +9,10 @@ parser.add_argument('--testrule', type=str, help='Rule ID subject of test', requ
 parser.add_argument('--testnum', type=str, help='Filter test number', required=False)
 parser.add_argument('--show-only-failed', help='Show only failed tests', required=False, action='store_true')
 parser.add_argument('--debug', help='Debug mode', required=False, action='store_true')
+parser.add_argument('--host', type=str, default=os.environ.get('KARNA_TEST_HOST', '127.0.0.1'),
+                    help='Kong proxy host (default: 127.0.0.1, or env KARNA_TEST_HOST)')
+parser.add_argument('--port', type=int, default=int(os.environ.get('KARNA_TEST_PORT', '28000')),
+                    help='Kong proxy port (default: 28000 to match docker-compose, or env KARNA_TEST_PORT)')
 args = parser.parse_args()
 
 def colorize(text, color):
@@ -99,7 +103,7 @@ def send_request(test, rule_id):
         if "uri" in stage["input"]:
             uri = stage["input"]["uri"]
         
-        curl_command += f" -X {method} 'http://localhost{uri}'"
+        curl_command += f" -X {method} 'http://{args.host}:{args.port}{uri}'"
 
         # build request headers
         headers = f"x-karna-test: true\r\nx-karna-test-rule-id: {args.testrule}\r\n"
@@ -157,7 +161,7 @@ def send_request(test, rule_id):
         # send request
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(5)
-        s.connect(("127.0.0.1", 80))
+        s.connect((args.host, args.port))
         s.send(request.encode())
         try:
             response = s.recv(40968)

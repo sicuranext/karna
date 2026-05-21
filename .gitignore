@@ -49,6 +49,10 @@ logs/
 *-auditlog-*.json
 nginx-*.conf
 
+# === Downloaded OWASP CRS regression test YAMLs ===
+# Populated by crs-regression-test/fetch-tests.sh. Not part of Karna.
+crs-regression-test/tests/
+
 # === Docker local state / overrides ===
 docker/.data/
 docker-compose.override.yml

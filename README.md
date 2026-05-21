@@ -208,6 +208,44 @@ via `env <NAME>;` directives in the main context.
 | --- | --- |
 | `request.header_no_fp.value` | Request headers excluding the most FP-prone ones (User-Agent, Referer, …) |
 
+## Supported operators
+
+The `op` field of a rule condition selects one of these operators.
+The set is dispatched by string equality in `ka_engine.lua` — anything
+not in this table will simply never match.
+
+| Operator | Negation | Description |
+|---|---|---|
+| `rx`               | `!rx`               | PCRE regex match against the variable value (uses `ngx.re.match` under the hood). |
+| `grx`              | —                   | Like `rx`, but evaluated in "global" mode for cross-condition match capture. |
+| `eq`               | `!eq`               | Exact equality (strings or numbers). |
+| `ge` / `gt` / `lt` | —                   | Numeric ordering — value must parse as a number. |
+| `beginsWith`       | `!beginsWith`       | String prefix match. |
+| `endsWith`         | `!endsWith`         | String suffix match. |
+| `contains`         | —                   | Substring presence. |
+| `string_match`     | —                   | Lua `string.match` (pattern style — distinct from `rx`). |
+| `isSet`            | `!isSet`            | Whether the variable resolves to anything at all. |
+| `within`           | `!within`           | Variable value is one of the comma-separated tokens in `value`. |
+| `pm`               | `!pm`               | Phrase match: any whitespace-separated token in `value` appears in the variable. |
+| `pmFromFile`       | —                   | Like `pm`, but the phrase list is loaded from a file. |
+| `libinjection_sqli`| —                   | SQL-injection detection via `libinjection`. |
+| `libinjection_xss` | —                   | XSS detection via `libinjection`. |
+| `validateUrlEncoding` | —                | Rejects malformed `%XX` sequences. |
+| `validateByteRange`| —                   | All bytes must fall within a `value` like `"32-126,9,10,13"`. |
+| `mcp_method_in`    | —                   | JSON-RPC `method` field is in `value` (MCP). |
+| `mcp_jsonrpc_valid`| —                   | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
+
+CRS-relevant gaps (not implemented in this release): `@ipMatch`,
+`@ipMatchF` / `@ipMatchFromFile`, `@verifyCC`, `@verifySSN`,
+`@geoLookup`, `@unconditionalMatch`, `@inspectFile`. Rules that depend
+on these operators are skipped at parse time with a `WARN` line —
+`grep "WARN" $(kong path)/logs/error.log` after a `kong reload` to
+enumerate.
+
+`validateUtf8Encoding` exists in Karna as a **transformation function**
+(`tfunc`), not as an operator — same name as the CRS operator but
+different role. Watch out when porting CRS rules.
+
 ## Rule Schema
 
 ```json
