@@ -2,6 +2,20 @@ local re_match  = ngx.re.match
 local inspect = require "inspect"
 local _M = {}
 
+-- Escape Lua pattern metacharacters in an arbitrary string so it can be
+-- concatenated into a Lua pattern without changing its meaning. Lua's
+-- pattern metacharacters are: ( ) . % + - * ? [ ] ^ $
+-- Multipart boundaries legitimately contain `-` (very common: 30+ dashes
+-- in `---------------------------627652292512397580456702590`) plus
+-- `( ) + , . ? = _` (allowed by RFC 2046 + the boundary validator below).
+-- Without escaping, `-` becomes "0+ lazy quantifier" and the boundary
+-- pattern explodes into catastrophic backtracking — Lua-native patterns
+-- are NOT capped by `lua_regex_match_limit` (that's PCRE only), so the
+-- worker spins forever.
+local function escape_lua_pattern(s)
+    return (s:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1"))
+end
+
 _M.debug = false
 _M.check_missing_boundary = true
 _M.check_wrong_boundary = true
@@ -55,8 +69,9 @@ function _M.parse(self, body, content_type)
         end
     end
 
-    local boundary_start = "^%-%-" .. boundary .. ""
-    local boundary_end = "^%-%-" .. boundary .. "%-%-$"
+    local boundary_escaped = escape_lua_pattern(boundary)
+    local boundary_start = "^%-%-" .. boundary_escaped .. ""
+    local boundary_end = "^%-%-" .. boundary_escaped .. "%-%-$"
 
     -- split body by lines by "\r\n"
     local start_collecting_headers = false
@@ -114,7 +129,7 @@ function _M.parse(self, body, content_type)
         t[i].raw_headers = t[i].raw_headers:sub(1, -5)
 
         -- remove --<boundary>\r\n at the beginning of raw_headers
-        t[i].raw_headers = t[i].raw_headers:gsub("^%-%-" .. boundary .. "\r\n", "")
+        t[i].raw_headers = t[i].raw_headers:gsub("^%-%-" .. boundary_escaped .. "\r\n", "")
 
         -- split raw_headers by \r\n
         t[i].headers = {}

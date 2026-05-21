@@ -12,6 +12,45 @@ local ngx                               = ngx
 local kong                              = kong
 local get_phase                         = ngx.get_phase
 local ngx_re_match                      = ngx.re.match
+
+-- safe_re_match wraps ngx.re.match so the rule engine can distinguish three
+-- outcomes: match (m, false), no-match (nil, false), engine_error (nil, true).
+-- The third bucket triggers when the PCRE backtracking budget set by
+-- `lua_regex_match_limit` is exhausted (catastrophic-backtracking pattern,
+-- adversarial input). Without this wrapper, ngx.re.match returns `nil, err`
+-- on both real no-match (err == nil) and budget exhaustion (err ~= nil), and
+-- callers that consume the return value as a boolean would treat a budget
+-- failure as a no-match — which is wrong for negation operators (`!rx`,
+-- `!isSet`-style logic) where `not m` flips the rule decision and a stuck
+-- regex would otherwise spuriously fire the rule.
+--
+-- Positive operators (`rx`, `grx`) keep "no match" semantics on engine_error:
+-- the rule simply doesn't fire when its detection regex blew up. Negation
+-- operators check the second return value and bail out without firing,
+-- failing closed on detection (skips the rule) rather than open (false
+-- positive). Both branches log a single line so the operator regex can be
+-- audited.
+local function safe_re_match(subject, regex, opts)
+    -- PCRE JIT bypasses `lua_regex_match_limit` on the OpenResty builds
+    -- shipped with Kong 3.x: a JIT-compiled pattern that catastrophic-
+    -- backtracks will spin the worker indefinitely instead of returning
+    -- `nil, err`. Strip the `j` flag so the interpretive PCRE path is
+    -- used here. We keep the `o` (compile cache) flag — the cache caches
+    -- the interpretive compiled regex too. Throughput is lower than JIT
+    -- for very long patterns, but correctness wins.
+    if opts and opts:find("j", 1, true) then
+        opts = opts:gsub("j", "")
+    end
+    local m, err = ngx_re_match(subject, regex, opts)
+    if m ~= nil then
+        return m, false
+    end
+    if err ~= nil then
+        kong.log.warn("[karna] regex engine aborted (likely backtracking budget exhausted): " .. tostring(err) .. " | pattern: " .. tostring(regex))
+        return nil, true
+    end
+    return nil, false
+end
 local ngx_re_gmatch                     = ngx.re.gmatch
 local ngx_req_get_body_file             = ngx.req.get_body_file
 local ngx_decode_base64                 = ngx.decode_base64
@@ -859,7 +898,7 @@ end
 _M.__match_op_rx = function(variable_name, value_to_match_on, regex)
     if variable_name and value_to_match_on then
         local matched_table = {}
-        local m = ngx_re_match(value_to_match_on, regex, "sjo")
+        local m, _ = safe_re_match(value_to_match_on, regex, "sjo")
         if m then
             matched_table["matched_on"] = variable_name
             matched_table["matched_value"] = string.sub(value_to_match_on, 1, 100)
@@ -875,8 +914,10 @@ end
 _M.__match_op_rx_negative = function(variable_name, value_to_match_on, regex)
     if variable_name and value_to_match_on then
         local matched_table = {}
-        local m = ngx_re_match(value_to_match_on, regex, "sjo")
-        if not m then
+        local m, engine_error = safe_re_match(value_to_match_on, regex, "sjo")
+        -- Fail closed on engine error: a pathological regex must not flip
+        -- the negation into a spurious match. See safe_re_match docstring.
+        if not m and not engine_error then
             matched_table["matched_on"] = variable_name
             matched_table["matched_value"] = string.sub(value_to_match_on, 1, 100)
             return true, matched_table
@@ -1696,7 +1737,7 @@ _M.__match_rule_conditions_old = function(self, rule, plugin_conf, ka_dfiles)
 
                                 -- remove \r and \n from value
                                 --v = string_gsub(v, "[\r\n]", "")
-                                local m = ngx_re_match(v, condition_value_resolved, "sjo")
+                                local m, _ = safe_re_match(v, condition_value_resolved, "sjo")
                                 if m then
                                     local matched_table = {}
                                     --debug("---- CONDITION MATCHED ".. conditions_matched .." ----> op:"..condition.op.." v:"..v.." condition_value:" .. condition_value_resolved)
@@ -1715,10 +1756,11 @@ _M.__match_rule_conditions_old = function(self, rule, plugin_conf, ka_dfiles)
                                 if v then
                                     -- remove \r and \n from value
                                     v = string_gsub(v, "[\r\n]", "")
-                                    local m = ngx_re_match(v, condition_value_resolved, "sjo")
-                                    if not m then
-                                        --local matched_table = {}
-                                        --debug("---- CONDITION MATCHED ".. conditions_matched .." ----> op:"..condition.op.." v:"..v.." condition_value:" .. condition_value_resolved)
+                                    local m, engine_error = safe_re_match(v, condition_value_resolved, "sjo")
+                                    -- Fail closed on engine_error: don't fire the rule when the
+                                    -- regex engine couldn't decide. A pathological regex must
+                                    -- not flip a negation into a spurious match (FP).
+                                    if not m and not engine_error then
                                         increment_condition_matched = true
                                     end
                                 end

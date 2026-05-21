@@ -53,6 +53,11 @@ nginx-*.conf
 # Populated by crs-regression-test/fetch-tests.sh. Not part of Karna.
 crs-regression-test/tests/
 
+# === CRS regression-test runtime outputs ===
+# Per-run logs / diffs / category summaries from the bench scripts.
+crs-regression-test/results/
+crs-regression-test/_excluded/
+
 # === Docker local state / overrides ===
 docker/.data/
 docker-compose.override.yml
