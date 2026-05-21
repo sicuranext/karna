@@ -13,9 +13,40 @@ reports how many tests pass / fail / are skipped. Use it to:
 
 | File | Purpose |
 |---|---|
-| `start.py`        | The runner. Loads a YAML test file (or directory), opens a raw socket to a running Kong, sends the constructed HTTP request, and inspects the response for the expected CRS rule id. |
-| `fetch-tests.sh`  | Downloads the regression test YAMLs from the OWASP CRS GitHub release tarball into `./tests/`. Pin the version with `CRS_VERSION=...`. |
-| `tests/`          | The downloaded YAMLs. **Not committed** (gitignored). Run `fetch-tests.sh` to populate. |
+| `start.py`                   | The runner. Loads a YAML test file (or directory), opens a raw socket to a running Kong, sends the constructed HTTP request, and inspects the response for the expected CRS rule id. |
+| `fetch-tests.sh`             | Downloads the regression test YAMLs from the OWASP CRS GitHub release tarball into `./tests/`. Pin the version with `CRS_VERSION=...`; restrict paranoia level with `CRS_MAX_PL=...` (default `1`, see below). |
+| `configure-kong.sh`          | Idempotent Kong setup (service, route, karna plugin instance, request-termination short-circuit). |
+| `bench-coreruleset-fix.sh`   | Two-pass runner: with vs without `coreruleset_fix.lua`, then diff. |
+| `toggle-crs-fix.sh`          | Swap `coreruleset_fix.lua` with an empty stub for the bench. |
+| `run-categories.sh`          | Run the suite one category-directory at a time with a per-category wall-clock budget. Used for bisecting which test makes Kong stall. |
+| `FINDINGS.md`                | Post-mortem of bugs surfaced by the suite (engine-level regex/parser fixes). |
+| `tests/`                     | The downloaded (and filtered) YAMLs. **Not committed** (gitignored). |
+
+## Why we bench at paranoia level 1 (PL1) only
+
+By default `fetch-tests.sh` filters out YAML tests that target rules tagged
+`paranoia-level/2` or higher. CRS 4.26 ships **626 rules** spread across
+four levels (PL1: 498 — PL2: 89 — PL3: 30 — PL4: 9), and the official
+test suite carries cases for all four. We benchmark only PL1 because:
+
+- **PL1 is the only level deployable in production**. PL2+ are designed
+  as escalating "we'll false-positive harder in exchange for catching
+  more obscure attacks" tiers. Real WAF operators do not run anything
+  above PL1 unless they're doing forensic work on a known target —
+  PL2 alone is already enough to FP on legitimate traffic in most
+  real-world applications (anything that POSTs structured JSON, uses
+  modern Auth headers, accepts uploads, …).
+- **A "fail" on a PL3 test is not a Karna gap**, it's a deliberate
+  choice not to load that rule. Counting them as failures inflates the
+  number and dilutes the signal: we want to know how Karna does on
+  rules a real deployment would actually have on.
+- **The supported operational surface of Karna is PL1**. Bug reports,
+  performance promises, and CRS-compatibility claims are scoped there.
+  PL2+ "best effort" support is fine, but it's not the measurement
+  axis.
+
+Override with `CRS_MAX_PL=2` (or higher) if you specifically want to
+exercise PL2+ rules; set `CRS_MAX_PL=0` to disable the filter entirely.
 
 ## Prerequisites
 
