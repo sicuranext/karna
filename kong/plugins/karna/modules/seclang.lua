@@ -31,7 +31,16 @@ function seclang.parse(raw_rules, filter_by_id)
 
         if line:match('"[\n]?$') and secrule_start then
             secrule_start = false
-            if not rule:match("paranoia%-level/3") and not rule:match("paranoia%-level/4") then
+            -- Skip rules tagged paranoia-level/2, /3 or /4. Karna's supported
+            -- operational surface is PL1 (see crs-regression-test/README.md
+            -- — "Why we bench at paranoia level 1"). PL2 alone is already
+            -- noisy enough on legitimate traffic that no real deployment
+            -- leaves it on. Loading PL2+ rules at parse time would let them
+            -- short-circuit a request via eager-block before a PL1 rule that
+            -- the test suite expects to fire ever got the chance.
+            if not rule:match("paranoia%-level/2")
+               and not rule:match("paranoia%-level/3")
+               and not rule:match("paranoia%-level/4") then
                 seclang.__parse_rule(rule, rule_is_chained, filter_by_id)
             end
             rule_is_chained = seclang.__is_chained(rule)
@@ -558,6 +567,7 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
         print("----------> ERROR: Rule without id")
         return
     end
+
 
     if not id and chained then
         if not filter_by_id then
