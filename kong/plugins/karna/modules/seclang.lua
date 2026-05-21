@@ -38,12 +38,24 @@ function seclang.parse(raw_rules, filter_by_id)
             -- leaves it on. Loading PL2+ rules at parse time would let them
             -- short-circuit a request via eager-block before a PL1 rule that
             -- the test suite expects to fire ever got the chance.
-            if not rule:match("paranoia%-level/2")
-               and not rule:match("paranoia%-level/3")
-               and not rule:match("paranoia%-level/4") then
+            local skip_for_pl = rule:match("paranoia%-level/2")
+                                or rule:match("paranoia%-level/3")
+                                or rule:match("paranoia%-level/4")
+            if not skip_for_pl then
                 seclang.__parse_rule(rule, rule_is_chained, filter_by_id)
+                rule_is_chained = seclang.__is_chained(rule)
+            else
+                -- A skipped chain parent leaves a dangling chain flag:
+                -- without this reset, the chain's continuation SecRule
+                -- (which is a separate raw block in the .conf and has no
+                -- `paranoia-level/N` tag of its own) would be parsed with
+                -- chained=true and its conditions would be silently appended
+                -- to whatever was rule_last_id — typically the last
+                -- successfully-loaded PL1 rule. That's how rule 942550 ends
+                -- up with #conditions=6 instead of 1, then never fires
+                -- because matched_conditions plateaus at 1.
+                rule_is_chained = false
             end
-            rule_is_chained = seclang.__is_chained(rule)
             rule = ""
         end
     end
@@ -582,6 +594,7 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
     end
 
     id = tostring(id)
+
 
     if filter_by_id then
         if id then
