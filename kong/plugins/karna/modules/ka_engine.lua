@@ -1191,6 +1191,21 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
 
                 if variable == "request.arg.value" then
                     values, err = self:__get_values_request_args(false, rule.rule_control)
+                elseif variable == "request.arg.name" then
+                    -- ModSec ARGS_NAMES → every arg key name (query + body
+                    -- form-data + body multipart). Reuse the args getter
+                    -- but filter keys to the `*.name:*` entries; we want
+                    -- to match the NAMES, not the values.
+                    local all_values, all_err = self:__get_values_request_args(false, rule.rule_control)
+                    if all_values then
+                        values = {}
+                        for k, v in pairs(all_values) do
+                            if string_find(k, "%.name:", 1, false) then
+                                values[k] = v
+                            end
+                        end
+                    end
+                    err = all_err
                 elseif string_find(variable, "^request%.arg%.value%:") then
                     local arg_name = string_match(variable, "^request%.arg%.value%:(.*)")
                     local all_values, all_err = self:__get_values_request_args(false, rule.rule_control)
