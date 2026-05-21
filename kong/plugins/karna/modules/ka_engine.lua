@@ -654,9 +654,21 @@ _M.__get_values_request_body_scalars = function()
             end
         end
         if request_body and request_body ~= "" then
-            values["request.body"] = request_body
-            values["request.body.length"] = tostring(#request_body)
             local request_body_type = utils:request_body_parser_type()
+            -- ModSecurity semantics: REQUEST_BODY (raw) is populated only when
+            -- the body was NOT consumed by a structured parser. For
+            -- urlencoded and unparsed text, REQUEST_BODY is the raw body. For
+            -- multipart / XML / JSON, the structured XML:/*, ARGS,
+            -- MULTIPART_* variables carry the content and REQUEST_BODY is
+            -- left empty. Mirroring that here avoids broad regex / pmFromFile
+            -- targets accidentally matching the raw wire bytes of an XML or
+            -- multipart payload when the rule author expected only structured
+            -- inspection. request.body.length and request.body.processor are
+            -- metadata; they're always exposed.
+            if request_body_type == "urlencoded" or request_body_type == "text" then
+                values["request.body"] = request_body
+            end
+            values["request.body.length"] = tostring(#request_body)
             if request_body_type then
                 values["request.body.processor"] = request_body_type
             end
