@@ -1,0 +1,78 @@
+# === OS / filesystem junk ===
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+.AppleDouble
+.LSOverride
+
+# === Editor / IDE ===
+.vscode/
+.idea/
+*.iml
+*.code-workspace
+.history/
+*.swp
+*.swo
+*.swn
+*~
+*.bak
+*.orig
+*.tmp
+Session.vim
+.netrwhist
+
+# === Secrets / local env ===
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+.secrets/
+
+# === Lua / LuaRocks build artefacts ===
+*.rock
+*.src.rock
+.luarocks/
+luarocks/
+lua_modules/
+
+# === Logs / runtime artefacts ===
+logs/
+*.log
+*.pid
+*.sock
+*-auditlog-*.json
+nginx-*.conf
+
+# === Docker local state / overrides ===
+docker/.data/
+docker-compose.override.yml
+docker-compose.local.yml
+
+# === Language tooling caches ===
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+node_modules/
+dist/
+build/
+
+# === Claude Code / AI tooling ===
+.claude/
+
+# === Personal / WIP scratchpads ===
+TODO.local.md
+NOTES.local.md
+scratch/
+private/
+.notes/

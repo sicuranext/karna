@@ -1,0 +1,370 @@
+{
+    "id": "local_11",
+    "phase": "access",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "rule_control": [
+        {
+            "remove_rules_by_tag": {
+                "tag": "OWASP_CRS"
+            }
+        },
+        {
+            "remove_target_pattern": "[.]param[0-9]+$"
+        }
+    ]
+}
+
+{
+    "id": "local_11",
+    "phase": "access",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "rule_control": [
+        {
+            "remove_rule": {
+                "rule_id": "933160"
+            }
+        }
+    ]
+}
+
+{
+    "id": "local_11",
+    "phase": "access",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "rule_control": [
+        {
+            "remove_target_rule_by_tag": {
+                "tag": "OWASP_CRS",
+                "name": "request.query.value:a"
+            }
+        }
+    ]
+}
+
+
+{
+    "id": "local_12",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/favicon.ico",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "action": {
+        "fixed_response": {
+            "status_code": 302,
+            "headers": {
+                "content-type": "text/plain",
+                "cache-control": "max-age=0, private, no-store, no-cache, must-revalidate",
+                "location": "https://sicuranext.com/wp-content/uploads/2022/11/cropped-Sicuranext_loghi_varianti-5-min-32x32.png"
+            },
+            "body": ""
+        }
+    }
+}
+
+{
+    "id": "local_111",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "rx",
+            "transform": ["urlDecode"],
+            "value": "^(/wp-admin|/wp-login).*",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "action": {
+        "set_variable": {
+            "name": "google_oauth_path_matched",
+            "value": true,
+            "type": "shared"
+        }
+    }
+}
+
+
+{
+    "id": "local_999",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "rx",
+            "transform": ["urlDecode"],
+            "value": "^(/wp-admin|/wp-login).*",
+            "variables": ["request.raw_path"]
+        },
+        {
+            "multi_match": false,
+            "op": "eq",
+            "transform": ["urlDecode"],
+            "value": "POST",
+            "variables": ["request.method"]
+        }
+    ],
+    "action": {
+        "rate_limit": {
+            
+        }
+    }
+}
+
+
+
+-- https://cdn.example.com/assets/video/video1.mp4
+{
+    "id": "local_13",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/wp-content/uploads/revslider/charts-template-showcase/video1.mp4",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "action": {
+        "fixed_response": {
+            "status_code": 302,
+            "headers": {
+                "content-type": "text/plain",
+                "cache-control": "max-age=0, private, no-store, no-cache, must-revalidate",
+                "location": "https://cdn.example.com/assets/video/video1.mp4"
+            },
+            "body": ""
+        }
+    }
+}
+
+-- /wp-content/uploads/revslider/objects/Space.mp4
+-- https://cdn.example.com/assets/video/Space.mp4
+{
+    "id": "local_14",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/wp-content/uploads/revslider/objects/Space.mp4",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "action": {
+        "fixed_response": {
+            "status_code": 302,
+            "headers": {
+                "content-type": "text/plain",
+                "cache-control": "max-age=0, private, no-store, no-cache, must-revalidate",
+                "location": "https://cdn.example.com/assets/video/Space.mp4"
+            },
+            "body": ""
+        }
+    }
+}
+
+
+-- /wp-content/uploads/revslider/charts-template-showcase/pink-bg-video.mp4
+-- https://cdn.example.com/assets/video/pink-bg-video.mp4
+{
+    "id": "local_15",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/wp-content/uploads/revslider/charts-template-showcase/pink-bg-video.mp4",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "action": {
+        "fixed_response": {
+            "status_code": 302,
+            "headers": {
+                "content-type": "text/plain",
+                "cache-control": "max-age=0, private, no-store, no-cache, must-revalidate",
+                "location": "https://cdn.example.com/assets/video/pink-bg-video.mp4"
+            },
+            "body": ""
+        }
+    }
+}
+
+
+
+{
+    "id": "local_1100",
+    "phase": "access",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/wp-content/uploads",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "rule_control": [
+        {
+            "remove_variable_from_rule_conditions": {
+                "rule_id": "920221",
+                "variable_name": "request.basename"
+            }
+        }
+    ],
+    "log": false
+}
+
+{
+    "id": "local_12",
+    "phase": "access",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "transform": [],
+            "value": "/",
+            "variables": ["request.raw_path"]
+        }
+    ],
+    "rule_control": [
+        {
+            "remove_target_rule_by_pattern": {
+                "rule_id": "932160",
+                "pattern": ".*[:]param[0-9]$"
+            }
+        },
+        {
+            "remove_target_rule_by_pattern": {
+                "rule_id": "933160xxx",
+                "pattern": ".*[:]param[0-9]$"
+            }
+        },
+        {
+            "remove_target_tag_by_pattern": {
+                "tag": "attack-injection-php",
+                "pattern": ".*[:]param[0-9]$"
+            }
+        }
+    ]
+}
+
+{
+    "id": "local_13",
+    "phase": "header_filter",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "value": "/login",
+            "variables": ["request.raw_path"]
+        },
+        {
+            "op": "eq",
+            "value": "POST",
+            "variables": ["request.method"]
+        },
+        {
+            "op": "!isSet",
+            "value": "",
+            "variables": ["response.header.name:set-cookie"]
+        }
+    ],
+    "action": {
+        "set_log_fields": [
+            {
+                "name": "username",
+                "value": "%{request.body.urlencode.value:username}"
+            }
+        ],
+        "redis_incr_key": {
+            "key": "login_attempts_%{request.header.value:host}",
+            "expire": 300
+        }
+    },
+    "log": false
+}
+
+
+{
+    "id": "local_1313",
+    "phase": "body_filter",
+    "conditions": [
+        {
+            "op": "beginsWith",
+            "value": "/login",
+            "variables": ["request.raw_path"]
+        },
+        {
+            "op": "eq",
+            "value": "GET",
+            "variables": ["request.method"]
+        }
+    ],
+    "action": {
+        "replace_response_body": {
+            "regex": "</body>",
+            "replacement": "<script>alert('Hello World');</script></body>",
+            "compression": "auto"
+        }
+    },
+    "log": false
+}
+
+{
+    "id": "local_llm_123",
+    "phase": "access",
+    "conditions": [
+        {
+            "op": "rx",
+            "value": ".*wp-admin[.]php.*",
+            "variables": ["request.raw_path"]
+        },
+        {
+            "op": "eq",
+            "value": "POST",
+            "variables": ["request.method"]
+        },
+        {
+            "op": "rx",
+            "value": "POST",
+            "variables": [".*form.fields.message.*"]
+        }
+    ],
+    "action": {
+        "ai_send_to_llm": {
+            "model": "gpt-4o-mini",
+            "system_prompt": "\nYou are a spam filter. You'll analyze messages coming from HTML contact forms.\nYour job is to decide if a user provided message is spam or not.\n\n# Your instructions\n- Try to understand the message and decide if it's spam.\n- Not all messages that contain links are spam.\n- Usually, messages that try to sell something are spam.\n- Request for support or for contact are usually not spam.\n- Request for information about products or services are usually not spam.\n- Request for collaboration or partnership are usually not spam.\n- Label a spam message with one of the categories below:\n  - \"advertising\"\n  - \"phishing\"\n  - \"health\"\n  - \"adult\"\n  - \"product\"\n  - \"dating\"\n  - \"scam\"\n  - \"malware\"\n  - \"other\"\n\n# Output\n- JSON object with the following structure: { \"is_spam\": false } or { \"is_spam\": true, \"category\": \"<one of the above category>\", \"reason\": \"<brief spam reason>\" }\n- If the message is spam, provide a brief reason why you think it's spam.\n- Do not include any special characters in the reason.\n- If the message is not spam, provide the JSON object with the \"is_spam\" key set to false.\n- Reply with just the JSON object, nothing else.\n",
+            "user_prompt": "Following a message received from a user with IP %{request.client_ip}:\n```\n%{request.body.multipart.fields.message}\n```",
+            "temperture": 0.1
+        }
+    },
+    "log": false
+}
+

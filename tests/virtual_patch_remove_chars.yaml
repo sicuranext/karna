@@ -1,0 +1,68 @@
+id: karna-virtual-patch-remove-chars
+
+info:
+  name: karna-virtual-patch-remove-chars
+  author: Andrea `theMiddle` Menin
+  description: Check if virtual patch is working properly
+  severity: low
+
+code:
+  - engine:
+    - python3
+    source: tests/bootstrap.py
+
+http:
+  - raw:
+    - |
+      GET /?a=$(cat+/etc/passwd) HTTP/1.1
+      Host: karna-test
+    
+    matchers:
+      - type: regex
+        negative: false
+        name: virtual_patch
+        condition: and
+        part: body
+        regex:
+          - "[$][(]cat /etc/passwd[)]"
+  - raw:
+    - |
+      GET /?a=%24%28cat+/etc/passwd%29 HTTP/1.1
+      Host: karna-test
+    
+    matchers:
+      - type: regex
+        negative: false
+        name: virtual_patch
+        condition: and
+        part: body
+        regex:
+          - "[$][(]cat /etc/passwd[)]"
+  - raw:
+    - |
+      GET /?a=%2524%2528cat+/etc/passwd%2529 HTTP/1.1
+      Host: karna-test
+    
+    matchers:
+      - type: regex
+        negative: false
+        name: virtual_patch
+        condition: and
+        part: body
+        regex:
+          - "[$][(]cat /etc/passwd[)]"
+  - raw:
+    - |
+      GET /?a=%252524%252528cat+/etc/passwd%252529 HTTP/1.1
+      Host: karna-test
+    
+    matchers:
+      - type: regex
+        negative: false
+        name: virtual_patch
+        condition: and
+        part: body
+        regex:
+          - "[$][(]cat /etc/passwd[)]"
+      
+# digest: 4a0a0047304502207c6174e92adbf7fb2ac643c40cdacdba58ab7fde43afd5228f047f42c0c8ffa8022100c1ae11ca4d97be29605411964a49706b6f9e455cbf99c2b7d760fad324189914:8e012834ec88097acd94aa1f2a8e39f9

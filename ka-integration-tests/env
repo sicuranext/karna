@@ -1,0 +1,6 @@
+kong_api="http://localhost:8001"
+service_id="00000000-0000-0000-0001-000000000001"
+route_id="00000000-0000-0000-0002-000000000002"
+plugin_id="00000000-0000-0000-0003-000000000003"
+service_name="karna_integration.local"
+service_host="integration.local"

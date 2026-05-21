@@ -1,0 +1,46 @@
+package = "kong-plugin-karna"
+
+version = "1.0.0-0"
+
+local pluginName = package:match("^kong%-plugin%-(.+)$")
+
+supported_platforms = {"linux"}
+source = {
+  url = "git+https://github.com/sicuranext/karna.git",
+  tag = "v1.0.0"
+}
+
+description = {
+  summary = "Karna — OWASP CRS-compatible WAF engine for Kong Gateway",
+  homepage = "https://github.com/sicuranext/karna",
+  license = "Apache-2.0"
+}
+
+dependencies = {
+  "lua >= 5.1",
+  "lua-resty-http",
+  "lua-zlib",
+  "inspect",
+}
+
+build = {
+  type = "builtin",
+  modules = {
+    ["kong.plugins."..pluginName..".handler"]         = "kong/plugins/"..pluginName.."/handler.lua",
+    ["kong.plugins."..pluginName..".schema"]          = "kong/plugins/"..pluginName.."/schema.lua",
+    ["kong.plugins."..pluginName..".ka_engine"]       = "kong/plugins/"..pluginName.."/modules/ka_engine.lua",
+    ["kong.plugins."..pluginName..".ka_body_parser"]  = "kong/plugins/"..pluginName.."/modules/ka_body_parser.lua",
+    ["kong.plugins."..pluginName..".ka_multipart"]    = "kong/plugins/"..pluginName.."/modules/ka_multipart.lua",
+    ["kong.plugins."..pluginName..".ka_utils"]        = "kong/plugins/"..pluginName.."/modules/ka_utils.lua",
+    ["kong.plugins."..pluginName..".ka_ai"]           = "kong/plugins/"..pluginName.."/modules/ka_ai.lua",
+    ["kong.plugins."..pluginName..".ka_seclang"]      = "kong/plugins/"..pluginName.."/modules/seclang.lua",
+    ["kong.plugins."..pluginName..".ka_mcp"]          = "kong/plugins/"..pluginName.."/modules/ka_mcp.lua",
+    ["kong.plugins."..pluginName..".ka_mcp_sse"]      = "kong/plugins/"..pluginName.."/modules/ka_mcp_sse.lua",
+
+    ["kong.plugins."..pluginName..".libinjection"]    = "kong/plugins/"..pluginName.."/modules/libinjection.lua",
+    ["kong.plugins."..pluginName..".slaxml"]          = "kong/plugins/"..pluginName.."/modules/slaxml.lua",
+    ["kong.plugins."..pluginName..".slaxdom"]         = "kong/plugins/"..pluginName.."/modules/slaxdom.lua",
+
+    ["kong.plugins."..pluginName..".ka_rules_crs_fix"]  = "kong/plugins/"..pluginName.."/rules/coreruleset_fix.lua",
+  }
+}

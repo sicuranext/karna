@@ -1,0 +1,68 @@
+id: karna-json-body-parser
+
+info:
+  name: karna-json-body-parser
+  author: Andrea `theMiddle` Menin
+  description: Check if json parser is working properly
+  severity: low
+
+code:
+  - engine:
+    - python3
+    source: tests/bootstrap.py
+
+
+
+http:
+  - raw:
+    - |
+        POST / HTTP/1.1
+        Host: karna-test
+        x-karna-test: true
+        content-type: application/json
+
+        {
+          "name": "theMiddle",
+          "foo": {
+            "test": [
+              "bar",
+              {"foo1": "bar1"}
+            ],
+            "bar": {
+              "baz": "qux"
+            }
+          },
+          "age": 25,
+          "nested": {
+            "one": [
+              [
+                [
+                  [
+                    {"two": "three"}
+                  ]
+                ]
+              ]
+            ]
+          }
+        }
+    matchers:
+      - type: regex
+        negative: true
+        name: json_parser
+        condition: and
+        regex:
+          - "request\\.body\\.json\\.value:foo\\.test\\.1[\\x22:]+bar"
+          - "request\\.body\\.json\\.value:foo\\.test\\.2\\.foo1[\\x22:]+bar1"
+          - "request\\.body\\.json\\.value:foo\\.bar\\.baz[\\x22:]+qux"
+          - "request\\.body\\.json\\.value:age[\\x22:]+25"
+          - "request\\.body\\.json\\.value:name[\\x22:]+theMiddle"
+          - "request\\.body\\.json\\.value:nested\\.one\\.1\\.1\\.1\\.1\\.two[\\x22:]+three"
+    extractors:
+      - type: regex
+        name: json_parser
+        group: 1
+        regex: 
+          - "(.+)"
+  
+  
+# digest: 490a004630440220700480c2e2f7b5e8c4849ab4c919bae286f735ea58b976a2334ead133396e66f02202098a4a90fae3eaf8d800060deadd4cba512fbf7e060f292df1557a64299adad:8e012834ec88097acd94aa1f2a8e39f9

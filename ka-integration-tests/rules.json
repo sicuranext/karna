@@ -1,0 +1,32 @@
+{
+    "id": "13",
+    "phase": "access",
+    "conditions": [
+        {
+            "multi_match": false,
+            "op": "rx",
+            "transform": ["urlDecodeUni"],
+            "value": "^foo\\s+bar$",
+            "variables": ["request.arg.value"]
+        }
+    ],
+    "action": {
+        "fixed_response": {
+            "status_code": 403,
+            "headers": {
+                "content-type": "text/plain",
+                "cache-control": "max-age=0, private, no-store, no-cache, must-revalidate"
+            },
+            "body": "Forbidden\r\n"
+        }
+    },
+    "message": "Thi is a test rule",
+    "rule_control": {
+        "ignore_variables": {
+            "request.query.value" : {
+                "request.query.value:a": true
+            }
+        }
+    },
+    "tags": ["test", "attack-test"]
+}
