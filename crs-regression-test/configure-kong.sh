@@ -81,6 +81,19 @@ upsert_plugin() {
         -d "config.paranoia_level=${PARANOIA}"
         -d "config.auditlog_enabled=false"
         -d "config.ignore_from_local_ips=false"
+        # The always-on URI / header / charset / method gates block the
+        # request before any CRS rule runs. CRS regression payloads
+        # routinely cram SQLi / RCE / path-traversal into the URL and
+        # would hit those gates with a generic 403 — which the suite
+        # records as "expect, but got 403" against an unrelated rule.
+        # Loosen them for the bench so the actual rule under test gets
+        # a chance to evaluate. Production deployments still want them on.
+        -d "config.check_special_chars_in_path=false"
+        -d "config.check_invalid_chars_in_path=false"
+        -d "config.total_arg_value_length=10000000"
+        -d "config.limit_arg_value_length=1000000"
+        -d "config.limit_arg_name_length=10000"
+        -d "config.limit_arg_num=10000"
     )
 
     if [ -n "${plugin_id}" ]; then
