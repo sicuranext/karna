@@ -362,6 +362,42 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
     return json_log
 end
 
+-- Normalize sibling-plugin log entries written to
+-- kong.ctx.shared.karna.log_entries. Each accepted entry must carry string
+-- `source`, `rule_id` and `message`; `tags` (array) and `metadata` (table) are
+-- optional and passed through. Oversize strings are clipped. Malformed entries
+-- are silently dropped to keep one bad caller from breaking the audit log.
+_M.build_external_matches = function(self, raw_entries)
+    local cjson = require "cjson"
+    if type(raw_entries) ~= "table" or #raw_entries == 0 then
+        return cjson.empty_array
+    end
+    local out = {}
+    for _, e in ipairs(raw_entries) do
+        if type(e) == "table"
+            and type(e.source) == "string"
+            and type(e.rule_id) == "string"
+            and type(e.message) == "string" then
+            local entry = {
+                source  = string.sub(e.source, 1, 100),
+                rule_id = string.sub(e.rule_id, 1, 100),
+                message = string.sub(e.message, 1, 1000),
+            }
+            if type(e.tags) == "table" then
+                entry.tags = e.tags
+            end
+            if type(e.metadata) == "table" then
+                entry.metadata = e.metadata
+            end
+            out[#out + 1] = entry
+        end
+    end
+    if #out == 0 then
+        return cjson.empty_array
+    end
+    return out
+end
+
 _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     local cjson = require "cjson"
 
@@ -441,6 +477,13 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     end
     latency_ms = latency_ms or 0
 
+    -- collect sibling-plugin log entries (external_matches), if any
+    local raw_external = nil
+    if kong.ctx.shared.karna and kong.ctx.shared.karna.log_entries then
+        raw_external = kong.ctx.shared.karna.log_entries
+    end
+    local external_matches = self:build_external_matches(raw_external)
+
     local json_log = {
         version = "2.0",
         timestamp = os.date("!%Y-%m-%dT%H:%M:%S", os.time()) .. "." .. string.format("%03d", (ngx.now() % 1) * 1000) .. "Z",
@@ -472,7 +515,8 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             mode = plugin_conf.engine_blocking_mode and "blocking" or "detection",
             paranoia_level = tonumber(plugin_conf.paranoia_level) or 1
         },
-        matches = matches
+        matches = matches,
+        external_matches = external_matches
     }
 
     return json_log

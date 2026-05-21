@@ -464,6 +464,65 @@ use `remove_variable_rx` rule controls:
 }
 ```
 
+## External plugin logging
+
+Any sibling Kong plugin can record its own log events through Karna's audit
+log v2, without emitting a sentinel response header or running its own
+file writer. This avoids the common "two log pipelines" problem when Karna
+sits in a plugin chain.
+
+A sibling plugin appends entries to `kong.ctx.shared.karna.log_entries`
+during any phase before `log`:
+
+```lua
+kong.ctx.shared.karna             = kong.ctx.shared.karna             or {}
+kong.ctx.shared.karna.log_entries = kong.ctx.shared.karna.log_entries or {}
+
+table.insert(kong.ctx.shared.karna.log_entries, {
+    source   = "my-cache-plugin",                    -- string, required
+    rule_id  = "cache-stale-served",                 -- string, required
+    message  = "Served stale entry while revalidating", -- string, required
+    tags     = { "cache", "stale-while-revalidate" },   -- optional array
+    metadata = {                                        -- optional table
+        cache_key   = "...",
+        ttl_seconds = 60
+    }
+})
+```
+
+Karna picks these up in the `log` phase and emits them under
+`external_matches[]` in the audit log v2 entry:
+
+```json
+{
+    "version": "2.0",
+    "matches": [],
+    "external_matches": [
+        {
+            "source": "my-cache-plugin",
+            "rule_id": "cache-stale-served",
+            "message": "Served stale entry while revalidating",
+            "tags": ["cache", "stale-while-revalidate"],
+            "metadata": { "cache_key": "...", "ttl_seconds": 60 }
+        }
+    ]
+}
+```
+
+Behaviour notes:
+
+- The presence of one or more `external_matches` is enough to make Karna
+  write the audit log entry even when no Karna rule matched. So
+  `auditlog_only_on_match = true` still emits a record when a sibling
+  plugin logged something.
+- Malformed entries (missing `source` / `rule_id` / `message`, or wrong
+  types) are silently dropped — one bad caller cannot break the audit log
+  for the rest of the request.
+- `source`, `rule_id` and `message` are clipped at 100 / 100 / 1000 bytes
+  respectively. `tags` and `metadata` are passed through unchanged.
+- `external_matches` is a v2-only feature. The v1 (ModSecurity-compatible)
+  format is unaffected.
+
 ## Redis actions
 
 ### Increment a counter on a failed login

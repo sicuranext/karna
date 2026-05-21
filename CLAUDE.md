@@ -102,6 +102,7 @@ all guarded — when no sibling plugin sets them, Karna works fine in isolation.
 - `kong.ctx.shared.response_from_cache` — short-circuits WAF when an upstream cache plugin served the response.
 - `kong.ctx.shared.geoip_country_code|country_name|continent_code|continent_name` — enriches the inspection table for geo-based rules.
 - Header `x-karna-upstream-latency` (ms) — overrides the nginx upstream timer in audit logs.
+- `kong.ctx.shared.karna.log_entries` (array) — sibling plugins can append `{source, rule_id, message, tags?, metadata?}` records here and Karna will emit them as `external_matches[]` in the audit log v2. Malformed entries are silently dropped; oversize strings are clipped (`source`/`rule_id` at 100B, `message` at 1000B). The presence of valid entries forces an audit log write even when no Karna rule matched (overrides `auditlog_only_on_match`). v2-only — `external_matches` is not emitted in v1/ModSecurity-compatible format. Normalisation lives in `ka_utils.lua:build_external_matches` (unit-tested in `ka-unittest/external_log_entries.lua`).
 
 ## Tests
 - `tests/` — ad-hoc Lua scripts (run from repo root: `lua tests/<name>.lua`)

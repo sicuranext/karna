@@ -387,8 +387,18 @@ function plugin:log(plugin_conf)
       end
     end
 
-    -- skip logging if auditlog_only_on_match and no matches
-    if plugin_conf.auditlog_only_on_match and #loggable_matches == 0 then
+    -- check if any sibling plugin queued external log entries
+    local has_external_entries = false
+    if kong.ctx.shared.karna
+       and type(kong.ctx.shared.karna.log_entries) == "table"
+       and #kong.ctx.shared.karna.log_entries > 0 then
+      has_external_entries = true
+    end
+
+    -- skip logging if auditlog_only_on_match and no matches and no external entries
+    if plugin_conf.auditlog_only_on_match
+       and #loggable_matches == 0
+       and not has_external_entries then
       return
     end
 
