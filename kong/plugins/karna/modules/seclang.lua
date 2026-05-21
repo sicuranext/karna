@@ -164,7 +164,12 @@ function seclang.__get_variable_name(varname)
         ["FILES"]                   = "request.file",
         ["FILES_NAMES"]             = "request.body.multipart.filename",
         ["FILES_COMBINED_SIZE"]     = "request.body.multipart.combined_size",
-        ["MULTIPART_PART_HEADERS"]  = "request.arg.value",
+        -- ModSec MULTIPART_PART_HEADERS = the raw header lines of each
+        -- multipart body part. CRS rule 922130 inspects these for malformed
+        -- header bytes; mapping it to ARGS (the previous value here) made
+        -- the rule fire on every request that had any arg with a colon or
+        -- a non-printable byte, masking unrelated downstream rules.
+        ["MULTIPART_PART_HEADERS"]  = "request.body.multipart.header.raw",
 
         ["TX"]                      = "group",
         ["TX_RX"]                   = "group_rx",
