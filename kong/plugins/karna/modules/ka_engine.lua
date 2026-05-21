@@ -1281,6 +1281,25 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
                 end
 
+                -- MATCHED_VARS (ModSec) → matched.value in Karna. Used by
+                -- chained rules to re-inspect the value(s) that matched in
+                -- the preceding condition. We pull from the `matches` array
+                -- of this rule evaluation (populated when a condition fires),
+                -- exposing each match as `matched.value:<n>`. Without this
+                -- branch chained rules like 944120 (chain) → 944120/2 never
+                -- have a value to match against and the chain falls open
+                -- (no rule fire), even when the upstream condition matched.
+                if variable == "matched.value" then
+                    if #matches > 0 then
+                        values = {}
+                        for n, m in ipairs(matches) do
+                            if m and m.matched_value ~= nil then
+                                values["matched.value:" .. n] = tostring(m.matched_value)
+                            end
+                        end
+                    end
+                end
+
                 -- TX variable with regex pattern (e.g. group_rx:rfi_parameter_.*)
                 if string_find(variable, "^group_rx%:") then
                     local pattern = string_match(variable, "^group_rx%:(.*)")
