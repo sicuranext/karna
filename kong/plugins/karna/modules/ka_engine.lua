@@ -1255,6 +1255,53 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
                 end
 
+                -- Karna-native multipart part header namespace. CRS rules that
+                -- target ModSec's TX:/MULTIPART_HEADERS_*/ side-effect bag are
+                -- bridged via replace_condition in coreruleset_fix.lua to point
+                -- at one of these prefixes:
+                --   request.body.multipart.part.header.value (every part header
+                --     value, multi-value), or :<part>:<header> for a specific
+                --     part/header
+                --   request.body.multipart.part.content_type (shortcut for the
+                --     common Content-Type case)
+                if string_find(variable, "^request%.body%.multipart%.part%.") then
+                    local body_values = self.__get_values_request_body(false)
+                    if body_values then
+                        local escaped = variable:gsub(
+                            "([%-%.%%%+%*%?%[%]%(%)%^%$])", "%%%1"
+                        )
+                        local collected
+                        for k, v in pairs(body_values) do
+                            if k == variable
+                               or string_find(k, "^" .. escaped .. ":")
+                               or string_find(k, "^" .. escaped .. "%.") then
+                                collected = collected or {}
+                                collected[k] = tostring(v)
+                            end
+                        end
+                        if collected then values = collected end
+                    end
+                end
+
+                -- ModSec FILES → every multipart upload filename. Karna emits
+                -- one .filename:<part_name> entry per uploaded part inside the
+                -- structured body getter; this branch collects them as
+                -- multi-value so a rule like CRS 933110 (matches `.php*`
+                -- extensions in upload filenames) sees every filename at once.
+                if variable == "request.file" then
+                    local body_values = self.__get_values_request_body(false)
+                    if body_values then
+                        local picked = {}
+                        for k, v in pairs(body_values) do
+                            if string_find(k, "%.filename:", 1, false)
+                               or string_find(k, "%.filename%.", 1, false) then
+                                picked[k] = v
+                            end
+                        end
+                        if next(picked) ~= nil then values = picked end
+                    end
+                end
+
                 -- Scalar body variables. CRS rules routinely target
                 -- REQUEST_BODY (the raw body as a single string) with
                 -- @pmFromFile / @rx / libinjection_* to catch attacks

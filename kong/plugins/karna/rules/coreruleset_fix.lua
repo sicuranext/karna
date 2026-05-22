@@ -428,33 +428,50 @@ _M.rule_crs_fix_4_0 = {
         },
 
 
-        -- 922110 replace condition 1 request.body.multipart.header.raw
+        -- 922110 — CRS-compatibility bridge.
+        -- ModSec original: `SecRule TX:/MULTIPART_HEADERS_CONTENT_TYPES_*/ "!@rx ..."`
+        -- — relies on the multipart body processor side-effect-setting
+        -- numbered TX entries (one per part Content-Type). Karna doesn't
+        -- emulate that API smell — see project_implementation_decisions.md.
+        -- Bridge: target the native `request.body.multipart.part.content_type`
+        -- multi-value namespace populated by _M.multipart in access phase.
+        -- The regex matches a Content-Type whose charset (if any) is in the
+        -- allowed set (utf-8 / iso-8859-1 / iso-8859-15 / windows-1252);
+        -- !rx → no match → rule fires (= illegal charset detected).
         {
             replace_condition = {
                 rule_id = "922110",
                 condition_number = 1,
                 new_condition = {
-                    multi_match = false,
-                    op = "rx",
-                    transform = {"urlDecodeUni", "lowercase"},
-                    value = "^content-type\\s*:\\s*(.*)$",
-                    variables = { "request.body.multipart.header.raw" }
+                    multi_match = true,
+                    op = "!rx",
+                    transform = { "lowercase" },
+                    value = "^[^;\\s/]+/[^;\\s/]+(?:\\s*;\\s*charset\\s*=\\s*\"?(?:utf-8|iso-8859-15?|windows-1252)\"?\\s*)?$",
+                    variables = { "request.body.multipart.part.content_type" }
                 }
             }
         },
 
-        
-        -- 922120 replace condition 1 request.body.multipart.header.raw
+
+        -- 922120 — open. ModSec original scans raw multipart part header
+        -- lines for `Content-Transfer-Encoding:`. Karna's native namespace
+        -- `request.body.multipart.part.header.value` is keyed by
+        -- (part_name, header_name) — but the rule has no part_name to
+        -- target. A clean bridge needs a per-header aggregated variable
+        -- (`request.body.multipart.part.header.value.<header_name>`) that
+        -- the body parser doesn't yet emit. Tracked as long-tail; 1 fail.
         {
             replace_condition = {
                 rule_id = "922120",
                 condition_number = 1,
                 new_condition = {
                     multi_match = false,
-                    op = "rx",
-                    transform = {"urlDecodeUni", "lowercase"},
-                    value = "content-transfer-encoding:(.*)",
-                    variables = { "request.body.multipart.header.raw" }
+                    op = "isSet",
+                    transform = {},
+                    value = "",
+                    -- never-matching variable so the rule stays dormant
+                    -- rather than firing on every multipart request
+                    variables = { "request.body.multipart.part.header.value:_unused_:content-transfer-encoding" }
                 }
             }
         },
@@ -837,6 +854,43 @@ _M.global_fps = {
                     name = "request.query.value:prompt"
                 }
             }
+        }
+    },
+
+    -- CRS-compatibility bridges: rewrite CRS rules that depend on ModSec
+    -- TX-side-effect variables (TX:/MULTIPART_HEADERS_*/, etc.) to target
+    -- Karna's native multipart namespace instead. See
+    -- ~/.claude/projects/.../memory/project_implementation_decisions.md
+    -- and FINDINGS.md for the rationale: Karna's engine stays
+    -- ModSec-generic; CRS-specific compatibility patches live here, in
+    -- this file, where every override is auditable and versioned with
+    -- each CRS release.
+    {
+        id = "crs_compat_multipart",
+        phase = "access",
+        log = false,
+        conditions = {},
+        unconditional_match_rule_control = {
+            -- 922110: Illegal MIME Multipart Header content-type charset.
+            -- Original target TX:/MULTIPART_HEADERS_CONTENT_TYPES_*/ →
+            -- Karna native request.body.multipart.part.content_type
+            -- (multi-value: every part's Content-Type header value).
+            -- Match semantics: !rx against the allowed-charsets pattern;
+            -- a Content-Type with a non-allowed charset fails the match,
+            -- !rx triggers, the rule fires.
+            {
+                replace_condition = {
+                    rule_id = "922110",
+                    condition_number = 1,
+                    new_condition = {
+                        multi_match = true,
+                        op = "!rx",
+                        transform = { "lowercase" },
+                        value = "^[^;\\s/]+/[^;\\s/]+(?:\\s*;\\s*charset\\s*=\\s*\"?(?:utf-8|iso-8859-15?|windows-1252)\"?\\s*)?$",
+                        variables = { "request.body.multipart.part.content_type" }
+                    }
+                }
+            },
         }
     }
 }

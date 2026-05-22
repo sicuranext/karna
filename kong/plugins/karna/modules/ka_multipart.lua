@@ -227,8 +227,11 @@ function _M.parse(self, body, content_type)
             end
         end
 
+        -- raw_headers is internal-only (used by the parser for validation);
+        -- nullify to keep the returned table small. `headers` is kept so
+        -- downstream variable resolution can expose each part header as a
+        -- native variable (request.body.multipart.part.header.*).
         t[i].raw_headers = nil
-        t[i].headers = nil
 
         -- if filename but not content-type, set content-type to application/octet-stream
         if t[i].filename and not t[i].content_type then

@@ -346,6 +346,31 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
                     })
                 end
             end
+
+            -- Per-part headers exposed in a Karna-native namespace. ModSec's
+            -- equivalent is the TX-side-effect numbered bag set by the
+            -- multipart body processor (TX:MULTIPART_HEADERS_CONTENT_TYPES_0,
+            -- _1, _2, ...). Karna does not replicate that API smell: we expose
+            -- the data as a clean multi-value variable instead, keyed by part
+            -- name (and header name for the generic header.* shape). CRS rules
+            -- that target the ModSec TX namespace get bridged through
+            -- replace_condition overrides in coreruleset_fix.lua.
+            for h_name, h_value in pairs(part.headers or {}) do
+                local hn = h_name:lower()
+                table.insert(values, {
+                    [prefix .. ".part.header.value:" .. name_lowercase .. ":" .. hn] = h_value
+                })
+                table.insert(values, {
+                    [prefix .. ".part.header.name:" .. name_lowercase .. ":" .. hn] = h_name
+                })
+                if hn == "content-type" then
+                    -- Shortcut for the common case so rules don't have to
+                    -- walk the part-header namespace just to read Content-Type.
+                    table.insert(values, {
+                        [prefix .. ".part.content_type:" .. name_lowercase] = h_value
+                    })
+                end
+            end
         end
     end
 

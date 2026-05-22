@@ -176,12 +176,15 @@ function seclang.__get_variable_name(varname)
         ["FILES"]                   = "request.file",
         ["FILES_NAMES"]             = "request.body.multipart.filename",
         ["FILES_COMBINED_SIZE"]     = "request.body.multipart.combined_size",
-        -- ModSec MULTIPART_PART_HEADERS = the raw header lines of each
-        -- multipart body part. CRS rule 922130 inspects these for malformed
-        -- header bytes; mapping it to ARGS (the previous value here) made
-        -- the rule fire on every request that had any arg with a colon or
-        -- a non-printable byte, masking unrelated downstream rules.
-        ["MULTIPART_PART_HEADERS"]  = "request.body.multipart.header.raw",
+        -- ModSec MULTIPART_PART_HEADERS = the headers of each multipart body
+        -- part. Mapped to Karna's native multipart part-header namespace
+        -- (populated by ka_body_parser._M.multipart during access phase, so
+        -- CRS rules in phase:2 that target this can actually see the data).
+        -- Karna deliberately does NOT replicate ModSec's
+        -- TX:MULTIPART_HEADERS_*_<n> side-effect bag; rules that depend on
+        -- that pattern are bridged via replace_condition in
+        -- coreruleset_fix.lua.
+        ["MULTIPART_PART_HEADERS"]  = "request.body.multipart.part.header.value",
 
         ["TX"]                      = "group",
         ["TX_RX"]                   = "group_rx",
