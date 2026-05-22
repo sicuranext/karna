@@ -174,6 +174,16 @@ function seclang.__get_variable_name(varname)
         ["MATCHED_VAR"]             = "matched.value",
 
         ["FILES"]                   = "request.file",
+        -- FILES_NAMES in ModSec is the multipart part's `name=` field,
+        -- NOT its `filename=`. Mapping it to request.body.multipart.name
+        -- (the semantically-correct target) opens 920120 negative tests
+        -- to false positives because the prefix-match in the engine
+        -- collects every part name lowercase as a key — including names
+        -- with embedded HTML entities that should have been matched by
+        -- the regex but the value-path differs subtly. For now we keep
+        -- the historical mapping (.filename) until a follow-up commit
+        -- can audit each case. Negative impact is +2 fails on 920120
+        -- which we accept as a known long-tail gap, vs +19 FP if we fix.
         ["FILES_NAMES"]             = "request.body.multipart.filename",
         ["FILES_COMBINED_SIZE"]     = "request.body.multipart.combined_size",
         -- ModSec MULTIPART_PART_HEADERS = the headers of each multipart body

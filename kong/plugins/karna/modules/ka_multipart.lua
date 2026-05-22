@@ -161,27 +161,34 @@ function _M.parse(self, body, content_type)
                     if not t[i].content_disposition then
                         t[i].content_disposition = v:gsub("[\r\n]+","")
                         local m_params = v:match("form%-data%;%s*(.+)")
-                        -- split m_params[1] by ;
+                        -- Parse `; key=value; key="quoted value"; ...` params.
+                        -- The old `(%S+)%=['\"]?([^;...])['\"]?` pattern broke
+                        -- on values with embedded `=` (e.g. `filename="file=.txt"`):
+                        -- Lua-pattern greedy `%S+` backtracks to the LAST `=`,
+                        -- producing `key="filename=\"file"`, `value=".txt\""`.
+                        -- Split by `;` first, then per-segment match a clean
+                        -- `key = "quoted"` or `key = unquoted`.
                         if m_params then
-                            local m = m_params:gmatch("(%S+)%=['\"]?([^;\r\n\"]+)['\"]?")
-
-                            -- parse key=value pairs
-                            while true do
-                                local key, value = m()
+                            for segment in m_params:gmatch("([^;]+)") do
+                                segment = segment:gsub("^%s+", ""):gsub("%s+$", "")
+                                local key, value
+                                key, value = segment:match('^([%w_%-]+)%s*=%s*"([^"]*)"$')
                                 if not key then
-                                    break
+                                    key, value = segment:match('^([%w_%-]+)%s*=%s*(.*)$')
                                 end
-                                local key_lowercase = key:lower()
-                                if not t[i][key_lowercase] then
-                                    if self.debug then print("> PARAM: " .. key_lowercase .. " = " .. value) end
-                                    t[i][key_lowercase] = value
-                                    if key_lowercase == "filename" then
-                                        -- get the extension after the last "."
-                                        t[i].extension = value:match("^.+%.(.+)$")
-                                    end
-                                else
-                                    if self.check_duplicated_content_disposition_param then
-                                        return nil, "duplicated content-disposition parameter: " .. key_lowercase
+                                if key and value then
+                                    local key_lowercase = key:lower()
+                                    if not t[i][key_lowercase] then
+                                        if self.debug then print("> PARAM: " .. key_lowercase .. " = " .. value) end
+                                        t[i][key_lowercase] = value
+                                        if key_lowercase == "filename" then
+                                            -- get the extension after the last "."
+                                            t[i].extension = value:match("^.+%.(.+)$")
+                                        end
+                                    else
+                                        if self.check_duplicated_content_disposition_param then
+                                            return nil, "duplicated content-disposition parameter: " .. key_lowercase
+                                        end
                                     end
                                 end
                             end
