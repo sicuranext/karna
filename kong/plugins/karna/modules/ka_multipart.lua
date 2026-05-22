@@ -16,6 +16,40 @@ local function escape_lua_pattern(s)
     return (s:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1"))
 end
 
+-- Tokenize Content-Disposition params into segments split by `;`, but
+-- treating `"..."` substrings as atomic so a `;` inside a quoted value
+-- doesn't split the segment. Without this, the payload
+--   name="evil;.txt"
+-- splits into  name="evil  +  .txt"  — Karna sees a truncated `name`
+-- while an RFC 7230-compliant backend (PHP/Flask/Busboy/Gunicorn) sees
+-- the full `evil;.txt`. That divergence is one of the multipart bypass
+-- classes documented at
+-- https://blog.sicuranext.com/breaking-down-multipart-parsers-validation-bypass/
+-- Backslash-escaped quotes inside the quoted string (`\"`) are NOT yet
+-- handled here — a `name="a\";evil"` payload can still desync. Tracked
+-- as residual gap in the project memory.
+local function tokenize_cd_params(s)
+    local segments = {}
+    local buf = {}
+    local inside_quotes = false
+    for i = 1, #s do
+        local c = s:sub(i, i)
+        if c == '"' then
+            inside_quotes = not inside_quotes
+            buf[#buf + 1] = c
+        elseif c == ";" and not inside_quotes then
+            segments[#segments + 1] = table.concat(buf)
+            buf = {}
+        else
+            buf[#buf + 1] = c
+        end
+    end
+    if #buf > 0 then
+        segments[#segments + 1] = table.concat(buf)
+    end
+    return segments
+end
+
 _M.debug = false
 _M.check_missing_boundary = true
 _M.check_wrong_boundary = true
@@ -27,6 +61,20 @@ _M.check_name_in_content_disposition = true
 _M.validate_header_name = true
 _M.validate_boundary = true
 _M.validate_param_value = true
+-- Reject RFC 5987 / RFC 6266 ext-parameter (`filename*=`, `name*=`, ...)
+-- in request bodies. Backends process them (and URL-decode `%XX`) while
+-- most WAFs inspect the bare `filename=`. Closes Bypass #5 / #5a.
+_M.reject_filename_star = true
+-- Require RFC 2046 quoted-string form for CD parameter values. When on,
+-- `filename=backdoor.php` (unquoted) is rejected. Closes Bypass #3 / #8.
+_M.require_quoted_params = true
+-- Require strict CRLF line separators in the body. Bare LF / bare CR
+-- bypass classes (lenient backend accepts, strict WAF parses
+-- differently). Closes Bypass #2.
+_M.strict_crlf = true
+-- Require the explicit closing `--<boundary>--` line. PHP accepts
+-- incomplete bodies; strict WAFs must reject. Closes Bypass #4.
+_M.require_closing_boundary = true
 
 _M.get_boundary = function(self, content_type)
     local m = re_match(content_type, [[;\s*boundary\s*=\s*([0-9a-zA-Z'()+_,./:=?-]+)]], "joi")
@@ -73,16 +121,39 @@ function _M.parse(self, body, content_type)
     local boundary_start = "^%-%-" .. boundary_escaped .. ""
     local boundary_end = "^%-%-" .. boundary_escaped .. "%-%-$"
 
+    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n`; lenient backends
+    -- accept bare `\n` and split the body differently from a strict
+    -- WAF — a documented bypass class. Pre-scan once; if clean, the
+    -- `\r?\n` gmatch below is safe.
+    if self.strict_crlf then
+        if body:sub(1, 1) == "\n" or body:find("[^\r]\n") then
+            return nil, "bare LF found in body (strict CRLF required)"
+        end
+        if body:find("\r[^\n]") or body:sub(-1) == "\r" then
+            return nil, "bare CR found in body (strict CRLF required)"
+        end
+    end
+
+    -- Normalise trailing CRLF. The closing `--<boundary>--` line is
+    -- often sent without a trailing `\r\n` (RFC 2046 allows it), but
+    -- the gmatch below yields only lines ending in `\r?\n`. Append one
+    -- if missing so the closing boundary still surfaces as a line.
+    if body:sub(-2) ~= "\r\n" then
+        body = body .. "\r\n"
+    end
+
     -- split body by lines by "\r\n"
     local start_collecting_headers = false
     local start_collecting_body = false
     local start_boundary_found = false
+    local end_boundary_found = false
     local part_count = 0
     for line in body:gmatch("([^\r\n]*)\r?\n") do
         if line:match(boundary_end) then
             if self.debug then
                 print("> END OF MULTIPART")
             end
+            end_boundary_found = true
             start_collecting_headers = false
             start_collecting_body = false
             break
@@ -116,6 +187,15 @@ function _M.parse(self, body, content_type)
             end
             start_collecting_headers = false
             start_collecting_body = true
+        end
+    end
+
+    -- Gap #5: require the explicit closing `--<boundary>--` line. PHP
+    -- (and some other backends) accept incomplete bodies; a strict WAF
+    -- must reject so the WAF view matches what the backend will parse.
+    if not end_boundary_found then
+        if self.require_closing_boundary then
+            return nil, "missing closing boundary '--" .. boundary .. "--'"
         end
     end
 
@@ -162,32 +242,56 @@ function _M.parse(self, body, content_type)
                         t[i].content_disposition = v:gsub("[\r\n]+","")
                         local m_params = v:match("form%-data%;%s*(.+)")
                         -- Parse `; key=value; key="quoted value"; ...` params.
-                        -- The old `(%S+)%=['\"]?([^;...])['\"]?` pattern broke
-                        -- on values with embedded `=` (e.g. `filename="file=.txt"`):
-                        -- Lua-pattern greedy `%S+` backtracks to the LAST `=`,
-                        -- producing `key="filename=\"file"`, `value=".txt\""`.
-                        -- Split by `;` first, then per-segment match a clean
-                        -- `key = "quoted"` or `key = unquoted`.
+                        -- Use the quoted-aware tokenizer (Gap #3) so a `;`
+                        -- inside a quoted value doesn't split the segment.
+                        -- Each segment is then validated:
+                        --   Gap #1: reject RFC 5987 `*=` ext-parameter syntax.
+                        --   Gap #2: when require_quoted_params is on, only
+                        --           accept RFC 2046 quoted-string form.
                         if m_params then
-                            for segment in m_params:gmatch("([^;]+)") do
+                            for _, segment in ipairs(tokenize_cd_params(m_params)) do
                                 segment = segment:gsub("^%s+", ""):gsub("%s+$", "")
-                                local key, value
-                                key, value = segment:match('^([%w_%-]+)%s*=%s*"([^"]*)"$')
-                                if not key then
-                                    key, value = segment:match('^([%w_%-]+)%s*=%s*(.*)$')
-                                end
-                                if key and value then
-                                    local key_lowercase = key:lower()
-                                    if not t[i][key_lowercase] then
-                                        if self.debug then print("> PARAM: " .. key_lowercase .. " = " .. value) end
-                                        t[i][key_lowercase] = value
-                                        if key_lowercase == "filename" then
-                                            -- get the extension after the last "."
-                                            t[i].extension = value:match("^.+%.(.+)$")
+                                if segment ~= "" then
+                                    -- Gap #1: RFC 5987 ext-parameter (`name*=`,
+                                    -- `filename*=...`). Backends process and
+                                    -- URL-decode the value while WAFs typically
+                                    -- inspect the bare `filename=` only — the
+                                    -- two views diverge.
+                                    if segment:match("^[%w_]+%*%s*=") then
+                                        if self.reject_filename_star then
+                                            return nil, "RFC 5987 '*=' ext-parameter disallowed in request body content-disposition"
                                         end
-                                    else
-                                        if self.check_duplicated_content_disposition_param then
-                                            return nil, "duplicated content-disposition parameter: " .. key_lowercase
+                                    end
+                                    local key, value
+                                    key, value = segment:match('^([%w_%-]+)%s*=%s*"([^"]*)"$')
+                                    if not key then
+                                        if self.require_quoted_params then
+                                            -- Gap #2: bareword/unquoted value
+                                            -- (e.g. `filename=backdoor.php`).
+                                            -- Reject explicitly if it parses
+                                            -- as `key=...` — silently skipping
+                                            -- would let the backend see a
+                                            -- value the WAF didn't inspect.
+                                            if segment:match("^[%w_%-]+%s*=") then
+                                                return nil, "unquoted content-disposition parameter not allowed: " .. segment:sub(1, 80)
+                                            end
+                                        else
+                                            key, value = segment:match('^([%w_%-]+)%s*=%s*(.*)$')
+                                        end
+                                    end
+                                    if key and value then
+                                        local key_lowercase = key:lower()
+                                        if not t[i][key_lowercase] then
+                                            if self.debug then print("> PARAM: " .. key_lowercase .. " = " .. value) end
+                                            t[i][key_lowercase] = value
+                                            if key_lowercase == "filename" then
+                                                -- get the extension after the last "."
+                                                t[i].extension = value:match("^.+%.(.+)$")
+                                            end
+                                        else
+                                            if self.check_duplicated_content_disposition_param then
+                                                return nil, "duplicated content-disposition parameter: " .. key_lowercase
+                                            end
                                         end
                                     end
                                 end

@@ -189,6 +189,11 @@ function plugin:access(plugin_conf)
   -- check if content-type charset is allowed
   engine:check_request_content_type_charset(plugin_conf)
 
+  -- pre-validate request body parser (multipart hardening flags reject
+  -- malformed payloads upstream of rule evaluation; without this gate
+  -- the rejection produces an empty values table and slips through).
+  engine:check_request_body_parser(plugin_conf)
+
   -- set local variables
   kong.ctx.plugin.rule_variables = {}
 

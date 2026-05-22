@@ -610,9 +610,19 @@ _M.__get_values_request_body = function(try_b64)
                 flatten_into(values, urlencoded_flattened)
                 result_values = values
             elseif request_body_type == "multipart" then
-                local multipart_flattened = body_parser:multipart("request.body.multipart", request_body, try_b64)
+                -- Capture the parser rejection (hardening flags in
+                -- ka_multipart.lua return `nil, err`). The error is
+                -- surfaced via the result_err return so the
+                -- check_request_body_parser gate can emit a synthetic
+                -- match + optional 403. The (possibly empty) values
+                -- table is still flattened so rules that don't depend
+                -- on the rejected body see a consistent shape.
+                local multipart_flattened, mp_err = body_parser:multipart("request.body.multipart", request_body, try_b64)
                 flatten_into(values, multipart_flattened)
                 result_values = values
+                if mp_err then
+                    result_err = mp_err
+                end
             end
         end
     end
@@ -2376,6 +2386,50 @@ _M.__match_rule_conditions_old = function(self, rule, plugin_conf, ka_dfiles)
     return false, kong.ctx.plugin.rule_matched_parts
 end
 ]==]--
+
+-- Pre-rule gate: surface request-body parser rejections (multipart hardening
+-- in ka_multipart.lua returns `nil, err` on duplicate headers,
+-- `filename*=` ext-params, unquoted CD params, bare LF/CR, missing closing
+-- boundary, etc.). Without this gate, the parser would silently produce an
+-- empty values table and the malformed payload would slip past every rule.
+-- Eager parse means the cost is paid once; subsequent lazy body lookups
+-- inside rule evaluation hit kong.ctx.plugin.body_values_cache.
+_M.check_request_body_parser = function(self, plugin_conf)
+    if utils:request_body_parser_type() ~= "multipart" then
+        return
+    end
+    local _values, err = self.__get_values_request_body(plugin_conf.try_bas64decode_if_possible)
+    if not err then
+        return
+    end
+    table_insert(kong.ctx.plugin.ka_matched_rules, {
+        rule = {
+            id = "request_body_parser_violation",
+            log = true,
+            logdata = "",
+            message = "Multipart parser rejected request: " .. tostring(err),
+            phase = "access",
+            tags = { "karna", "access", "paranoia-level/1", "body-parser/multipart" },
+            response_status_override = 403
+        },
+        part = {
+            {
+                matched_on = "request.body.multipart",
+                matched_value = tostring(err)
+            }
+        }
+    })
+    if plugin_conf.engine_blocking_mode then
+        return kong.response.exit(
+            403,
+            "Forbidden",
+            {
+                ["content-type"] = "text/plain",
+                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+            }
+        )
+    end
+end
 
 _M.method_allowed = function (self, plugin_conf)
     local request_method = request_get_method()

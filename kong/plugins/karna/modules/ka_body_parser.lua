@@ -374,7 +374,13 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
         end
     end
 
-    return values
+    -- Propagate the parser rejection back to the caller so the engine can
+    -- surface it as a block / audit event. The hardening flags in
+    -- ka_multipart (check_duplicated_*, reject_filename_star, strict_crlf,
+    -- require_closing_boundary, ...) only return `nil, err`; without
+    -- propagation the rejection silently produces an empty values table
+    -- and the request slips through.
+    return values, mp_err
 end
 
 _M.old_multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
