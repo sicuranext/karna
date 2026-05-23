@@ -3553,16 +3553,39 @@ _M.__apply_transformation = function(self, tfunc, value)
         result_string = string_gsub(result_string, "%s+", "")
     end
 
+    -- compressWhitespace
+    -- Replaces any sequence of whitespace characters (including tab,
+    -- newline, CR) with a single space. Distinct from removeWhitespace
+    -- which strips whitespace entirely. CRS uses this for normalising
+    -- command-line / SQL payloads where the attacker pads with
+    -- whitespace to evade pattern matching.
+    if tfunc == "compressWhitespace" then
+        result_string = string_gsub(result_string, "%s+", " ")
+    end
+
     -- Removes multiple slashes, directory self-references, and directory back-references (except when at the beginning of the input) from input string.
-    if tfunc == "normalisePath" then
+    -- Accept both the British (`normalisePath`) and American
+    -- (`normalizePath`) spelling — CRS uses the latter.
+    if tfunc == "normalisePath" or tfunc == "normalizePath" then
 
         -- remove directory self-references
         result_string = string_gsub(result_string, "/%./", "/")
-        
+
         -- remove directory back-references
         result_string = string_gsub(result_string, "/%.%./", "/")
-        
+
         -- remove multiple slashes
+        result_string = string_gsub(result_string, "/+", "/")
+    end
+
+    -- normalizePathWin
+    -- Same as normalizePath but also collapses Windows-style `\` path
+    -- separators into `/` before applying the rest of the rules. CRS
+    -- uses this on rules that target IIS / Windows backends.
+    if tfunc == "normalizePathWin" then
+        result_string = string_gsub(result_string, "\\", "/")
+        result_string = string_gsub(result_string, "/%./", "/")
+        result_string = string_gsub(result_string, "/%.%./", "/")
         result_string = string_gsub(result_string, "/+", "/")
     end
 
@@ -3785,13 +3808,37 @@ _M.__apply_transformation = function(self, tfunc, value)
     end
 
     --[[
-        base64Decode
+        base64Decode (CRS uses both camelCase and lowercase spellings)
     ]]
-    if tfunc == "base64Decode" then
+    if tfunc == "base64Decode" or tfunc == "base64decode" then
         local b64encoded = ngx_decode_base64(result_string)
         if b64encoded then
             result_string = b64encoded
         end
+    end
+
+    -- sha1
+    -- Returns the SHA-1 digest of the input as raw bytes (20 bytes).
+    -- CRS uses this in chains that fingerprint specific known-bad
+    -- payloads. `ngx.sha1_bin` returns the raw digest; pair with
+    -- `t:hexEncode` if a rule wants the hex representation.
+    if tfunc == "sha1" then
+        if ngx.sha1_bin then
+            result_string = ngx.sha1_bin(tostring(result_string))
+        end
+    end
+
+    -- hexEncode
+    -- Encodes each input byte as two lowercase hex digits. Often
+    -- chained after `t:sha1` so the output of the digest is in a
+    -- form regex / pm rules can match against.
+    if tfunc == "hexEncode" then
+        local out = {}
+        local s = tostring(result_string)
+        for i = 1, #s do
+            out[#out + 1] = string.format("%02x", s:byte(i))
+        end
+        result_string = table.concat(out)
     end
 
     --[[
