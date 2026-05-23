@@ -259,12 +259,18 @@ function seclang.__variables_to_conditions(variables)
                     })
                 end
             elseif string.find(variable_name, "^&") then
+                -- ModSec's `&VAR` operator: evaluate to the COUNT of values
+                -- VAR resolves to. Used in CRS for "header missing" / "header
+                -- present" patterns (`&X @eq 0` / `&X @gt 0`). We surface
+                -- this to the engine as a `count:<name>` prefix; the engine
+                -- resolver returns a numeric scalar that the numeric ops
+                -- (@eq/@gt/@lt/@ge/@le) compare against.
                 local new_variable_name = variable_name:gsub("^&", "")
                 local vname = seclang.__get_variable_name(new_variable_name)
                 if vname and variable_arg then
-                    table.insert(variable_list, vname .. ":" .. variable_arg)
+                    table.insert(variable_list, "count:" .. vname .. ":" .. variable_arg)
                 elseif vname then
-                    table.insert(variable_list, vname)
+                    table.insert(variable_list, "count:" .. vname)
                 end
             else
                 -- ModSecurity XML:<xpath> variables. We don't run a real XPath

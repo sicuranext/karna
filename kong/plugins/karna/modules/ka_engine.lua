@@ -1226,6 +1226,46 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
             if not values then
                 -- if condition operator is not isSet or !isSet
 
+                -- ModSec `&VAR` count operator: prefix `count:` (set by seclang)
+                -- evaluates to the number of values VAR resolves to. CRS
+                -- uses this for "header missing" / "header present" patterns
+                -- with numeric ops (`&X @eq 0`, `&X @gt 0`). Resolve the
+                -- underlying variable recursively and return a scalar count.
+                if string_find(variable, "^count:") then
+                    local inner = variable:sub(7)
+                    local probe = nil
+                    if inner == "request.arg.value" then
+                        probe = self:__get_values_request_args(false, rule.rule_control)
+                    elseif inner == "request.arg.name" then
+                        probe = self:__get_values_request_args(false, rule.rule_control)
+                    elseif inner == "request.header.value" then
+                        probe = self.__get_values_request_headers_all()
+                    elseif string_find(inner, "^request%.header%.value:") then
+                        probe = self.__get_values_request_header(inner)
+                    elseif inner == "request.cookie.value" then
+                        probe = self:__get_values_request_cookie(false)
+                    elseif inner == "request.body" then
+                        local rb = self.__get_values_request_body_scalars()
+                        probe = rb and rb["request.body"] and rb or nil
+                    elseif string_find(inner, "^request%.body%.multipart") then
+                        probe = self.__get_values_request_body(false)
+                        if probe then
+                            local filtered = {}
+                            for k, v in pairs(probe) do
+                                if k == inner or string_find(k, "^" .. inner:gsub("[%-%.%%%+%*%?%[%]%(%)%^%$]", "%%%1") .. ":") then
+                                    filtered[k] = v
+                                end
+                            end
+                            probe = next(filtered) and filtered or nil
+                        end
+                    end
+                    local count = 0
+                    if type(probe) == "table" then
+                        for _ in pairs(probe) do count = count + 1 end
+                    end
+                    values = { [variable] = tostring(count) }
+                end
+
                 if variable == "request.arg.value" then
                     values, err = self:__get_values_request_args(false, rule.rule_control)
                 elseif variable == "request.arg.name" then
@@ -1295,7 +1335,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
 
                 if variable == "request.header.value" then
                     values, err = self.__get_values_request_headers_all()
-                elseif string_find(variable, "request.header.value:") then
+                elseif string_find(variable, "^request%.header%.value:") then
                     values, err = self.__get_values_request_header(variable)
                 end
 
