@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    name: Lua syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+      - name: luac -p on every Lua file
+        run: |
+          set -e
+          find kong/plugins/karna -name "*.lua" -print0 \
+            | xargs -0 -n1 luac -p
+          find ka-unittest -name "*.lua" -print0 \
+            | xargs -0 -n1 luac -p
+          echo "All Lua files syntactically valid."
+
+  unit:
+    name: Unit tests (no luaunit, plain assertions)
+    runs-on: ubuntu-latest
+    needs: syntax
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+      - name: Multipart parser security gaps
+        run: lua ka-unittest/multipart_security_gaps.lua
+
+  leak-audit:
+    name: Anti-leak audit (internal naming)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan source for internal references
+        run: |
+          set -e
+          fail=0
+          # Tokens that should never appear in this public repo. The
+          # license attribution and the public bypass-research blog URL
+          # are the only legitimate sicuranext.* references. The
+          # workflow itself is excluded — it references these tokens as
+          # part of its own scanning regex and would trip on itself.
+          PATHS="kong/ docker/ README.md crs-regression-test/ ka-unittest/"
+          if grep -rni 'octofence\|kong-armor\|waap-private' $PATHS \
+              --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
+              2>/dev/null; then
+            echo "::error::internal naming leak found"
+            fail=1
+          fi
+          if grep -rni 'sicuranext' $PATHS \
+              --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
+              2>/dev/null \
+              | grep -v 'blog\.sicuranext\.com'; then
+            echo "::error::unexpected sicuranext reference in code"
+            fail=1
+          fi
+          exit "$fail"
+
+  regression:
+    name: CRS PL1 regression (floor 2500/2757)
+    runs-on: ubuntu-latest
+    needs: [syntax, unit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & bring up the dev stack
+        run: |
+          docker compose up -d --build
+          docker compose ps
+
+      - name: Wait for Kong admin API
+        run: |
+          set -e
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:28001/status >/dev/null 2>&1; then
+              echo "Kong ready after ${i} attempts"
+              break
+            fi
+            sleep 2
+          done
+          curl -fs http://127.0.0.1:28001/status >/dev/null
+
+      - name: Install Python deps for the test runner
+        run: pip install --quiet pyyaml
+
+      - name: Fetch CRS PL1 regression YAMLs
+        run: |
+          cd crs-regression-test
+          ./fetch-tests.sh
+
+      - name: Configure Kong (service + route + karna plugin, PL=1)
+        run: |
+          cd crs-regression-test
+          PARANOIA=1 ./configure-kong.sh
+
+      - name: Run CRS PL1 regression with pass-rate floor
+        run: |
+          set -e
+          cd crs-regression-test
+          python3 start.py --testfile tests/ \
+            | tee regression.log
+          PASS=$(grep -oE 'Passed tests:[[:space:]]+[0-9]+' regression.log \
+                  | grep -oE '[0-9]+' | head -1)
+          # Floor = 2500 / 2757. Current HEAD sits at 2509 = 91.0%. The
+          # floor leaves a small margin for harness flakes (which the
+          # suite occasionally has on slower CI runners).
+          FLOOR=2500
+          echo "PL1 pass count: ${PASS}, floor: ${FLOOR}"
+          if [ -z "${PASS}" ] || [ "${PASS}" -lt "${FLOOR}" ]; then
+            echo "::error::PL1 regression below floor (${PASS} < ${FLOOR})"
+            tail -80 regression.log
+            exit 1
+          fi
+
+      - name: Dump Kong logs on failure
+        if: failure()
+        run: |
+          docker logs karna-kong || true

@@ -1,5 +1,7 @@
 # Karna
 
+[![CI](https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg)](https://github.com/sicuranext/karna/actions/workflows/ci.yml)
+
 A WAF (Web Application Firewall) plugin for Kong Gateway. OWASP CoreRuleSet
 compatible, with first-class support for custom local rules, virtual
 patching, and ModSecurity-style rule controls.
