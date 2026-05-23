@@ -3480,27 +3480,29 @@ _M.__apply_transformation = function(self, tfunc, value)
         This help input normalization specially for non-english languages minimizing
         false-positives and false-negatives.
     ]]--
+    -- utf8toUnicode
+    -- Convert multi-byte UTF-8 sequences to `%uXXXX` form so the
+    -- downstream operator (rx / pm / libinjection) sees the same
+    -- canonical shape ModSecurity produces. Attackers use UTF-8
+    -- encoding to hide attack keywords; without this transformation
+    -- a pattern like `<script>` won't match payloads where each char
+    -- is sent as a multi-byte UTF-8 form.
+    -- ASCII bytes (< 0x80) pass through unchanged. Invalid byte
+    -- sequences (lone continuation bytes etc.) are left as-is.
+    -- The previous implementation called ngx.re.gsub with two args
+    -- (no replacement callback) — it always returned nil and the
+    -- transformation was a silent no-op.
     if tfunc == "utf8toUnicode" then
-        --[[local new_value = string_gsub(value, "([\194-\244][\128-\191])", function(c)
-            local byte = {string.byte(c, 1, -1)}
-            return string.format("%%u%04x", byte[1]*64+byte[2]-12416)
-        end)]]
-        -- use utils:hexFromUTF8() to convert UTF-8 char to escape sequence
-        --[[local new_value = ngx.re.gsub(value, "([\x00-\x7F]|[\xC2-\xF4][\x80-\xBF]{1,3})", function(c)
-            debug("TFUNC utf8toUnicode -> Converting: "..c.." to:" .. utils:hexFromUTF8(c))
-            return utils:hexFromUTF8(c)
-        end)]]--
-
-        local chars_to_replace = ngx.re.gsub(result_string, "([\x00-\x7F]|[\xC2-\xF4][\x80-\xBF]{1,3})")
-
-        if chars_to_replace then
-            if type(chars_to_replace) == "string" then
-                chars_to_replace = {chars_to_replace}
-            end
-            for _,c in pairs(chars_to_replace) do
-                --debug("TFUNC utf8toUnicode -> Converting: "..c.." to:" .. utils:hexFromUTF8(c))
-                result_string = string_gsub(result_string, c, utils:hexFromUTF8(c))
-            end
+        local new_string, _, err = ngx.re.gsub(
+            result_string,
+            [=[[\xC2-\xDF][\x80-\xBF]|[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3}]=],
+            function(m)
+                return utils:hexFromUTF8(m[0])
+            end,
+            "sjo"
+        )
+        if new_string then
+            result_string = new_string
         end
     end
 
