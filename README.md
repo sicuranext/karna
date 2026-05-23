@@ -47,16 +47,17 @@ rule id (`method_allowed`, `uri_path_check_violation`,
 `request_body_parser_violation`, …) rather than the exact `920XXX`
 the CRS regression framework expects.
 
-Headline numbers on the in-tree regression suite (CRS 4.26.0, PL=1,
+Headline numbers on the in-tree regression suite (CRS 4.26.0,
 `engine_blocking_mode=true`):
 
-- **PL1 raw pass rate: 91%** (`2509 / 2757` tests).
-- **PL1 in-scope pass rate: ≈ 93.6%** — excluding the four buckets
+- **PL1 raw pass rate (PARANOIA=1): 91%** (`2510 / 2757` tests).
+- **PL1 in-scope pass rate: ≈ 93.7%** — excluding the four buckets
   Karna intentionally does not pursue: CRS response rules (950-956)
   / anomaly scoring (949 / 959 / 980) / `999-COMMON-EXCEPTIONS-AFTER`.
-- PL2 currently 18% — the higher paranoia levels lean heavily on
-  variable-surface details and chain semantics that are still on
-  Karna's roadmap.
+- **PL2 raw pass rate (PARANOIA=2): 92.4%** (`3762 / 4071` tests).
+- **PL2-tagged-rules subset: 96.0%** — Karna handles the higher-
+  paranoia rule pack as a first-class supported posture, not as an
+  experimental tier.
 
 The four out-of-scope buckets are documented design decisions, not
 omissions: response-side rules require a different processing model
