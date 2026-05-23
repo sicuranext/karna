@@ -757,6 +757,20 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
             if rule.phase == phase then
                 --kong.log.debug("Checking rule " .. tostring(rule.id) .. " for phase " .. phase)
 
+                -- Paranoia-level gate: skip rules whose declared PL exceeds
+                -- the configured ceiling. CRS rules carry an explicit
+                -- `paranoia_level` (string, set by seclang from the
+                -- `paranoia-level/N` tag). Rules without a declared PL —
+                -- e.g. rule controls from coreruleset_fix.global_fps or
+                -- user-supplied JSON rules — default to PL1 and always
+                -- run. plugin_conf.paranoia_level defaults to 1 per the
+                -- schema, so a vanilla deployment loads only PL1 rules.
+                local rule_pl = tonumber(rule.paranoia_level) or 1
+                local cfg_pl = tonumber(plugin_conf.paranoia_level) or 1
+                if rule_pl > cfg_pl then
+                    goto continue
+                end
+
                 local rule_matched, matches = self:__match_rule_conditions(rule, plugin_conf)
                 if rule_matched then
                     if private_debug_enabled then
