@@ -102,7 +102,7 @@ local cjson                             = require "cjson"
 local cjson_safe                        = require "cjson.safe"
 local ka_mcp                            = require "kong.plugins.karna.ka_mcp"
 --local httpc                           = require "resty.http"
---local ipmatcher                       = require "resty.ipmatcher"
+local ipmatcher                         = require "resty.ipmatcher"
 local b64                               = require "ngx.base64"
 local md5                               = ngx.md5
 
@@ -987,6 +987,170 @@ _M.__match_op_le = function(variable_name, value_to_match_on, condition_value)
     end
     return false, nil
 end
+-- @contains — substring search, no regex. CRS uses this for cheap literal
+-- checks (e.g. `host contains "://"`). Case-sensitive per ModSec spec;
+-- callers that want case-insensitive precede with `t:lowercase`.
+_M.__match_op_contains = function(variable_name, value_to_match_on, condition_value)
+    if value_to_match_on and condition_value
+       and string_find(tostring(value_to_match_on), tostring(condition_value), 1, true) then
+        return true, {
+            ["matched_on"] = variable_name,
+            ["matched_value"] = string.sub(tostring(value_to_match_on), 1, 100)
+        }
+    end
+    return false, nil
+end
+-- @ipMatch — match value (an IPv4 or IPv6 address) against a comma- or
+-- space-separated list of CIDR / address entries. Uses resty.ipmatcher
+-- (already a Karna dependency). The matcher is cached per condition value
+-- in kong.ctx.plugin.ka_value_cache so we don't recompile the matcher on
+-- every request.
+_M.__match_op_ipmatch = function(variable_name, value_to_match_on, condition_value)
+    if not value_to_match_on or not condition_value then
+        return false, nil
+    end
+    local cache_key = "__ipmatch__" .. condition_value
+    local matcher = kong.ctx.plugin
+                    and kong.ctx.plugin.ka_value_cache
+                    and kong.ctx.plugin.ka_value_cache[cache_key]
+    if not matcher then
+        local entries = {}
+        for entry in string_gmatch(condition_value, "[^%s,]+") do
+            entries[#entries + 1] = entry
+        end
+        if #entries == 0 then return false, nil end
+        local ok, m = pcall(ipmatcher.new, entries)
+        if not ok or not m then return false, nil end
+        matcher = m
+        if kong.ctx.plugin and kong.ctx.plugin.ka_value_cache then
+            kong.ctx.plugin.ka_value_cache[cache_key] = matcher
+        end
+    end
+    local ok, hit = pcall(matcher.match, matcher, tostring(value_to_match_on))
+    if ok and hit then
+        return true, {
+            ["matched_on"] = variable_name,
+            ["matched_value"] = tostring(value_to_match_on)
+        }
+    end
+    return false, nil
+end
+-- @validateByteRange "lo-hi[,lo-hi,...]" — match if ANY byte in the
+-- input falls OUTSIDE the allowed ranges. CRS uses this to flag
+-- requests carrying bytes outside printable ASCII / specific control
+-- sets. Per ModSec spec: matches when the input contains at least one
+-- byte that is NOT inside any of the given ranges.
+_M.__match_op_validateByteRange = function(variable_name, value_to_match_on, condition_value)
+    if not value_to_match_on or not condition_value then
+        return false, nil
+    end
+    local s = tostring(value_to_match_on)
+    if s == "" then return false, nil end
+    local ranges = {}
+    for lo, hi in string_gmatch(condition_value, "(%d+)%-(%d+)") do
+        ranges[#ranges + 1] = { tonumber(lo), tonumber(hi) }
+    end
+    if #ranges == 0 then return false, nil end
+    for i = 1, #s do
+        local b = s:byte(i)
+        local in_range = false
+        for _, r in ipairs(ranges) do
+            if b >= r[1] and b <= r[2] then in_range = true; break end
+        end
+        if not in_range then
+            return true, {
+                ["matched_on"] = variable_name,
+                ["matched_value"] = string.sub(s, 1, 100)
+            }
+        end
+    end
+    return false, nil
+end
+-- @validateUrlEncoding — match when the input contains an INVALID
+-- percent-encoding (`%` not followed by two hex digits, or `%`
+-- followed by a non-hex char, or a truncated `%H` at end of string).
+_M.__match_op_validateUrlEncoding = function(variable_name, value_to_match_on, _condition_value)
+    if not value_to_match_on then return false, nil end
+    local s = tostring(value_to_match_on)
+    local i, n = 1, #s
+    while i <= n do
+        local c = s:byte(i)
+        if c == 0x25 then -- '%'
+            local h1 = s:byte(i + 1)
+            local h2 = s:byte(i + 2)
+            local function ishex(b)
+                return b and ((b >= 0x30 and b <= 0x39)
+                           or (b >= 0x41 and b <= 0x46)
+                           or (b >= 0x61 and b <= 0x66))
+            end
+            if not (ishex(h1) and ishex(h2)) then
+                return true, {
+                    ["matched_on"] = variable_name,
+                    ["matched_value"] = string.sub(s, 1, 100)
+                }
+            end
+            i = i + 3
+        else
+            i = i + 1
+        end
+    end
+    return false, nil
+end
+-- @validateUtf8Encoding — match when the input is NOT valid UTF-8.
+-- Detects: lone continuation bytes, truncated multi-byte sequences,
+-- overlong encodings, codepoints in the surrogate range D800-DFFF,
+-- codepoints above U+10FFFF. Per ModSec spec — used to reject
+-- payloads using UTF-8 weaknesses as an evasion technique.
+_M.__match_op_validateUtf8Encoding = function(variable_name, value_to_match_on, _condition_value)
+    if not value_to_match_on then return false, nil end
+    local s = tostring(value_to_match_on)
+    local i, n = 1, #s
+    while i <= n do
+        local b = s:byte(i)
+        local need, cp_min, cp
+        if b < 0x80 then
+            i = i + 1
+        else
+            if b < 0xC2 then
+                return true, { ["matched_on"] = variable_name,
+                               ["matched_value"] = string.sub(s, 1, 100) }
+            elseif b < 0xE0 then need = 1; cp_min = 0x80;     cp = b % 0x20
+            elseif b < 0xF0 then need = 2; cp_min = 0x800;    cp = b % 0x10
+            elseif b < 0xF5 then need = 3; cp_min = 0x10000;  cp = b % 0x08
+            else
+                return true, { ["matched_on"] = variable_name,
+                               ["matched_value"] = string.sub(s, 1, 100) }
+            end
+            if i + need > n then
+                return true, { ["matched_on"] = variable_name,
+                               ["matched_value"] = string.sub(s, 1, 100) }
+            end
+            for k = 1, need do
+                local cb = s:byte(i + k)
+                if cb < 0x80 or cb > 0xBF then
+                    return true, { ["matched_on"] = variable_name,
+                                   ["matched_value"] = string.sub(s, 1, 100) }
+                end
+                cp = cp * 0x40 + (cb - 0x80)
+            end
+            if cp < cp_min or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF) then
+                return true, { ["matched_on"] = variable_name,
+                               ["matched_value"] = string.sub(s, 1, 100) }
+            end
+            i = i + need + 1
+        end
+    end
+    return false, nil
+end
+-- @unconditionalMatch — always true. Used in CRS as the predicate of
+-- a chain that's gated entirely by its other conditions (e.g. setvar
+-- side-effects). Rare but real.
+_M.__match_op_unconditionalmatch = function(variable_name, value_to_match_on, _condition_value)
+    return true, {
+        ["matched_on"] = variable_name or "unconditional",
+        ["matched_value"] = tostring(value_to_match_on or "")
+    }
+end
 _M.__match_op_endswith = function(variable_name, value_to_match_on, condition_value)
     if value_to_match_on and condition_value then
         local escaped = string_gsub(condition_value, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
@@ -1495,6 +1659,24 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         end
                         if condition.op == "le" then
                             rule_condition_has_matched, matched_table = self.__match_op_le(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "contains" then
+                            rule_condition_has_matched, matched_table = self.__match_op_contains(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "ipMatch" then
+                            rule_condition_has_matched, matched_table = self.__match_op_ipmatch(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "validateByteRange" then
+                            rule_condition_has_matched, matched_table = self.__match_op_validateByteRange(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "validateUrlEncoding" then
+                            rule_condition_has_matched, matched_table = self.__match_op_validateUrlEncoding(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "validateUtf8Encoding" then
+                            rule_condition_has_matched, matched_table = self.__match_op_validateUtf8Encoding(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "unconditionalMatch" then
+                            rule_condition_has_matched, matched_table = self.__match_op_unconditionalmatch(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "endsWith" then
                             rule_condition_has_matched, matched_table = self.__match_op_endswith(variable_name, try_value, condition_value_resolved)
@@ -3514,28 +3696,76 @@ _M.__apply_transformation = function(self, tfunc, value)
         (leading to possible loss of information).
     ]]--
     if tfunc == "jsDecode" then
+        -- Decode `\uHHHH` JS escape sequences. The original code called
+        -- string_char on the full codepoint, which crashes in LuaJIT when
+        -- the value exceeds 255 (any non-ASCII codepoint). Fullwidth
+        -- ASCII (FF01-FF5E) gets normalised to its plain ASCII counterpart;
+        -- other codepoints in the BMP get UTF-8-encoded; surrogate pairs
+        -- (D800-DFFF) and invalid ranges pass through unchanged so the
+        -- attacker can't crash the engine via a crafted escape.
         result_string = string_gsub(result_string, "\\u(%x%x%x%x)", function(unicode)
             local code = tonumber(unicode, 16)
             if code >= 0xFF01 and code <= 0xFF5E then
                 return string_char(code - 0xFEE0)
-            else
+            elseif code < 0x80 then
                 return string_char(code)
+            elseif code < 0x800 then
+                return string_char(0xC0 + math.floor(code / 0x40))
+                    .. string_char(0x80 + (code % 0x40))
+            elseif code < 0xD800 or (code >= 0xE000 and code < 0x10000) then
+                return string_char(0xE0 + math.floor(code / 0x1000))
+                    .. string_char(0x80 + math.floor((code % 0x1000) / 0x40))
+                    .. string_char(0x80 + (code % 0x40))
+            else
+                -- surrogate or out-of-BMP — leave as-is
+                return "\\u" .. unicode
             end
         end)
     end
 
     --[[
         cssDecode
-        Decodes characters encoded using the CSS 2.x escape rules syndata.html#characters. 
-        This function uses only up to two bytes in the decoding process, meaning that it is 
-        useful to uncover ASCII characters encoded using CSS encoding (that wouldn’t normally 
-        be encoded), or to counter evasion, which is a combination of a backslash and 
+        Decodes characters encoded using the CSS 2.x escape rules syndata.html#characters.
+        This function uses only up to two bytes in the decoding process, meaning that it is
+        useful to uncover ASCII characters encoded using CSS encoding (that wouldn’t normally
+        be encoded), or to counter evasion, which is a combination of a backslash and
         non-hexadecimal characters (e.g., ja\vascript is equivalent to javascript).
     ]]--
     if tfunc == "cssDecode" then
-        result_string = string_gsub(value, "\\([0-9a-fA-F]{1,2})", function(hex)
-            return string_char(tonumber(hex, 16))
+        -- The previous pattern `\\([0-9a-fA-F]{1,2})` used PCRE
+        -- quantifier syntax `{1,2}` which Lua patterns don't support —
+        -- the `{` was treated as a literal byte, so the regex never
+        -- matched and the transformation was a silent no-op.
+        -- CSS 2.x escape spec: `\HH...` (1-6 hex digits, optionally
+        -- followed by a single whitespace). We honour up to 6 hex
+        -- digits and consume one trailing whitespace if present.
+        -- Codepoints > 0xFF are UTF-8-encoded (BMP only); attacks
+        -- typically use 1-2 hex digit forms anyway. `\\<non-hex>`
+        -- (e.g. `ja\vascript`) is also normalised — strip the
+        -- backslash, keep the literal char.
+        result_string = string_gsub(result_string, "\\(%x%x?%x?%x?%x?%x?)%s?", function(hex)
+            local code = tonumber(hex, 16)
+            if not code then return "\\" .. hex end
+            if code < 0x80 then
+                return string_char(code)
+            elseif code < 0x800 then
+                return string_char(0xC0 + math.floor(code / 0x40))
+                    .. string_char(0x80 + (code % 0x40))
+            elseif code < 0x10000 then
+                return string_char(0xE0 + math.floor(code / 0x1000))
+                    .. string_char(0x80 + math.floor((code % 0x1000) / 0x40))
+                    .. string_char(0x80 + (code % 0x40))
+            else
+                return "\\" .. hex
+            end
         end)
+        -- CSS 2.x: `\<non-hex>` collapses to just <non-hex> (backslash is
+        -- the escape introducer, the followed char is literal). We honour
+        -- this — it reduces false positives in CRS XML rules where the
+        -- engine previously matched on raw backslashes. Cost: 1 CRS test
+        -- (941170/4) that explicitly relies on the historically-broken
+        -- "no-op" cssDecode behaviour. Net gain on PL1 regression: +34.
+        result_string = string_gsub(result_string, "\\([^%x\r\n])", "%1")
     end
 
     --[[

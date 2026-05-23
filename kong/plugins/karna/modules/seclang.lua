@@ -391,6 +391,10 @@ function seclang.__operator(op_line)
         return "libinjection_xss", ""
     end
 
+    if op_line == "@unconditionalMatch" then
+        return "unconditionalMatch", ""
+    end
+
     local op,op_args = op_line:match("^(!?@[a-zA-Z]+) (.+)$")
     local negate = false
     if string.find(op, "!") then
