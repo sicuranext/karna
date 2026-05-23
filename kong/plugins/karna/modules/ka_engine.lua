@@ -1267,6 +1267,24 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
                 end
 
+                if variable == "request.method" then
+                    if get_phase() ~= "init_worker" then
+                        values = { ["request.method"] = tostring(request_get_method()) }
+                    end
+                end
+
+                -- request.line — full HTTP request line ("METHOD /uri HTTP/x.y").
+                -- ModSec REQUEST_LINE. Used by CRS rules looking for invalid
+                -- method tokens, version smuggling, etc.
+                if variable == "request.line" then
+                    if get_phase() ~= "init_worker" then
+                        local line = ngx.var.request
+                        if line then
+                            values = { ["request.line"] = tostring(line) }
+                        end
+                    end
+                end
+
                 if variable == "request.basename" then
                     values, err = self.__get_values_basename()
                 end
