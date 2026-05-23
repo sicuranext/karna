@@ -939,6 +939,54 @@ _M.__match_op_eq_negative = function(variable_name, value_to_match_on, condition
     end
     return false, nil
 end
+-- Numeric comparison operators. CRS uses these against `&ARGS`, length-based
+-- variables, transformed numerics, etc. Non-numeric inputs fail closed
+-- (no match) — a numeric op against a non-number is meaningless rather
+-- than a soft-true.
+_M.__match_op_lt = function(variable_name, value_to_match_on, condition_value)
+    local lhs = tonumber(value_to_match_on)
+    local rhs = tonumber(condition_value)
+    if lhs and rhs and lhs < rhs then
+        return true, {
+            ["matched_on"] = variable_name,
+            ["matched_value"] = tostring(value_to_match_on)
+        }
+    end
+    return false, nil
+end
+_M.__match_op_gt = function(variable_name, value_to_match_on, condition_value)
+    local lhs = tonumber(value_to_match_on)
+    local rhs = tonumber(condition_value)
+    if lhs and rhs and lhs > rhs then
+        return true, {
+            ["matched_on"] = variable_name,
+            ["matched_value"] = tostring(value_to_match_on)
+        }
+    end
+    return false, nil
+end
+_M.__match_op_ge = function(variable_name, value_to_match_on, condition_value)
+    local lhs = tonumber(value_to_match_on)
+    local rhs = tonumber(condition_value)
+    if lhs and rhs and lhs >= rhs then
+        return true, {
+            ["matched_on"] = variable_name,
+            ["matched_value"] = tostring(value_to_match_on)
+        }
+    end
+    return false, nil
+end
+_M.__match_op_le = function(variable_name, value_to_match_on, condition_value)
+    local lhs = tonumber(value_to_match_on)
+    local rhs = tonumber(condition_value)
+    if lhs and rhs and lhs <= rhs then
+        return true, {
+            ["matched_on"] = variable_name,
+            ["matched_value"] = tostring(value_to_match_on)
+        }
+    end
+    return false, nil
+end
 _M.__match_op_endswith = function(variable_name, value_to_match_on, condition_value)
     if value_to_match_on and condition_value then
         local escaped = string_gsub(condition_value, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
@@ -1435,6 +1483,18 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         end
                         if condition.op == "!eq" then
                             rule_condition_has_matched, matched_table = self.__match_op_eq_negative(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "lt" then
+                            rule_condition_has_matched, matched_table = self.__match_op_lt(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "gt" then
+                            rule_condition_has_matched, matched_table = self.__match_op_gt(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "ge" then
+                            rule_condition_has_matched, matched_table = self.__match_op_ge(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "le" then
+                            rule_condition_has_matched, matched_table = self.__match_op_le(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "endsWith" then
                             rule_condition_has_matched, matched_table = self.__match_op_endswith(variable_name, try_value, condition_value_resolved)

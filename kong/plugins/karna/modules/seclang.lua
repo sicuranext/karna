@@ -425,6 +425,10 @@ function seclang.__operator(op_line)
         op_translated = "gt"
     elseif op == "@lt" then
         op_translated = "lt"
+    elseif op == "@ge" then
+        op_translated = "ge"
+    elseif op == "@le" then
+        op_translated = "le"
     elseif op == "@validateByteRange" then
         op_translated = "validateByteRange"
     else
