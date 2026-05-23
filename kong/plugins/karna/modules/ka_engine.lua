@@ -1326,6 +1326,22 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
                 end
 
+                -- request.http_version — ModSec REQUEST_PROTOCOL. Emitted
+                -- in the canonical "HTTP/X.Y" shape so it matches CRS's
+                -- crs-setup.conf-derived allow-list (HTTP/1.0 HTTP/1.1 …).
+                -- nginx normalises unknown HTTP versions to 1.1 BEFORE
+                -- Karna sees them, so genuinely-rare versions reach Karna
+                -- only when nginx is permissive about them (e.g. HTTP/4.0
+                -- → 1.1, HTTP/0.9 → returned as 400 by nginx).
+                if variable == "request.http_version" then
+                    if get_phase() ~= "init_worker" then
+                        local v = request_get_http_version()
+                        if v then
+                            values = { ["request.http_version"] = "HTTP/" .. tostring(v) }
+                        end
+                    end
+                end
+
                 -- request.line — full HTTP request line ("METHOD /uri HTTP/x.y").
                 -- ModSec REQUEST_LINE. Used by CRS rules looking for invalid
                 -- method tokens, version smuggling, etc.
@@ -1643,7 +1659,12 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                             condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.allowed_request_content_type_charset}", vals)
                         end
                         if string.find(condition_value_resolved, "%%{tx%.allowed_http_versions}") then
-                            condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.allowed_http_versions}", "1.0 1.1 2 3")
+                            -- CRS canonical (crs-setup.conf 900430):
+                            -- `HTTP/1.0 HTTP/1.1 HTTP/2 HTTP/2.0 HTTP/3 HTTP/3.0`.
+                            -- Matches `request.http_version` which Karna
+                            -- emits in the same "HTTP/X.Y" shape so
+                            -- @within compares like-for-like.
+                            condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.allowed_http_versions}", "HTTP/1.0 HTTP/1.1 HTTP/2 HTTP/2.0 HTTP/3 HTTP/3.0")
                         end
                         if string.find(condition_value_resolved, "%%{tx%.restricted_extensions}") then
                             -- CRS convention: tx.restricted_extensions is a
