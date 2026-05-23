@@ -31,31 +31,15 @@ function seclang.parse(raw_rules, filter_by_id)
 
         if line:match('"[\n]?$') and secrule_start then
             secrule_start = false
-            -- Skip rules tagged paranoia-level/2, /3 or /4. Karna's supported
-            -- operational surface is PL1 (see crs-regression-test/README.md
-            -- — "Why we bench at paranoia level 1"). PL2 alone is already
-            -- noisy enough on legitimate traffic that no real deployment
-            -- leaves it on. Loading PL2+ rules at parse time would let them
-            -- short-circuit a request via eager-block before a PL1 rule that
-            -- the test suite expects to fire ever got the chance.
-            local skip_for_pl = rule:match("paranoia%-level/2")
-                                or rule:match("paranoia%-level/3")
-                                or rule:match("paranoia%-level/4")
-            if not skip_for_pl then
-                seclang.__parse_rule(rule, rule_is_chained, filter_by_id)
-                rule_is_chained = seclang.__is_chained(rule)
-            else
-                -- A skipped chain parent leaves a dangling chain flag:
-                -- without this reset, the chain's continuation SecRule
-                -- (which is a separate raw block in the .conf and has no
-                -- `paranoia-level/N` tag of its own) would be parsed with
-                -- chained=true and its conditions would be silently appended
-                -- to whatever was rule_last_id — typically the last
-                -- successfully-loaded PL1 rule. That's how rule 942550 ends
-                -- up with #conditions=6 instead of 1, then never fires
-                -- because matched_conditions plateaus at 1.
-                rule_is_chained = false
-            end
+            -- Load every rule regardless of declared paranoia level. The
+            -- runtime PL gate in `ka_engine.loop_rules` skips rules whose
+            -- `rule.paranoia_level` exceeds `plugin_conf.paranoia_level`
+            -- (default 1), so vanilla deployments still evaluate only
+            -- PL1 — but operators can opt into PL2/3/4 simply by raising
+            -- the config knob, without an init_worker reload. Skipping
+            -- PL2+ here would render the runtime gate inert.
+            seclang.__parse_rule(rule, rule_is_chained, filter_by_id)
+            rule_is_chained = seclang.__is_chained(rule)
             rule = ""
         end
     end
