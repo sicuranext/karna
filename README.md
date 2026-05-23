@@ -27,6 +27,69 @@ detection and parsing of the JSON-RPC envelope, plus SSE response
 reassembly with per-event rule evaluation on the Streamable HTTP
 transport. See the `mcp_*` configuration fields below.
 
+## OWASP CRS compatibility
+
+Karna ships with full support for loading OWASP CRS 4.x as the
+default rule pack. CRS 4.26.0 is what the regression suite tracks.
+
+The compatibility goal is **detect the attack class**, not **match
+the exact CRS rule id**. CRS is designed primarily for Apache +
+ModSecurity and assumes that runtime's quirks (TX-side-effect
+variables, anomaly scoring as the blocking decider, response-side
+body inspection, `SecRuleUpdateTargetById` exception files). Karna
+runs on Kong / OpenResty / nginx, where many of those mechanisms are
+either covered upstream by nginx itself or replaced by Karna's
+explicit always-on validation gates. So a malicious request gets
+blocked, but the audit log entry sometimes carries a Karna-native
+rule id (`method_allowed`, `uri_path_check_violation`,
+`request_body_parser_violation`, …) rather than the exact `920XXX`
+the CRS regression framework expects.
+
+Headline numbers on the in-tree regression suite (CRS 4.26.0, PL=1,
+`engine_blocking_mode=true`):
+
+- **PL1 raw pass rate: 91%** (`2509 / 2757` tests).
+- **PL1 in-scope pass rate: ≈ 93.6%** — excluding the four buckets
+  Karna intentionally does not pursue: CRS response rules (950-956)
+  / anomaly scoring (949 / 959 / 980) / `999-COMMON-EXCEPTIONS-AFTER`.
+- PL2 currently 18% — the higher paranoia levels lean heavily on
+  variable-surface details and chain semantics that are still on
+  Karna's roadmap.
+
+The four out-of-scope buckets are documented design decisions, not
+omissions: response-side rules require a different processing model
+than Karna's request-time engine; anomaly scoring is replaced by
+eager-block / fixed_response actions; the `999` bucket is exception
+handling that Karna users address via local rules instead.
+
+## Multipart parser hardening
+
+Karna ships a custom multipart/form-data parser (`ka_multipart.lua`)
+hardened against the bypass classes documented at
+[breaking-down-multipart-parsers-validation-bypass](https://blog.sicuranext.com/breaking-down-multipart-parsers-validation-bypass/).
+The hardening is on by default — each check is gated by an
+individual flag in the parser module if you need to loosen it for a
+specific legacy client.
+
+| Flag (default `true`) | Bypass class closed |
+|---|---|
+| `_M.check_duplicated_header` | duplicate per-part header — RFC 7578 |
+| `_M.check_duplicated_content_disposition_param` | `name="x"; name="y"` duplicates |
+| `_M.check_duplicated_content_disposition_header` | two `Content-Disposition` headers per part |
+| `_M.reject_filename_star` | RFC 5987 ext-parameter `filename*=` (bypass #5 / #5a) |
+| `_M.require_quoted_params` | unquoted parameter values like `filename=evil.php` (bypass #3 / #8) |
+| `_M.strict_crlf` | bare LF or bare CR in body framing (bypass #2) |
+| `_M.require_closing_boundary` | missing `--<boundary>--` (bypass #4) |
+| `_M.validate_boundary` | boundary syntax / length |
+| `_M.validate_header_name` | per-part header allow-list (`Content-Disposition` / `Content-Type` only) |
+| `_M.validate_param_value` | repeated percent-decoding + null-byte check inside CD parameter values |
+
+When the parser rejects a request, Karna emits a synthetic match
+under the rule id `request_body_parser_violation` (tag
+`body-parser/multipart`) and returns 403 when `engine_blocking_mode`
+is enabled. The rejection surfaces in audit log v2 alongside any
+other matches that fired.
+
 ## Installation
 
 Three pieces need to be on the Kong / OpenResty host.
@@ -130,7 +193,7 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `coreruleset_enabled` | bool | `true` | Toggle for the OWASP CRS rule pack loaded from disk at `init_worker`. The in-repo CRS-fix rule controls (`coreruleset_fix.lua`) are always applied. |
 | `local_rules_enabled` | bool | `true` | Toggle for `rules_request` / `rules_response` local rules. |
 | `ignore_from_local_ips` | bool | `true` | Skip WAF for clients in `127.0.0.0/8`, `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `::1`, `fe80::/32`. |
-| `paranoia_level` | number | `1` | OWASP CRS paranoia level (1–4). Rules tagged paranoia-level/3 or /4 are skipped at parse time when below this level. |
+| `paranoia_level` | number | `1` | OWASP CRS paranoia level (1–4). Rules whose declared paranoia level exceeds this value are skipped at evaluation time. Rules without an explicit PL tag (Karna-native gates, `coreruleset_fix.global_fps`, user-supplied local rules) default to PL1 and always run when this setting is ≥ 1. |
 | `set_karna_headers` | bool | `false` | Set `X-Karna-Engine` / `X-Karna-Engine-Version` response headers. |
 | `request_methods_allowed` | array | `[GET, HEAD, PUT, POST, DELETE, OPTIONS, PATCH, PROPFIND]` | Method allow-list. |
 | `request_headers_denied` | array | `[content-encoding, proxy, lock-token, content-range, if]` | Request header deny-list. |
@@ -216,35 +279,32 @@ not in this table will simply never match.
 
 | Operator | Negation | Description |
 |---|---|---|
-| `rx`               | `!rx`               | PCRE regex match against the variable value (uses `ngx.re.match` under the hood). |
-| `grx`              | —                   | Like `rx`, but evaluated in "global" mode for cross-condition match capture. |
-| `eq`               | `!eq`               | Exact equality (strings or numbers). |
-| `ge` / `gt` / `lt` | —                   | Numeric ordering — value must parse as a number. |
-| `beginsWith`       | `!beginsWith`       | String prefix match. |
-| `endsWith`         | `!endsWith`         | String suffix match. |
-| `contains`         | —                   | Substring presence. |
-| `string_match`     | —                   | Lua `string.match` (pattern style — distinct from `rx`). |
-| `isSet`            | `!isSet`            | Whether the variable resolves to anything at all. |
-| `within`           | `!within`           | Variable value is one of the comma-separated tokens in `value`. |
-| `pm`               | `!pm`               | Phrase match: any whitespace-separated token in `value` appears in the variable. |
-| `pmFromFile`       | —                   | Like `pm`, but the phrase list is loaded from a file. |
-| `libinjection_sqli`| —                   | SQL-injection detection via `libinjection`. |
-| `libinjection_xss` | —                   | XSS detection via `libinjection`. |
-| `validateUrlEncoding` | —                | Rejects malformed `%XX` sequences. |
-| `validateByteRange`| —                   | All bytes must fall within a `value` like `"32-126,9,10,13"`. |
-| `mcp_method_in`    | —                   | JSON-RPC `method` field is in `value` (MCP). |
-| `mcp_jsonrpc_valid`| —                   | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
+| `rx`                  | `!rx`               | PCRE regex match against the variable value (uses `ngx.re.match` under the hood). |
+| `eq`                  | `!eq`               | Exact equality (strings or numbers). |
+| `ge` / `gt` / `lt` / `le` | —               | Numeric ordering — value must parse as a number. Non-numeric inputs fail closed. |
+| `beginsWith`          | —                   | String prefix match. |
+| `endsWith`            | `!endsWith`         | String suffix match. |
+| `contains`            | —                   | Substring presence (literal, case-sensitive). |
+| `isSet`               | `!isSet`            | Whether the variable resolves to anything at all. |
+| `within`              | `!within`           | Variable value is one of the whitespace-separated tokens in `value`. |
+| `pm`                  | —                   | Phrase match: any whitespace-separated token in `value` appears in the variable. |
+| `pmFromFile`          | —                   | Like `pm`, but the phrase list is loaded from a file. |
+| `ipMatch`             | —                   | IPv4 / IPv6 / CIDR match against a comma- or whitespace-separated list. Uses `resty.ipmatcher`; compiled matcher cached per condition value. |
+| `libinjection_sqli`   | —                   | SQL-injection detection via `libinjection`. |
+| `libinjection_xss`    | —                   | XSS detection via `libinjection`. |
+| `validateUrlEncoding` | —                   | Matches when input contains malformed `%XX` sequences. |
+| `validateUtf8Encoding`| —                   | Matches when input is NOT valid UTF-8 (lone continuation bytes, truncated sequences, overlong encodings, surrogates, codepoints > U+10FFFF). |
+| `validateByteRange`   | —                   | Matches when any byte in input falls OUTSIDE the `value` ranges (e.g. `"32-126,9,10,13"`). |
+| `unconditionalMatch`  | —                   | Always true. Used by CRS as the predicate of chains gated entirely by setvar side-effects on other conditions. |
+| `mcp_method_in`       | —                   | JSON-RPC `method` field is in `value` (MCP). |
+| `mcp_jsonrpc_valid`   | —                   | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
 
-CRS-relevant gaps (not implemented in this release): `@ipMatch`,
-`@ipMatchF` / `@ipMatchFromFile`, `@verifyCC`, `@verifySSN`,
-`@geoLookup`, `@unconditionalMatch`, `@inspectFile`. Rules that depend
-on these operators are skipped at parse time with a `WARN` line —
-`grep "WARN" $(kong path)/logs/error.log` after a `kong reload` to
-enumerate.
-
-`validateUtf8Encoding` exists in Karna as a **transformation function**
-(`tfunc`), not as an operator — same name as the CRS operator but
-different role. Watch out when porting CRS rules.
+Seclang translates CRS operators (`@detectSQLi`, `@streq`, `@detectXSS`,
+`@ipMatch`, …) to the engine-side names above. CRS-relevant gaps still
+not implemented: `@ipMatchF` / `@ipMatchFromFile`, `@verifyCC`,
+`@verifySSN`, `@geoLookup`, `@inspectFile`. Rules that depend on these
+are skipped at parse time with a `WARN` line — `grep "WARN" $(kong path)/logs/error.log`
+after a `kong reload` to enumerate.
 
 ## Rule Schema
 
