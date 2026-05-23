@@ -226,13 +226,22 @@ function seclang.__variables_to_conditions(variables)
         if variable_name and variable_arg then
             --variable_name = variable_name:gsub("^!", "")
             if variable_name == "TX" then
-                if not variable_arg:match("^%d$") then
-                    -- check if it was a regex pattern (stripped of / delimiters)
+                if variable_arg:match("^%d$") then
+                    -- TX:0 / TX:1 / ... — numeric capture-group references,
+                    -- handled elsewhere via group:N resolution. Leave alone.
+                else
+                    -- TX:<name> — named transaction variable. Emit as the
+                    -- Karna-side rule variable `tx:<lowercase_name>`. The
+                    -- engine resolves these from `kong.ctx.plugin.tx_variables`,
+                    -- populated either by setvar actions during rule
+                    -- evaluation OR by handler:access from plugin_conf
+                    -- (CRS-setup-style config knobs — see schema.lua).
                     if variable_arg:match("[%.%*%+%?%[%]]") then
-                        -- preserve as regex pattern for TX variable lookup
+                        -- TX:/regex/ pattern — preserve for TX_RX handling
                         variable_name = "TX_RX"
                     else
-                        variable_arg = "1"
+                        table.insert(variable_list, "tx:" .. variable_arg:lower())
+                        goto continue_outer
                     end
                 end
             end
@@ -304,6 +313,7 @@ function seclang.__variables_to_conditions(variables)
                 table.insert(variable_list, vname)
             end
         end
+        ::continue_outer::
     end
 
     if args_found and args_name_found then

@@ -1226,6 +1226,19 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
             if not values then
                 -- if condition operator is not isSet or !isSet
 
+                -- ModSec `TX:<name>` variable lookup → resolve from
+                -- kong.ctx.plugin.tx_variables (populated by setvar actions
+                -- during rule evaluation OR by handler:access from
+                -- plugin_conf — see "CRS-setup-style knobs" in schema.lua).
+                -- Seclang emits TX:NAME as `tx:<lowercase_name>`.
+                if string_find(variable, "^tx:") then
+                    local tx_name = variable:sub(4)
+                    if kong.ctx.plugin.tx_variables
+                       and kong.ctx.plugin.tx_variables[tx_name] ~= nil then
+                        values = { [variable] = tostring(kong.ctx.plugin.tx_variables[tx_name]) }
+                    end
+                end
+
                 -- ModSec `&VAR` count operator: prefix `count:` (set by seclang)
                 -- evaluates to the number of values VAR resolves to. CRS
                 -- uses this for "header missing" / "header present" patterns
@@ -1615,9 +1628,17 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     -- resolve %{tx.*} variables from plugin_conf
                     if plugin_conf and string.find(condition_value_resolved, "%%{tx%.") then
                         if string.find(condition_value_resolved, "%%{tx%.allowed_request_content_type_charset}") then
+                            -- CRS convention: each charset entry is pipe-
+                            -- wrapped (`|utf-8|`) and cond1's setvar wraps
+                            -- the captured charset the same way
+                            -- (`tx.content_type_charset=|%{tx.1}|`). The
+                            -- @within match relies on both sides having
+                            -- matching `|X|` shape. Karna's
+                            -- plugin_conf.request_content_type_charset_allowed
+                            -- stores bare names ("utf-8", …); wrap here.
                             local vals = ""
                             for _, cs in pairs(plugin_conf.request_content_type_charset_allowed) do
-                                vals = vals .. " " .. cs
+                                vals = vals .. " |" .. cs .. "|"
                             end
                             condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.allowed_request_content_type_charset}", vals)
                         end
@@ -1625,16 +1646,31 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                             condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.allowed_http_versions}", "1.0 1.1 2 3")
                         end
                         if string.find(condition_value_resolved, "%%{tx%.restricted_extensions}") then
+                            -- CRS convention: tx.restricted_extensions is a
+                            -- space-separated list of entries shaped like
+                            -- ".bak/" (leading dot, trailing slash — see CRS
+                            -- crs-setup.conf 900-EXCLUSION-RULES-BEFORE-CRS).
+                            -- Rules compare against `tx.extension=.%{tx.1}/`
+                            -- (set in 920440 cond1) so both sides need the
+                            -- `.X/` shape for @within to match. Karna's
+                            -- plugin_conf.restricted_extensions stores bare
+                            -- words ("bak", "asa", …) for user convenience;
+                            -- we wrap each here.
                             local vals = ""
                             for _, ext in pairs(plugin_conf.restricted_extensions) do
-                                vals = vals .. " " .. ext
+                                vals = vals .. " ." .. ext .. "/"
                             end
                             condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.restricted_extensions}", vals)
                         end
                         if string.find(condition_value_resolved, "%%{tx%.allowed_request_content_type}") then
+                            -- Same pipe-wrap convention as the charset list
+                            -- — cond1 of 920420 stores
+                            -- `tx.content_type=|%{tx.0}|`, so the allow-list
+                            -- side must wrap with `|X|` too for @within to
+                            -- match.
                             local vals = ""
                             for _, ct in pairs(plugin_conf.request_content_type_allowed) do
-                                vals = vals .. " " .. ct
+                                vals = vals .. " |" .. ct .. "|"
                             end
                             condition_value_resolved = string_gsub(condition_value_resolved, "%%{tx%.allowed_request_content_type}", vals)
                         end

@@ -69,6 +69,14 @@ local schema = {
           { inspection_table_convert = { type = "array", elements = { type = "string" } } },
           { paranoia_level = { type = "number", default = 1 } },
 
+          -- CRS-setup-style knobs. The bool/number is mapped at access-phase
+          -- start into `kong.ctx.plugin.tx_variables.<crs_name>` so CRS rules
+          -- written against ModSec's TX:<name> variables (e.g. 920250's
+          -- `TX:CRS_VALIDATE_UTF8_ENCODING @eq 1`) resolve correctly without
+          -- requiring crs-setup.conf. Defaults match the CRS recommended
+          -- values for a strict posture.
+          { validate_utf8_encoding = { type = "boolean", default = true } },
+
           { rules_request = { type = "array", elements = { type = "string" } } },
           { rules_response = { type = "array", elements = { type = "string" } } },
 

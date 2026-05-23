@@ -195,8 +195,15 @@ function plugin:access(plugin_conf)
   -- set local variables
   kong.ctx.plugin.rule_variables = {}
 
-  -- set transaction variables (for setvar support)
-  kong.ctx.plugin.tx_variables = {}
+  -- set transaction variables (for setvar support + CRS-setup-style
+  -- config knobs). Karna users configure via plugin_conf; we mirror the
+  -- relevant values into the TX bag so CRS rules that read TX:<name>
+  -- directly (e.g. 920250's `TX:CRS_VALIDATE_UTF8_ENCODING @eq 1`) get
+  -- the expected gate value without requiring crs-setup.conf.
+  -- Lowercase keys — seclang emits `tx:<lowercase>` for TX:<NAME> lookups.
+  kong.ctx.plugin.tx_variables = {
+    crs_validate_utf8_encoding = plugin_conf.validate_utf8_encoding and "1" or "0",
+  }
 
   -- set rule controls
   kong.ctx.plugin.rule_controls = {

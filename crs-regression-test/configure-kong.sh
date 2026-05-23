@@ -94,6 +94,9 @@ upsert_plugin() {
         -d "config.limit_arg_value_length=1000000"
         -d "config.limit_arg_name_length=10000"
         -d "config.limit_arg_num=10000"
+        # Explicit: keep UTF-8 validation on (also the schema default).
+        # 920250 and the CRS UTF-8 chain rules read this via TX:CRS_VALIDATE_UTF8_ENCODING.
+        -d "config.validate_utf8_encoding=true"
     )
 
     if [ -n "${plugin_id}" ]; then
