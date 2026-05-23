@@ -36,6 +36,8 @@ jobs:
           sudo apt-get install -y lua5.4
       - name: Multipart parser security gaps
         run: lua ka-unittest/multipart_security_gaps.lua
+      - name: Transformation functions (catches silent no-op regressions)
+        run: lua ka-unittest/transformations.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
