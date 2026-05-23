@@ -19,8 +19,6 @@ local ipmatcher         = require "resty.ipmatcher"
 
 local ka_rules, err = lrucache.new(10000)
 
---local debug = function(i) return end
---local inspect = function(i) return end
 local debug = kong.log.debug
 local inspect = kong.log.inspect
 
@@ -207,16 +205,6 @@ function plugin:access(plugin_conf)
     remove_target_from_all_rules = {}
   }
 
-  -- generate global inspection table
-  --engine:get_inspection_table(plugin_conf)
-
-  -- debug inspection table
-  --inspect(kong.ctx.plugin.inspection_table)
-
-  -- if dev env enabled and request header x-karna-test-rule-id is set
-  --local is_dev_env_enabled = utils:dev_env_enabled()
-  --local filter_rule_id = utils:dev_filter_rule_id(is_dev_env_enabled)
-
   -- get global rules
   local rules = ka_rules:get("ka_rules")
   if rules then
@@ -272,21 +260,6 @@ function plugin:access(plugin_conf)
     evaluate_rules(plugin_conf, rules, "access")
   end
 
-  -- default values
-  --[[local dev_output = ""
-
-  if is_dev_env_enabled then
-    dev_output = cjson.encode(kong.ctx.plugin.inspection_table)
-    dev_output = dev_output .. "\n\n" .. cjson.encode(kong.ctx.plugin.rule_inspection_table)
-    response_exit(
-      200,
-      dev_output,
-      {
-        ["content-type"] = "text/plain",
-        ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
-      }
-    )
-  end]]--
 end
 
 function plugin:header_filter(plugin_conf)

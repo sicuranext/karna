@@ -80,31 +80,8 @@ _M.version = "0.1.1"
 local state_type = ffi.typeof("struct libinjection_sqli_state[1]")
 local lib, loaded
 
--- "borrowed" from CF aho-corasick lib
 local function _loadlib()
 	if (not loaded) then
-		local path, so_path
-		local libname = "libinjection.so"
-
-		--[[for k, v in string.gmatch(package.cpath, "[^;]+") do
-			so_path = string.match(k, "(.*/)")
-			if so_path then
-				-- "so_path" could be nil. e.g, the dir path component is "."
-				so_path = so_path .. libname
-
-				-- Don't get me wrong, the only way to know if a file exist is
-				-- trying to open it.
-				print("-----> libinjection.so path: " .. so_path .. " <-----")
-				local f = io.open(so_path)
-				if f ~= nil then
-					io.close(f)
-					path = so_path
-					break
-				end
-			end
-		end
-
-		lib = ffi.load(path)]]--
 		local so_override = os.getenv("KARNA_LIBINJECTION_SO")
 		lib = ffi.load(so_override or "/usr/local/lib/libinjection.so")
 
