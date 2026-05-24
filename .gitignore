@@ -58,6 +58,15 @@ crs-regression-test/tests/
 crs-regression-test/results/
 crs-regression-test/_excluded/
 
+# === CRS regression-test internal-only artefacts ===
+# Local session notes / post-mortems / dev-only tooling we keep for our
+# own debugging but do not publish. The public-facing user surface is
+# README.md + start.py + fetch-tests.sh + configure-kong.sh +
+# bench-coreruleset-fix.sh + run-categories.sh.
+crs-regression-test/FINDINGS.md
+crs-regression-test/RESIDUAL_FAILS.md
+crs-regression-test/toggle-crs-fix.sh
+
 # === Docker local state / overrides ===
 docker/.data/
 docker-compose.override.yml
