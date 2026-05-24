@@ -66,6 +66,7 @@ crs-regression-test/_excluded/
 crs-regression-test/FINDINGS.md
 crs-regression-test/RESIDUAL_FAILS.md
 crs-regression-test/toggle-crs-fix.sh
+crs-regression-test/bench-coreruleset-fix.sh
 
 # === Docker local state / overrides ===
 docker/.data/

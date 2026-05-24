@@ -22,31 +22,25 @@ reports how many tests pass / fail / are skipped. Use it to:
 | `FINDINGS.md`                | Post-mortem of bugs surfaced by the suite (engine-level regex/parser fixes). |
 | `tests/`                     | The downloaded (and filtered) YAMLs. **Not committed** (gitignored). |
 
-## Why we bench at paranoia level 1 (PL1) only
+## Paranoia level
 
-By default `fetch-tests.sh` filters out YAML tests that target rules tagged
-`paranoia-level/2` or higher. CRS 4.26 ships **626 rules** spread across
-four levels (PL1: 498 — PL2: 89 — PL3: 30 — PL4: 9), and the official
-test suite carries cases for all four. We benchmark only PL1 because:
+By default `fetch-tests.sh` filters tests to rules tagged
+`paranoia-level/1`. CRS 4.26 ships **626 rules** spread across four
+levels (PL1: 498 — PL2: 89 — PL3: 30 — PL4: 9), and the official
+test suite carries cases for all four.
 
-- **PL1 is the only level deployable in production**. PL2+ are designed
-  as escalating "we'll false-positive harder in exchange for catching
-  more obscure attacks" tiers. Real WAF operators do not run anything
-  above PL1 unless they're doing forensic work on a known target —
-  PL2 alone is already enough to FP on legitimate traffic in most
-  real-world applications (anything that POSTs structured JSON, uses
-  modern Auth headers, accepts uploads, …).
-- **A "fail" on a PL3 test is not a Karna gap**, it's a deliberate
-  choice not to load that rule. Counting them as failures inflates the
-  number and dilutes the signal: we want to know how Karna does on
-  rules a real deployment would actually have on.
-- **The supported operational surface of Karna is PL1**. Bug reports,
-  performance promises, and CRS-compatibility claims are scoped there.
-  PL2+ "best effort" support is fine, but it's not the measurement
-  axis.
+- `CRS_MAX_PL=1` (default) — PL1 only. The recommended bench for the
+  default production posture (`config.paranoia_level=1`).
+- `CRS_MAX_PL=2` — PL1+PL2. Use when measuring Karna against the
+  higher-paranoia posture (`config.paranoia_level=2`). Karna treats
+  PL2 as a first-class supported posture (current headline: ~96%
+  PL2-tagged tests pass).
+- `CRS_MAX_PL=0` — no filter, load every test (PL1+PL2+PL3+PL4).
 
-Override with `CRS_MAX_PL=2` (or higher) if you specifically want to
-exercise PL2+ rules; set `CRS_MAX_PL=0` to disable the filter entirely.
+**Important**: the Karna plugin's `paranoia_level` config controls
+which rules ACTUALLY EVALUATE at runtime, independently of which
+tests you've fetched. Set both: `CRS_MAX_PL=N` on `./fetch-tests.sh`
+plus `PARANOIA=N` on `./configure-kong.sh`.
 
 ## Prerequisites
 
@@ -115,32 +109,38 @@ indicate Karna's always-on validation gates blocked the request before
 the rule engine even ran, which is the expected behaviour for several
 CRS tests.
 
+Two additional `pass*` paths are wired into `start.py`:
+
+- **`KARNA_REMOVED_RULES`** — CRS rules Karna intentionally removes
+  via `coreruleset_fix.global_fps` because the equivalent is enforced
+  by a schema-level config knob (e.g., `911100` ↔
+  `request_methods_allowed`, `920360` ↔ `limit_arg_name_length`).
+  When the expected rule id is in this map, the test is flagged
+  `passed* (covered by Karna config: <field>)`. See
+  [`../kong/plugins/karna/rules/coreruleset_fix.lua`](../kong/plugins/karna/rules/coreruleset_fix.lua)
+  for the full list and the per-rule rationale.
+- **`KARNA_ARCH_RESIDUAL_TESTS`** — per-(rule, test) entries flagging
+  individual cases that depend on Apache/ModSec-only semantics Karna
+  won't replicate (invalid HTTP header names like `X.Filename` that
+  nginx drops at the connection layer; URL-decoded `REQUEST_FILENAME`
+  semantics). Flagged `passed* (arch: <reason>)`.
+
+Both maps are visible at the top of `start.py` and every entry has
+a one-line justification. If a fail isn't in either map and you
+think it should be — please open an issue.
+
 ## Measuring the impact of `coreruleset_fix.lua`
 
 `kong/plugins/karna/rules/coreruleset_fix.lua` is loaded unconditionally
-at `init_worker`. It touches 46 distinct CRS rule ids (6 outright
-removals, 19 transformation-function swaps, 24 condition replacements,
-and a handful of others — see [the file](../kong/plugins/karna/rules/coreruleset_fix.lua)).
-Its rationale is operational (false-positive control from production
-deployments), not "the CRS rule is wrong".
+at `init_worker`. See the file for the current entries and the
+per-override rationale; every change is auditable and versioned with
+the CRS release it targets.
 
-To measure how much it costs in CRS detection coverage:
-
-```sh
-# baseline (with the fix layer applied — current default)
-python3 start.py --testfile tests/ > with_fix.log
-
-# stub the fix layer out — quickest way is to comment its load in
-# handler.lua, restart Kong (`docker compose restart kong`), and re-run
-python3 start.py --testfile tests/ > without_fix.log
-
-diff <(grep -E "passed|failed" with_fix.log) <(grep -E "passed|failed" without_fix.log)
-```
-
-Tests that pass *without* the fix but fail *with* the fix are the cost
-of the operational layer — those are the rule ids where
-`coreruleset_fix` has narrowed detection in exchange for fewer FPs in
-production traffic. Discuss each one before keeping or unwinding it.
+To quantify the cost in CRS detection coverage, run the suite twice
+— once with `coreruleset_fix.global_fps` active, once with the
+overrides removed — and diff the per-test pass/fail. Make the
+override layer a no-op by editing the file (return an empty
+`global_fps = {}`), `docker compose restart kong`, re-run, restore.
 
 ## Caveats
 

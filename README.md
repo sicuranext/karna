@@ -65,6 +65,28 @@ than Karna's request-time engine; anomaly scoring is replaced by
 eager-block / fixed_response actions; the `999` bucket is exception
 handling that Karna users address via local rules instead.
 
+**Verify the numbers locally**. The OWASP CRS regression bench
+harness lives at [`crs-regression-test/`](./crs-regression-test/) and
+is the same code the CI runs. With the docker-compose dev stack up:
+
+```sh
+cd crs-regression-test
+./fetch-tests.sh                # downloads CRS 4.26.0 PL1 test YAMLs
+./configure-kong.sh             # configures Kong + Karna plugin
+python3 start.py --testfile tests/
+# → "Passed tests: 2626 / 2757"
+
+CRS_MAX_PL=2 ./fetch-tests.sh   # extend to PL1+PL2
+PARANOIA=2 ./configure-kong.sh  # raise Karna paranoia ceiling
+python3 start.py --testfile tests/
+# → "Passed tests: 3905 / 4071"
+```
+
+The harness reads `KARNA_REMOVED_RULES` and `KARNA_ARCH_RESIDUAL_TESTS`
+maps in `start.py` — every CRS rule we intentionally don't fire (and
+why) is enumerated there. Anything not listed and still failing is a
+real gap, please open an issue.
+
 ## Multipart parser hardening
 
 Karna ships a custom multipart/form-data parser (`ka_multipart.lua`)
