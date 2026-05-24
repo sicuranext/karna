@@ -50,12 +50,12 @@ the CRS regression framework expects.
 Headline numbers on the in-tree regression suite (CRS 4.26.0,
 `engine_blocking_mode=true`):
 
-- **PL1 raw pass rate (PARANOIA=1): 91.7%** (`2528 / 2757` tests).
-- **PL1 in-scope pass rate: ≈ 94%** — excluding the four buckets
+- **PL1 raw pass rate (PARANOIA=1): 95.2%** (`2626 / 2757` tests).
+- **PL1 in-scope pass rate: ≈ 97%** — excluding the four buckets
   Karna intentionally does not pursue: CRS response rules (950-956)
   / anomaly scoring (949 / 959 / 980) / `999-COMMON-EXCEPTIONS-AFTER`.
-- **PL2 raw pass rate (PARANOIA=2): 93.3%** (`3798 / 4071` tests).
-- **PL2-tagged-rules subset: ~96%** — Karna handles the higher-
+- **PL2 raw pass rate (PARANOIA=2): 95.9%** (`3905 / 4071` tests).
+- **PL2-tagged-rules subset: ≈ 98%** — Karna handles the higher-
   paranoia rule pack as a first-class supported posture, not as an
   experimental tier.
 
