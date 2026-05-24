@@ -1372,6 +1372,28 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     values, err = self.__get_values_request_cookie(false)
                 end
 
+                -- request.body.multipart.name / .filename (no selector)
+                -- → ModSec FILES_NAMES / (alongside FILES). Collect every
+                -- multipart part's `name=` (or `filename=`) so the
+                -- @rx/@within etc. operators can scan each part. The
+                -- per-part variants (`.name:<part>`) hit the exact-match
+                -- branch below.
+                if variable == "request.body.multipart.name"
+                   or variable == "request.body.multipart.filename" then
+                    local body_values = self.__get_values_request_body(false)
+                    if body_values then
+                        local key_marker = (variable == "request.body.multipart.name")
+                            and "%.name:" or "%.filename:"
+                        local collected = {}
+                        for k, v in pairs(body_values) do
+                            if string_find(k, "^request%.body%.multipart" .. key_marker) then
+                                collected[k] = v
+                            end
+                        end
+                        if next(collected) then values = collected end
+                    end
+                end
+
                 if string_find(variable, "^request%.body%.multipart%.") then
                     local body_values = self.__get_values_request_body()
                     if body_values and body_values[variable] then

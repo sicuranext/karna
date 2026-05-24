@@ -308,9 +308,27 @@ function seclang.__variables_to_conditions(variables)
             if variable_name == "REQUEST_COOKIES" then cookie_found = true end
             if variable_name == "REQUEST_COOKIES_NAMES" then cookie_name_found = true end
 
-            local vname = seclang.__get_variable_name(variable_name)
-            if vname then
-                table.insert(variable_list, vname)
+            -- FILES_NAMES is the multipart part's `name=` field per
+            -- ModSec semantics, NOT the `filename=` value. Karna kept
+            -- the historic `.filename` mapping for a long time because
+            -- the semantically-correct `.name` mapping triggered FPs
+            -- in some 920120 negative tests (memory:
+            -- project_implementation_decisions). Approach B (2026-05-24):
+            -- emit BOTH targets when FILES_NAMES is referenced. The
+            -- 920120 rule's `!@rx` pattern then evaluates against
+            -- every multipart name AND every multipart filename — a
+            -- form-data bypass attack via either is caught. Additive
+            -- (no removal of the historic .filename mapping) so any
+            -- caller that already used FILES_NAMES expecting filenames
+            -- continues to work.
+            if variable_name == "FILES_NAMES" then
+                table.insert(variable_list, "request.body.multipart.name")
+                table.insert(variable_list, "request.body.multipart.filename")
+            else
+                local vname = seclang.__get_variable_name(variable_name)
+                if vname then
+                    table.insert(variable_list, vname)
+                end
             end
         end
         ::continue_outer::
