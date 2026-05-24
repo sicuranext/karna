@@ -22,6 +22,127 @@ local ka_rules, err = lrucache.new(10000)
 local debug = kong.log.debug
 local inspect = kong.log.inspect
 
+-- Parse and cache the rules a specific plugin instance contributes
+-- dynamically — i.e. CRS exclusion plugins loaded from disk
+-- (`crs_plugins_enabled` entries under `crs_plugins_path/<name>/plugins/`)
+-- and inline SecLang strings (`custom_secrules`). Keyed by
+-- `tostring(plugin_conf)` because Kong gives us a stable table identity
+-- per plugin-config record within a worker; reconfiguration
+-- (Admin API write) produces a new table, which invalidates the cache.
+local load_plugin_dynamic_rules = function(plugin_conf)
+  local enabled = plugin_conf.crs_plugins_enabled or {}
+  local inline = plugin_conf.custom_secrules or {}
+  if #enabled == 0 and #inline == 0 then return {} end
+
+  local out = {}
+
+  local base_dir = plugin_conf.crs_plugins_path or "/opt/coreruleset-plugins/"
+  if not base_dir:match("/$") then base_dir = base_dir .. "/" end
+
+  for _, plugin_name in ipairs(enabled) do
+    local plugin_dir = base_dir .. plugin_name .. "/plugins/"
+    local files = seclang.collect_plugin_conf_files(plugin_dir)
+    for fname, content in pairs(files) do
+      local parsed = seclang.parse_isolated(content)
+      local count = 0
+      for _ in pairs(parsed) do count = count + 1 end
+      debug("CRS plugin '" .. plugin_name .. "/" .. fname
+            .. "' parsed " .. tostring(count) .. " rules")
+      for _, r in pairs(parsed) do table.insert(out, r) end
+    end
+  end
+
+  for idx, raw in ipairs(inline) do
+    local parsed = seclang.parse_isolated(raw)
+    local count = 0
+    for _ in pairs(parsed) do count = count + 1 end
+    debug("custom_secrules[" .. idx .. "] parsed "
+          .. tostring(count) .. " rules")
+    for _, r in pairs(parsed) do table.insert(out, r) end
+  end
+
+  return out
+end
+
+local get_plugin_dynamic_rules = function(plugin_conf)
+  local key = "plugin_dyn_rules:" .. tostring(plugin_conf)
+  local cached = ka_rules:get(key)
+  if cached then return cached end
+  local parsed = load_plugin_dynamic_rules(plugin_conf)
+  ka_rules:set(key, parsed)
+  return parsed
+end
+
+-- Side-effects of a matched rule's `rule_control` list onto the
+-- per-request `kong.ctx.plugin.rule_controls`. Extracted so both the
+-- standard evaluate_rules path (first-match-wins) and the CRS-plugins
+-- multi-match path can apply controls without duplicating dispatch.
+local apply_rule_controls = function(controls)
+  if not controls then return end
+  for _, control in pairs(controls) do
+    if control.remove_rule and control.remove_rule.rule_id then
+      local id_spec = control.remove_rule.rule_id
+      local lo, hi = string.match(id_spec, "^(%d+)%-(%d+)$")
+      if lo and hi then
+        local lo_n, hi_n = tonumber(lo), tonumber(hi)
+        if lo_n and hi_n then
+          for n = lo_n, hi_n do
+            kong.ctx.plugin.rule_controls.ids[tostring(n)] = { action = "remove" }
+          end
+        end
+      else
+        kong.ctx.plugin.rule_controls.ids[id_spec] = { action = "remove" }
+      end
+    end
+
+    if control.remove_target_from_rule_by_id then
+      local r = control.remove_target_from_rule_by_id
+      if r.rule_id and r.target then
+        if not kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] then
+          kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] = {}
+        end
+        table.insert(kong.ctx.plugin.rule_controls.ids_targets[r.rule_id], r.target)
+      end
+    end
+
+    if control.remove_target_rule_by_tag and control.remove_target_rule_by_tag.tag then
+      local rt = control.remove_target_rule_by_tag
+      if rt.tag == "OWASP_CRS" then
+        table.insert(kong.ctx.plugin.rule_controls.remove_target_from_all_rules, rt.name)
+      else
+        if not kong.ctx.plugin.rule_controls.tags[rt.tag] then
+          kong.ctx.plugin.rule_controls.tags[rt.tag] = {
+            action = "remove_target",
+            target = { rt.name }
+          }
+        else
+          table.insert(kong.ctx.plugin.rule_controls.tags[rt.tag].target, rt.name)
+        end
+      end
+    end
+
+    if control.engine_off then
+      kong.ctx.plugin.rule_controls.engine_off = true
+    end
+  end
+end
+
+-- Evaluate a pack of `pass`-action rules (CRS exclusion plugins +
+-- `custom_secrules` whose actions are purely ctl:* / setvar:* side
+-- effects), applying every matching rule's rule_control. Unlike the
+-- standard `evaluate_rules` path this does NOT stop on first match
+-- and does NOT honor fixed_response (those rules belong in the main
+-- rule pool, evaluated through `loop_rules`).
+local apply_pass_rule_controls = function(plugin_conf, rules, phase)
+  if not rules or #rules == 0 then return end
+  local matched = engine:loop_rule_controls_pass(plugin_conf, rules, phase)
+  for _, rule in pairs(matched) do
+    if rule.rule_control then
+      apply_rule_controls(rule.rule_control)
+    end
+  end
+end
+
 local evaluate_rules = function(plugin_conf, rules, phase)
   local is_rule_matched, rule_matched_obj, matches_info, err = engine:loop_rules(plugin_conf, rules, phase)
   if err then
@@ -76,7 +197,36 @@ local evaluate_rules = function(plugin_conf, rules, phase)
 
         if control.remove_rule then
           if control.remove_rule.rule_id then
-            kong.ctx.plugin.rule_controls.ids[control.remove_rule.rule_id] = { action = "remove" }
+            -- `rule_id` can be a single id ("920273") or a hyphen-range
+            -- ("9507100-9507999") — CRS exclusion plugins use ranges to
+            -- disable the entire id block when the plugin is opted out.
+            local id_spec = control.remove_rule.rule_id
+            local lo, hi = string.match(id_spec, "^(%d+)%-(%d+)$")
+            if lo and hi then
+              local lo_n = tonumber(lo)
+              local hi_n = tonumber(hi)
+              if lo_n and hi_n then
+                for n = lo_n, hi_n do
+                  kong.ctx.plugin.rule_controls.ids[tostring(n)] = { action = "remove" }
+                end
+              end
+            else
+              kong.ctx.plugin.rule_controls.ids[id_spec] = { action = "remove" }
+            end
+          end
+        end
+
+        -- ctl:ruleRemoveTargetById=<id>;<target> — drop a specific
+        -- variable target from a specific rule, for this request only.
+        -- Used heavily by CRS exclusion plugins (wordpress, drupal, …)
+        -- to whitelist known-good arg/header names per app endpoint.
+        if control.remove_target_from_rule_by_id then
+          local r = control.remove_target_from_rule_by_id
+          if r.rule_id and r.target then
+            if not kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] then
+              kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] = {}
+            end
+            table.insert(kong.ctx.plugin.rule_controls.ids_targets[r.rule_id], r.target)
           end
         end
 
@@ -99,6 +249,13 @@ local evaluate_rules = function(plugin_conf, rules, phase)
             end
 
           end
+        end
+
+        -- ctl:ruleEngine=Off — disable rule evaluation entirely for
+        -- this request. Used by CRS exclusion plugins on endpoints
+        -- that need to bypass the WAF (e.g. file-manager pages).
+        if control.engine_off then
+          kong.ctx.plugin.rule_controls.engine_off = true
         end
 
       end
@@ -205,11 +362,19 @@ function plugin:access(plugin_conf)
     crs_validate_utf8_encoding = plugin_conf.validate_utf8_encoding and "1" or "0",
   }
 
-  -- set rule controls
+  -- set rule controls — per-request store populated by rules whose
+  -- `rule_control` action fires (CRS `ctl:*` directives end up here).
+  --   ids[<rule_id>]                 = { action = "remove" }  → drop rule entirely for this request
+  --   ids_targets[<rule_id>]         = { target1, target2 }   → drop these targets when <rule_id> evaluates
+  --   tags[<tag>]                    = { action = "remove_target", target = [...] }
+  --   remove_target_from_all_rules   = [target1, target2, …]  → drop globally for this request
+  --   engine_off                     = bool                   → ctl:ruleEngine=Off; skips all subsequent rules
   kong.ctx.plugin.rule_controls = {
     ids = {},
+    ids_targets = {},
     tags = {},
-    remove_target_from_all_rules = {}
+    remove_target_from_all_rules = {},
+    engine_off = false,
   }
 
   -- get global rules
@@ -252,15 +417,23 @@ function plugin:access(plugin_conf)
   -- loop rule control
   evaluate_rules(plugin_conf, rcontrol_rules, "access")
 
+  -- CRS exclusion plugins + inline custom_secrules. Evaluated AFTER the
+  -- built-in rule controls and BEFORE local + global rules so the
+  -- ctl:* directives they emit populate `kong.ctx.plugin.rule_controls`
+  -- in time to affect every subsequent rule's evaluation. Unlike the
+  -- detection-rule path, this evaluator does NOT stop on first match
+  -- — every matching pass-rule contributes its ctl:* side-effects
+  -- (the wp-rule-exclusions plugin alone fires multiple rules per
+  -- WordPress endpoint, each whitelisting a different ARGS target).
+  local plugin_dyn_rules = get_plugin_dynamic_rules(plugin_conf)
+  apply_pass_rule_controls(plugin_conf, plugin_dyn_rules, "access")
+
   kong.log.inspect(kong.ctx.plugin.rule_controls)
 
   -- loop local rules
   if plugin_conf.local_rules_enabled then
     evaluate_rules(plugin_conf, local_rules_request, "access")
   end
-
-
-
 
   -- loop the OWASP ModSecurity Core Rule Set rules
   if plugin_conf.coreruleset_enabled then

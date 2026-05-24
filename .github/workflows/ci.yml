@@ -38,6 +38,8 @@ jobs:
         run: lua ka-unittest/multipart_security_gaps.lua
       - name: Transformation functions (catches silent no-op regressions)
         run: lua ka-unittest/transformations.lua
+      - name: SecLang ctl:* directives (CRS exclusion plugin parser)
+        run: lua ka-unittest/seclang_ctl_directives.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

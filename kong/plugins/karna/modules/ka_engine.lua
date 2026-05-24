@@ -732,9 +732,58 @@ end
 
 
 
+-- Like `loop_rules`, but returns *every* matching rule rather than
+-- stopping at the first one. Intended for `pass`-action rule packs
+-- (CRS exclusion plugins, custom_secrules whose action is purely
+-- ctl:* / setvar:* side-effects) where multiple rules can legitimately
+-- fire on a single request and each contributes its own rule_control
+-- to `kong.ctx.plugin.rule_controls`. Caller is expected to walk the
+-- returned list and apply controls — `loop_rules` itself never does
+-- terminal response handling for this path.
+_M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
+    private_debug_enabled = plugin_conf.private_debug or false
+
+    local matched = {}
+    if not raw_rules or #raw_rules == 0 then return matched end
+
+    -- ctl:ruleEngine=Off short-circuit: a previously-applied control
+    -- in this same evaluator pass could have flipped this on. Respect
+    -- it across rules within the same pack.
+    if kong.ctx.plugin and kong.ctx.plugin.rule_controls
+       and kong.ctx.plugin.rule_controls.engine_off then
+        return matched
+    end
+
+    for _, rule in pairs(raw_rules) do
+        if kong.ctx.plugin.rule_controls.engine_off then break end
+        if rule.phase == phase then
+            local rule_pl = tonumber(rule.paranoia_level) or 1
+            local cfg_pl = tonumber(plugin_conf.paranoia_level) or 1
+            if rule_pl <= cfg_pl then
+                local rule_matched, _ = self:__match_rule_conditions(rule, plugin_conf)
+                if rule_matched then
+                    table.insert(matched, rule)
+                end
+            end
+        end
+    end
+
+    return matched
+end
+
 _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
     -- update module-level debug flag from plugin_conf for hot-path gating
     private_debug_enabled = plugin_conf.private_debug or false
+
+    -- ctl:ruleEngine=Off short-circuit. A previously-evaluated rule
+    -- (typically from a CRS exclusion plugin like wordpress-rule-exclusions)
+    -- set this when its match condition fired, signalling "skip the
+    -- entire WAF for this request". Honor it by returning immediately
+    -- — no rule fires, no audit log row, request flows through.
+    if kong.ctx.plugin and kong.ctx.plugin.rule_controls
+       and kong.ctx.plugin.rule_controls.engine_off then
+        return
+    end
 
     if #raw_rules > 0 then
         if private_debug_enabled then
@@ -1686,6 +1735,18 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                             values[remove_target] = nil
                         end
                     end
+                end
+
+                -- Per-(rule_id, target) removal — CRS `ctl:ruleRemoveTargetById=<id>;<target>`
+                -- populates rule_controls.ids_targets[<id>] = { target1, target2, ... }
+                -- in handler.lua when a plugin rule fires. Drop those target
+                -- entries from `values` so the current rule never sees them.
+                if values and kong.ctx.plugin.rule_controls.ids_targets
+                   and kong.ctx.plugin.rule_controls.ids_targets[rule.id] then
+                    for _, t in pairs(kong.ctx.plugin.rule_controls.ids_targets[rule.id]) do
+                        if values[t] then values[t] = nil end
+                    end
+                    if next(values) == nil then values = nil end
                 end
             end
 

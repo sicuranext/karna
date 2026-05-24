@@ -77,6 +77,26 @@ local schema = {
           -- values for a strict posture.
           { validate_utf8_encoding = { type = "boolean", default = true } },
 
+          -- CRS plugins (rule exclusions for specific apps — wordpress,
+          -- drupal, nextcloud, phpbb, …). Karna reuses the upstream
+          -- coreruleset-org plugin repos verbatim (we don't ship them):
+          -- the operator clones them into `crs_plugins_path` and lists
+          -- the ones to load in `crs_plugins_enabled`. Each entry is the
+          -- plugin's directory name under `crs_plugins_path` (e.g.
+          -- "wordpress-rule-exclusions-plugin"). The .conf files under
+          -- `<crs_plugins_path>/<name>/plugins/` are loaded via seclang
+          -- alongside the OWASP CRS rule pack.
+          { crs_plugins_path = { type = "string", default = "/opt/coreruleset-plugins/" } },
+          { crs_plugins_enabled = { type = "array", elements = { type = "string" }, default = {} } },
+
+          -- Inline SecLang rule strings. Each entry is a single SecRule
+          -- (or chained block) in ModSec syntax. Parsed via seclang at
+          -- init_worker and added to the global rule pool. Use it for
+          -- one-off exclusions or custom detection without dropping a
+          -- .conf file on disk. JSON local rules in `rules_request`
+          -- remain available for the same purpose; the two coexist.
+          { custom_secrules = { type = "array", elements = { type = "string" }, default = {} } },
+
           { rules_request = { type = "array", elements = { type = "string" } } },
           { rules_response = { type = "array", elements = { type = "string" } } },
 

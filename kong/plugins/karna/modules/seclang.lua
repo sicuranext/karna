@@ -9,6 +9,28 @@ if not seclang.crs_path:match("/$") then
     seclang.crs_path = seclang.crs_path .. "/"
 end
 
+-- Parse a SecLang blob into a fresh `{id = rule}` table without
+-- mutating the long-lived module-level `rules` cache (which holds the
+-- merged CRS + coreruleset_fix rule pack populated at init_worker).
+-- Used by handler.lua at access phase to load CRS exclusion plugins
+-- and `custom_secrules` per-instance — those need to be evaluated as
+-- a *separate* rule list and must not leak into the init-time pack.
+function seclang.parse_isolated(raw_rules, filter_by_id)
+    local backup = {}
+    for k, v in pairs(rules) do backup[k] = v end
+    for k in pairs(rules) do rules[k] = nil end
+
+    seclang.parse(raw_rules, filter_by_id)
+
+    local result = {}
+    for k, v in pairs(rules) do result[k] = v end
+
+    for k in pairs(rules) do rules[k] = nil end
+    for k, v in pairs(backup) do rules[k] = v end
+
+    return result
+end
+
 function seclang.parse(raw_rules, filter_by_id)
     local rule = ""
     local secrule_start = false
@@ -86,6 +108,38 @@ function seclang.collect_crs_conf_files(filter_conf_file_name)
     end
 
     return conf_files_table
+end
+
+-- Scan `<plugin_dir>/*.conf` (typically the `plugins/` subdir of a
+-- CRS exclusion plugin like wordpress-rule-exclusions-plugin) and
+-- return a `{ filename = raw_conf_content }` map ready to feed into
+-- `seclang.parse`. Missing dirs return an empty map — by design,
+-- the operator may declare a plugin name that isn't on disk yet
+-- (CI bootstrap, optional installs), and we'd rather load no
+-- rules than crash the access phase.
+function seclang.collect_plugin_conf_files(plugin_dir)
+    if not plugin_dir or plugin_dir == "" then return {} end
+    if not plugin_dir:match("/$") then plugin_dir = plugin_dir .. "/" end
+
+    local files = {}
+    -- io.popen here is fork+exec — acceptable because this only runs
+    -- on the first request after a plugin-config change (cached in the
+    -- handler-side LRU thereafter), not on every request.
+    local pfile = io.popen('ls -a "' .. plugin_dir .. '" 2>/dev/null')
+    if not pfile then return files end
+
+    for filename in pfile:lines() do
+        if filename:match("%.conf$") then
+            local fh = io.open(plugin_dir .. filename, "r")
+            if fh then
+                files[filename] = fh:read("*all")
+                fh:close()
+            end
+        end
+    end
+    pfile:close()
+
+    return files
 end
 
 function seclang.collect_data_file(path)
@@ -595,6 +649,89 @@ function seclang.__get_action(actions)
     return action
 end
 
+-- Resolve a `ctl:*` target spec (`ARGS:foo`, `REQUEST_HEADERS:Referer`,
+-- `ARGS`, …) into the Karna-side variable key the engine actually
+-- populates in `values`. CRS exclusion plugins use the ModSec variable
+-- naming on the right side of the semicolon; Karna's per-request target
+-- removal compares against keys like `request.arg.value:foo`, so we
+-- have to bridge here.
+function seclang.__parse_ctl_target(target_str)
+    if not target_str or target_str == "" then return nil end
+    local vname, varg = target_str:match("^([^:]+):(.+)$")
+    if vname and varg then
+        local mapped = seclang.__get_variable_name(vname)
+        if not mapped then return nil end
+        if vname == "REQUEST_HEADERS" or vname == "REQUEST_HEADERS_NAMES" then
+            varg = varg:lower()
+        end
+        return mapped .. ":" .. varg
+    end
+    return seclang.__get_variable_name(target_str)
+end
+
+-- Parse `ctl:*` directives from a SecRule's action string. These are
+-- per-request rule controls — when this rule's match condition fires,
+-- handler.lua applies them to `kong.ctx.plugin.rule_controls`,
+-- affecting how *subsequent* rules in the same request evaluate.
+-- Used heavily by CRS exclusion plugins (wordpress, drupal, nextcloud,
+-- …) to whitelist app-specific param names / disable rules on known
+-- endpoints. Supported directives:
+--   ctl:ruleRemoveById=<id|range>            → drop the rule entirely
+--   ctl:ruleRemoveTargetById=<id>;<target>   → drop one target from <id>
+--   ctl:ruleRemoveTargetByTag=<tag>;<target> → drop one target from rules tagged <tag>
+--   ctl:ruleEngine=Off                       → bypass WAF for this request
+-- Unrecognised directives are ignored (forward-compat with future CRS
+-- additions; matches our defensive parsing posture for malformed input).
+function seclang.__get_rule_controls(actions)
+    local controls = {}
+    if not actions or actions == "" then return controls end
+
+    -- ctl:ruleEngine=Off — must check before generic ctl: gmatch so
+    -- the casing is preserved and we can match the literal "Off".
+    if actions:match("ctl:ruleEngine%s*=%s*Off") then
+        table.insert(controls, { engine_off = true })
+    end
+
+    for directive_arg in actions:gmatch("ctl:([^,]+)") do
+        local name, rhs = directive_arg:match("^([%w_]+)%s*=%s*(.+)$")
+        if name and rhs then
+            if name == "ruleRemoveById" then
+                -- rhs is either "920100" or "920100-920199" — handler.lua
+                -- does the range expansion at request time.
+                table.insert(controls, { remove_rule = { rule_id = rhs } })
+            elseif name == "ruleRemoveTargetById" then
+                local id_part, target_part = rhs:match("^([%d%-]+);(.+)$")
+                if id_part and target_part then
+                    local mapped = seclang.__parse_ctl_target(target_part)
+                    if mapped then
+                        table.insert(controls, {
+                            remove_target_from_rule_by_id = {
+                                rule_id = id_part,
+                                target = mapped,
+                            }
+                        })
+                    end
+                end
+            elseif name == "ruleRemoveTargetByTag" then
+                local tag_part, target_part = rhs:match("^([^;]+);(.+)$")
+                if tag_part and target_part then
+                    local mapped = seclang.__parse_ctl_target(target_part)
+                    if mapped then
+                        table.insert(controls, {
+                            remove_target_rule_by_tag = {
+                                tag = tag_part,
+                                name = mapped,
+                            }
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    return controls
+end
+
 function seclang.__parse_rule(rule_raw, chained, filter_by_id)
     --print("----------> Parse rule -> chained:" .. tostring(chained))
 
@@ -720,6 +857,23 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
         end
         for k,v in pairs(rule.control) do
             table.insert(rules[id]["rule_control"], v)
+        end
+    end
+
+    -- Per-request rule controls declared via `ctl:*` action directives
+    -- (CRS exclusion plugins). Only parsed on the head rule of a chain
+    -- — for chained children we'd see the same actions string from
+    -- the head, which would double-register. The handler will apply
+    -- these to `kong.ctx.plugin.rule_controls` when this rule fires.
+    if not chained then
+        local ctl_controls = seclang.__get_rule_controls(actions)
+        if #ctl_controls > 0 then
+            if not rules[id]["rule_control"] then
+                rules[id]["rule_control"] = {}
+            end
+            for _, v in ipairs(ctl_controls) do
+                table.insert(rules[id]["rule_control"], v)
+            end
         end
     end
 
