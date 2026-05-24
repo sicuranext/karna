@@ -60,10 +60,15 @@ jobs:
             echo "::error::internal naming leak found"
             fail=1
           fi
+          # Allowed sicuranext references:
+          #  - blog.sicuranext.com — public bypass-research URL
+          #  - github.com/sicuranext/karna — this repo's own GitHub URL
+          #    (CI badge, clone instruction, link text)
+          #  - "SicuraNext s.r.l" — Apache-2.0 license attribution
           if grep -rni 'sicuranext' $PATHS \
               --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
               2>/dev/null \
-              | grep -v 'blog\.sicuranext\.com'; then
+              | grep -v 'blog\.sicuranext\.com\|github\.com/sicuranext/karna\|SicuraNext s\.r\.l'; then
             echo "::error::unexpected sicuranext reference in code"
             fail=1
           fi
