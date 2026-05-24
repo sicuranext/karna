@@ -80,6 +80,36 @@ _M.global_fps = {
         unconditional_match_rule_control = {
             { remove_rule = { rule_id = "911100" } },
 
+            -- 920360..920410 — CRS-config-gate rules that duplicate
+            -- Karna's schema-level limit knobs. Architectural principle
+            -- (memory: project_principle_config_vs_rules, 2026-05-24):
+            -- limits and configuration live in the plugin schema,
+            -- changeable on-the-fly via the Kong admin API. Detection
+            -- rules detect attacks. The two never mix.
+            --
+            -- Each of these CRS rules is shaped as:
+            --   SecRule &TX:<LIMIT> "@eq 1"  → gate: limit configured?
+            --     SecRule <ARGS_VARIANT> "@gt %{tx.<limit>}"  → enforce
+            -- which is `crs-setup.conf`-time policy expressed as a
+            -- ModSec rule. Karna's equivalent is a plugin_conf field
+            -- read by an always-on gate before the rule loop:
+            --
+            --   920360 ↔ plugin_conf.limit_arg_name_length
+            --   920370 ↔ plugin_conf.limit_arg_value_length
+            --   920380 ↔ plugin_conf.limit_arg_num
+            --   920390 ↔ plugin_conf.total_arg_value_length
+            --   920410 ↔ (body-length limit covers combined file sizes)
+            --
+            -- Removing the CRS rule pack avoids duplicate enforcement
+            -- and keeps the operator UX in one place (schema only). The
+            -- regression suite's per-rule tests are flagged as passed*
+            -- via crs-regression-test/start.py's KARNA_REMOVED_RULES map.
+            { remove_rule = { rule_id = "920360" } },
+            { remove_rule = { rule_id = "920370" } },
+            { remove_rule = { rule_id = "920380" } },
+            { remove_rule = { rule_id = "920390" } },
+            { remove_rule = { rule_id = "920410" } },
+
             -- 920650 — `SecRule TX:allow_method_override_parameter "@eq 0"`
             -- chained with `REQUEST_METHOD !@streq %{ARGS._method}`. The TX
             -- variable is a CRS-setup flag (defaulting to 0 in crs-setup.conf)
