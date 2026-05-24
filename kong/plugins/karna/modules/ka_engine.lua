@@ -1151,6 +1151,78 @@ _M.__match_op_unconditionalmatch = function(variable_name, value_to_match_on, _c
         ["matched_value"] = tostring(value_to_match_on or "")
     }
 end
+
+-- Negated counterparts for every binary operator that the dispatch
+-- knows about. Pattern: call the positive form; if it returned a match,
+-- the negation is false; if the positive returned no-match AND the
+-- input is set (not nil), the negation matches. Nil input never
+-- flips to "matched" — a missing value can't satisfy `!@op condition`
+-- in any sensible reading.
+local function _negate(variable_name, value_to_match_on, positive_match)
+    if value_to_match_on == nil then return false, nil end
+    if positive_match then return false, nil end
+    return true, {
+        ["matched_on"] = variable_name,
+        ["matched_value"] = string.sub(tostring(value_to_match_on), 1, 100)
+    }
+end
+
+_M.__match_op_beginswith_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_beginswith(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_contains_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_contains(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_pm_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_pm(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_pmFromFile_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_pmFromFile(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_lt_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_lt(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_gt_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_gt(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_ge_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_ge(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_le_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_le(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_ipmatch_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_ipmatch(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_libinjection_sqli_negative = function(variable_name, value_to_match_on)
+    local m, _ = _M.__match_op_libinjection_sqli(variable_name, value_to_match_on)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_libinjection_xss_negative = function(variable_name, value_to_match_on)
+    local m, _ = _M.__match_op_libinjection_xss(variable_name, value_to_match_on)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_validateByteRange_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_validateByteRange(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_validateUrlEncoding_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_validateUrlEncoding(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
+_M.__match_op_validateUtf8Encoding_negative = function(variable_name, value_to_match_on, condition_value)
+    local m, _ = _M.__match_op_validateUtf8Encoding(variable_name, value_to_match_on, condition_value)
+    return _negate(variable_name, value_to_match_on, m)
+end
 _M.__match_op_endswith = function(variable_name, value_to_match_on, condition_value)
     if value_to_match_on and condition_value then
         local escaped = string_gsub(condition_value, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
@@ -1763,6 +1835,9 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         if condition.op == "beginsWith" then
                             rule_condition_has_matched, matched_table = self.__match_op_beginswith(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!beginsWith" then
+                            rule_condition_has_matched, matched_table = self.__match_op_beginswith_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "rx" then
                             rule_condition_has_matched, matched_table = self.__match_op_rx(variable_name, try_value, condition_value_resolved)
                             if rule_condition_has_matched and matched_table then
@@ -1780,14 +1855,26 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         if condition.op == "libinjection_xss" then
                             rule_condition_has_matched, matched_table = self.__match_op_libinjection_xss(variable_name, try_value)
                         end
+                        if condition.op == "!libinjection_xss" then
+                            rule_condition_has_matched, matched_table = self.__match_op_libinjection_xss_negative(variable_name, try_value)
+                        end
                         if condition.op == "libinjection_sqli" then
                             rule_condition_has_matched, matched_table = self.__match_op_libinjection_sqli(variable_name, try_value)
+                        end
+                        if condition.op == "!libinjection_sqli" then
+                            rule_condition_has_matched, matched_table = self.__match_op_libinjection_sqli_negative(variable_name, try_value)
                         end
                         if condition.op == "pm" then
                             rule_condition_has_matched, matched_table = self.__match_op_pm(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!pm" then
+                            rule_condition_has_matched, matched_table = self.__match_op_pm_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "pmFromFile" then
                             rule_condition_has_matched, matched_table = self.__match_op_pmFromFile(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "!pmFromFile" then
+                            rule_condition_has_matched, matched_table = self.__match_op_pmFromFile_negative(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "eq" then
                             rule_condition_has_matched, matched_table = self.__match_op_eq(variable_name, try_value, condition_value_resolved)
@@ -1798,29 +1885,56 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         if condition.op == "lt" then
                             rule_condition_has_matched, matched_table = self.__match_op_lt(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!lt" then
+                            rule_condition_has_matched, matched_table = self.__match_op_lt_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "gt" then
                             rule_condition_has_matched, matched_table = self.__match_op_gt(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "!gt" then
+                            rule_condition_has_matched, matched_table = self.__match_op_gt_negative(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "ge" then
                             rule_condition_has_matched, matched_table = self.__match_op_ge(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!ge" then
+                            rule_condition_has_matched, matched_table = self.__match_op_ge_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "le" then
                             rule_condition_has_matched, matched_table = self.__match_op_le(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "!le" then
+                            rule_condition_has_matched, matched_table = self.__match_op_le_negative(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "contains" then
                             rule_condition_has_matched, matched_table = self.__match_op_contains(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!contains" then
+                            rule_condition_has_matched, matched_table = self.__match_op_contains_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "ipMatch" then
                             rule_condition_has_matched, matched_table = self.__match_op_ipmatch(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "!ipMatch" then
+                            rule_condition_has_matched, matched_table = self.__match_op_ipmatch_negative(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "validateByteRange" then
                             rule_condition_has_matched, matched_table = self.__match_op_validateByteRange(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!validateByteRange" then
+                            rule_condition_has_matched, matched_table = self.__match_op_validateByteRange_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "validateUrlEncoding" then
                             rule_condition_has_matched, matched_table = self.__match_op_validateUrlEncoding(variable_name, try_value, condition_value_resolved)
                         end
+                        if condition.op == "!validateUrlEncoding" then
+                            rule_condition_has_matched, matched_table = self.__match_op_validateUrlEncoding_negative(variable_name, try_value, condition_value_resolved)
+                        end
                         if condition.op == "validateUtf8Encoding" then
                             rule_condition_has_matched, matched_table = self.__match_op_validateUtf8Encoding(variable_name, try_value, condition_value_resolved)
+                        end
+                        if condition.op == "!validateUtf8Encoding" then
+                            rule_condition_has_matched, matched_table = self.__match_op_validateUtf8Encoding_negative(variable_name, try_value, condition_value_resolved)
                         end
                         if condition.op == "unconditionalMatch" then
                             rule_condition_has_matched, matched_table = self.__match_op_unconditionalmatch(variable_name, try_value, condition_value_resolved)
