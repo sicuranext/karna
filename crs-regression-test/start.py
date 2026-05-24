@@ -21,6 +21,7 @@ KARNA_REMOVED_RULES = {
     "920380": "limit_arg_num",
     "920390": "total_arg_value_length",
     "920410": "(body length limit covers combined file sizes)",
+    "920450": "request_headers_denied",
 }
 
 # parse arguments

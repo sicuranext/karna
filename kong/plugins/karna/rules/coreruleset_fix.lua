@@ -110,6 +110,19 @@ _M.global_fps = {
             { remove_rule = { rule_id = "920390" } },
             { remove_rule = { rule_id = "920410" } },
 
+            -- 920450 — `SecRule REQUEST_HEADERS_NAMES "@rx ^.*$"
+            -- chain SecRule TX:/^header_name_920450_/ "@within
+            -- %{tx.restricted_headers_basic}"`. The chain captures
+            -- every header name into a TX:/regex/ bag and checks
+            -- against `tx.restricted_headers_basic`, which is the
+            -- crs-setup.conf-time deny-list. Karna's equivalent is
+            -- `plugin_conf.request_headers_denied` (default
+            -- ["content-encoding", "proxy", "lock-token",
+            -- "content-range", "if"]) enforced by the always-on
+            -- `engine:check_request_headers_allowed` gate. The CRS
+            -- rule pack is redundant; remove it.
+            { remove_rule = { rule_id = "920450" } },
+
             -- 920650 — `SecRule TX:allow_method_override_parameter "@eq 0"`
             -- chained with `REQUEST_METHOD !@streq %{ARGS._method}`. The TX
             -- variable is a CRS-setup flag (defaulting to 0 in crs-setup.conf)
