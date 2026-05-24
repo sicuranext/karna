@@ -1205,6 +1205,16 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
         changing those objects will have side effects on other rules evaluation since those objects are shared across all rules.
     ]]--
     for i,condition in pairs(rule.conditions) do
+        -- Track whether this condition has matched at all. The match
+        -- check used to live in the per-(variable, value) leaf and
+        -- incremented `matched_conditions` for every value-level hit,
+        -- which over-counted chains whose first condition listed
+        -- several variables (e.g. 932180 with FILES + 3 X-Filename
+        -- header variants): a single attack input matched on TWO
+        -- variables of cond1 → matched_conditions=2 = #rule.conditions
+        -- → rule fired without ever entering cond2's FP-suppression
+        -- check. Track a per-condition flag and only count once.
+        local condition_already_counted = false
         for _,variable in pairs(condition.variables) do
 
             if private_debug_enabled then
@@ -1889,7 +1899,10 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         if private_debug_enabled then
                             kong.log.debug("----> Rule " .. tostring(rule.id) .. " matched on condition " .. tostring(i) .. " with value: " .. tostring(value_to_match_on))
                         end
-                        matched_conditions = matched_conditions + 1
+                        if not condition_already_counted then
+                            matched_conditions = matched_conditions + 1
+                            condition_already_counted = true
+                        end
 
                         -- execute setvar actions to populate TX variables for chained conditions
                         if rule.action and rule.action.setvar and kong.ctx.plugin.tx_variables then
@@ -1927,7 +1940,10 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         if private_debug_enabled then
                             kong.log.debug("----> Rule " .. tostring(rule.id) .. " matched on condition " .. tostring(i))
                         end
-                        matched_conditions = matched_conditions + 1
+                        if not condition_already_counted then
+                            matched_conditions = matched_conditions + 1
+                            condition_already_counted = true
+                        end
                         goto all_conditions_matched
                     end
                 end
