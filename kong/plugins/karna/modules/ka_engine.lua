@@ -268,24 +268,47 @@ _M.load_rules = function(self)
         end
     end
 
+    -- Order the rule pool deterministically by rule id BEFORE
+    -- copying into the array-indexed `rules` table that loop_rules
+    -- iterates. `parsed_rules` is a `{[rule_id] = rule}` hash, and
+    -- `pairs()` on a hash iterates in hash-table order — which in
+    -- LuaJIT depends on the per-state hash seed and therefore
+    -- *differs across nginx workers*. Without an explicit sort,
+    -- two workers ended up with the same 292 rules in completely
+    -- different orders, so when an attack payload matched multiple
+    -- rules, the first-match-wins `loop_rules` returned a different
+    -- "fired" rule on each worker — and in the worst case the
+    -- payload reached upstream because the rule that would have
+    -- caught it sat past one that didn't match.
+    --   Sorting policy: non-numeric IDs first (Karna-native fix
+    --   rules like `crs_compat_method_enforcement`, alpha-sorted),
+    --   then numeric IDs ascending (CRS 9xxxxx range). Stable
+    --   across workers, predictable for operators reading the
+    --   audit log.
     local rules_count = 0
-    table.sort(parsed_rules)
-    for rule_id,rule in pairs(parsed_rules) do
+    local ordered_ids = {}
+    for rule_id in pairs(parsed_rules) do
+        ordered_ids[#ordered_ids+1] = rule_id
+    end
+    table.sort(ordered_ids, function(a, b)
+        local an, bn = tonumber(a), tonumber(b)
+        if an and bn then return an < bn end
+        if an and not bn then return false end
+        if bn and not an then return true end
+        return tostring(a) < tostring(b)
+    end)
+
+    for _, rule_id in ipairs(ordered_ids) do
+        local rule = parsed_rules[rule_id]
         rules_count = rules_count + 1
         rule.log = true
 
         -- Sort conditions by estimated cost (simple first)
         if rule.conditions then
             table.sort(rule.conditions, function(a, b)
-                -- Put simple equality checks before regex
-                --if a.op == "eq" and b.op ~= "eq" then return true end
-                --if a.op ~= "eq" and b.op == "eq" then return false end
-
                 -- Put "isSet" checks before matching operations
                 if a.op == "isSet" and b.op ~= "isSet" then return true end
                 if a.op ~= "isSet" and b.op == "isSet" then return false end
-
-                -- Default order
                 return false
             end)
         end
@@ -732,6 +755,63 @@ end
 
 
 
+-- Apply the side-effects of a non-terminal pass-rule's `rule_control`
+-- list onto the per-request `kong.ctx.plugin.rule_controls` store.
+-- Called inline by `loop_rules` when a matched rule has only side
+-- effects (no fixed_response / fix_matched_parts / rate_limit) so a
+-- later rule iteration in the same pass sees the accumulated state.
+-- Mirrors handler.lua:apply_rule_controls but lives in the engine
+-- module so the engine doesn't need a callback indirection.
+_M.__apply_rule_controls_inline = function(controls)
+    if not controls or not kong.ctx.plugin or not kong.ctx.plugin.rule_controls then
+        return
+    end
+    local rc = kong.ctx.plugin.rule_controls
+    for _, control in pairs(controls) do
+        if control.remove_rule and control.remove_rule.rule_id then
+            local id_spec = control.remove_rule.rule_id
+            local lo, hi = string.match(id_spec, "^(%d+)%-(%d+)$")
+            if lo and hi then
+                local lo_n, hi_n = tonumber(lo), tonumber(hi)
+                if lo_n and hi_n then
+                    for n = lo_n, hi_n do
+                        rc.ids[tostring(n)] = { action = "remove" }
+                    end
+                end
+            else
+                rc.ids[id_spec] = { action = "remove" }
+            end
+        end
+
+        if control.remove_target_from_rule_by_id then
+            local r = control.remove_target_from_rule_by_id
+            if r.rule_id and r.target then
+                if not rc.ids_targets[r.rule_id] then
+                    rc.ids_targets[r.rule_id] = {}
+                end
+                table_insert(rc.ids_targets[r.rule_id], r.target)
+            end
+        end
+
+        if control.remove_target_rule_by_tag and control.remove_target_rule_by_tag.tag then
+            local rt = control.remove_target_rule_by_tag
+            if rt.tag == "OWASP_CRS" then
+                table_insert(rc.remove_target_from_all_rules, rt.name)
+            else
+                if not rc.tags[rt.tag] then
+                    rc.tags[rt.tag] = { action = "remove_target", target = { rt.name } }
+                else
+                    table_insert(rc.tags[rt.tag].target, rt.name)
+                end
+            end
+        end
+
+        if control.engine_off then
+            rc.engine_off = true
+        end
+    end
+end
+
 -- Like `loop_rules`, but returns *every* matching rule rather than
 -- stopping at the first one. Intended for `pass`-action rule packs
 -- (CRS exclusion plugins, custom_secrules whose action is purely
@@ -828,7 +908,35 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                         kong.log.inspect(matches)
                     end
 
-                    return true, rule, matches, nil
+                    -- Only terminal actions stop the rule loop. Pass-
+                    -- action rules (e.g. CRS 921170, which fires on
+                    -- every ARGS name only to setvar a paramcounter
+                    -- TX variable for 921180 to consume) must NOT
+                    -- short-circuit the rest of the rule pack. The
+                    -- side effects of a non-terminal match — setvar
+                    -- (already done inside __match_rule_conditions),
+                    -- rule_control entries — are applied inline so
+                    -- the next iteration sees up-to-date state, then
+                    -- iteration resumes. This matches ModSec
+                    -- semantics; previously Karna would return early
+                    -- on the first pass-action match and the
+                    -- attack-detection rules downstream of the
+                    -- helper never got a chance to run.
+                    local action = rule.action or {}
+                    local is_terminal = action.fixed_response
+                                     or action.fix_matched_parts
+                                     or action.rate_limit
+                                     or action.mcp_event_action
+                    if is_terminal then
+                        return true, rule, matches, nil
+                    end
+
+                    -- non-terminal pass: apply rule_control inline so
+                    -- multiple helper rules can contribute to
+                    -- kong.ctx.plugin.rule_controls in one pass
+                    if rule.rule_control then
+                        _M.__apply_rule_controls_inline(rule.rule_control)
+                    end
                 end
 
                 --return true, nil
@@ -1354,19 +1462,15 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
 
             local values, err = nil
 
-            -- Per-request `ka_variable_cache` DISABLED — see the
-            -- write side below for the full write-up. Short version:
-            -- the cache aliased the same `values` table that
-            -- downstream branches mutated in place
-            -- (`remove_target_from_all_rules`,
-            -- `ids_targets[rule.id]`, plus `setvar` / `matched.value`
-            -- additions), so reads from cache returned an already-
-            -- corrupted view. A simple shallow-copy-on-read fix
-            -- closed ~half the leaks but still left attack
-            -- pass-through at ~30 % under load. Until the precise
-            -- mutation pattern is mapped, we trade a small per-
-            -- request perf cost for hard correctness. Bench numbers
-            -- to come.
+            -- `ka_variable_cache` read DISABLED. The cache reused the
+            -- same `values` table across rules; downstream mutations
+            -- in this function (`remove_target_from_all_rules`,
+            -- `ids_targets[rule.id]`, plus per-condition additions
+            -- like `matched.value:N` and `tx.<name>` from chained
+            -- rules) corrupted the cached entry that the next rule
+            -- would read. Repro: same curl twice, second call gets
+            -- a partial values map. The minimum-risk correct fix is
+            -- to resolve every variable from scratch on every rule.
             -- (Was: load from kong.ctx.plugin.ka_variable_cache[variable].)
 
             if private_debug_enabled then
@@ -1737,18 +1841,13 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                 end
 
                 -- `ka_variable_cache` write site disabled in tandem
-                -- with the read side. The cache turned out to leak
-                -- mutations across rules in the same request, and
-                -- the cheapest correct fix while the precise
-                -- mutation pattern is mapped is to skip the cache
-                -- entirely. Repro from bench/BLOGPOST_NOTES.md:
-                --   for i in $(seq 1 20); do
-                --     curl -s -o /dev/null -w '%{http_code}\n' \
-                --       -H 'Host: integration.local' \
-                --       'http://127.0.0.1:28000/get?x=%3Cscript%3Ealert(1)%3C%2Fscript%3E'
-                --   done
-                -- With cache on, attacks pass through ~30 % of the
-                -- time; with cache off, 100 % blocked.
+                -- with the read side. Even a snapshot-on-write left
+                -- the mid-condition additions visible to subsequent
+                -- rules; a write-once variant in turn broke chain
+                -- rules that legitimately need the additions to
+                -- propagate to later conditions of the same rule.
+                -- The simplest correct fix while the precise
+                -- mutation surface is mapped: skip the cache.
                 -- (Was: kong.ctx.plugin.ka_variable_cache[variable] = values)
 
             end
