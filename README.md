@@ -45,6 +45,26 @@ blocked, the upstream never sees the unsafe input. See
 [Sanitize, don't block](#sanitize-dont-block-karnas-killer-feature)
 below.
 
+For the specific FP class around the **Referer header** —
+historically a top contributor to noisy WAF dashboards because it
+carries arbitrary user-navigated URLs full of syntax-breaking
+characters — Karna surfaces additional structured views of the
+request:
+
+- `request.header.referer.{scheme,host,path,query}` — the Referer
+  parsed as a URL, exposed component by component, plus the
+  Referer's querystring flattened the same way request args are
+  (`request.header.referer.query.<arg>`).
+- `request.header_no_fp.value:<name>` — every request header
+  *except* the headers most commonly responsible for false positives:
+  Referer, User-Agent, Accept-*, Content-*, Sec-*, Authorization.
+
+Both live in the per-request inspection table — readable from
+`%{var}` template macros and surfaced in the audit log enrichment
+block. Direct rule-variable matching against them is not yet wired
+into the match dispatch (you can target them via macro substitution,
+not as a `conditions[].variables` entry today).
+
 ### How it differs from ModSecurity
 
 | | Karna | ModSecurity 3 / libmodsec |
