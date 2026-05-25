@@ -148,10 +148,16 @@ else
     curl -fs -X POST "$ADMIN/services/$SERVICE/plugins" "${payload[@]}" >/dev/null
 fi
 
-# Settling time + per-worker cache warmup. The override cache is
-# keyed on `tostring(plugin_conf)` and warms lazily on first request;
-# without warmup the first real test can hit a cold worker.
-sleep 3
+# Probe loop for route propagation, then per-worker cache warmup.
+# Same pattern as run.sh / ratelimit.sh. The override cache is keyed
+# on `tostring(plugin_conf)` and warms lazily on first request.
+blue "==> waiting for route propagation"
+for i in $(seq 1 60); do
+    s=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $HOST" "$PROXY/")
+    if [ "$s" = "200" ]; then green "    route active after ${i}s"; break; fi
+    sleep 1
+    if [ "$i" -eq 60 ]; then red "    route never became active (last: $s)"; exit 1; fi
+done
 for _ in $(seq 1 20); do
     curl -fs -o /dev/null -H "Host: $HOST" "$PROXY/?warmup=1" || true
 done

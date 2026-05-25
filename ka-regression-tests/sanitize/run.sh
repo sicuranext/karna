@@ -109,12 +109,18 @@ else
     curl -fs -X POST "$ADMIN/services/$SERVICE/plugins" "${payload[@]}" >/dev/null
 fi
 
-# Give Kong a beat to propagate config to all workers, then warm the
-# per-worker rule cache by sending a few benign requests. Without
-# warmup, the first real test occasionally lands on a cold worker
-# that hasn't parsed the local rule yet and the assertion fails on a
-# transient miss.
-sleep 3
+# Probe loop for route propagation. CI runners can take ~10s to
+# propagate a brand-new service / route across all Kong workers; on
+# the local dev image it's ~1s. Bail out early once the route
+# answers, then warm the per-worker rule cache so the first real
+# test doesn't lose a request to a cold worker.
+blue "==> waiting for route propagation"
+for i in $(seq 1 60); do
+    s=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $HOST" "$PROXY/")
+    if [ "$s" = "200" ]; then green "    route active after ${i}s"; break; fi
+    sleep 1
+    if [ "$i" -eq 60 ]; then red "    route never became active (last: $s)"; exit 1; fi
+done
 for _ in $(seq 1 20); do
     curl -fs -o /dev/null -H "Host: $HOST" "$PROXY/get?warmup=1" || true
 done
