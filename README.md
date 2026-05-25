@@ -3,20 +3,10 @@
 [![CI](https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg)](https://github.com/sicuranext/karna/actions/workflows/ci.yml)
 
 A modern WAF (Web Application Firewall) for Kong Gateway — OWASP
-CoreRuleSet compatible, MCP-aware, rate-limit-native, and the first
-WAF designed for **~0 false positives and zero unexpected blocks**.
+CoreRuleSet compatible, MCP-aware, rate-limit-native, with rules in
+SecLang or JSON.
 
 ## Why Karna
-
-**Sanitize, don't block.** When a CRS rule fires on a payload that
-looks like SQLi or XSS but is actually a proper name (`O'Brien`), an
-Italian street address (`Via dell'Orso, 5`), or any innocuous string
-that happens to contain syntax-breaking characters, Karna can **strip
-the dangerous characters in place and forward the request upstream**
-instead of returning 403. The user is never blocked. The upstream
-never sees the unsafe input. False positives stop being incidents.
-See [Sanitize, don't block](#sanitize-dont-block-karnas-killer-feature)
-below.
 
 **Modern operator surface.**
 
@@ -44,6 +34,16 @@ below.
 - **Sibling-plugin enrichment.** Karna reads `kong.ctx.shared` keys
   set by GeoIP / ASN / UA-parser plugins and surfaces them as rule
   variables and audit log fields.
+
+**Designed for ~0 false positives.** When a CRS rule fires on a
+payload that looks like SQLi or XSS but is actually a proper name
+(`O'Brien`), an Italian street address (`Via dell'Orso, 5`), or any
+innocuous string that happens to contain syntax-breaking characters,
+Karna can strip the dangerous characters in place and forward the
+request upstream instead of returning 403. The user is never
+blocked, the upstream never sees the unsafe input. See
+[Sanitize, don't block](#sanitize-dont-block-karnas-killer-feature)
+below.
 
 ### How it differs from ModSecurity
 
