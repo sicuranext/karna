@@ -115,17 +115,36 @@ else
     curl -fs -X POST "$ADMIN/services/$SERVICE/plugins" "${payload[@]}" >/dev/null
 fi
 
-# Settle + warmup. The counter we'll target lives at
-# karna:rl:local_ratelimit_test:<client_ip>. Wiping it now keeps
-# repeated runs idempotent.
-sleep 3
+# Wait for the new service / route / plugin to propagate across all
+# Kong workers. CI environments need noticeably longer than a local
+# dev box (observed: the first ~10s of requests after upsert get a
+# 404 because the router cache hasn't picked up the new route on
+# every worker). Probe until 200 OR until the 60s ceiling.
+blue "==> waiting for route propagation"
+for i in $(seq 1 60); do
+    s=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $HOST" "$PROXY/")
+    if [ "$s" = "200" ]; then
+        green "    route active after ${i}s"
+        break
+    fi
+    sleep 1
+    if [ "$i" -eq 60 ]; then
+        red "    route never became active (last status: $s)"
+        exit 1
+    fi
+done
+
+# Drain any stale counter we might be racing against (idempotent
+# reruns) and warm the per-worker rule cache so the first real test
+# doesn't lose a request to a cold worker.
 docker exec karna-redis redis-cli --no-auth-warning KEYS 'karna:rl:local_ratelimit_test:*' \
     | xargs -r docker exec karna-redis redis-cli --no-auth-warning DEL >/dev/null 2>&1 || true
 for _ in $(seq 1 20); do
     curl -fs -o /dev/null -H "Host: $HOST" "$PROXY/" || true
 done
-# clear the warmup-side counter increments from the warm path (none —
-# warmup hits `/` which doesn't match `/limited` — but be safe).
+# Wipe again after warmup — `/` doesn't match `/limited` so the
+# counter stays at 0, but a future change to the rule could regress
+# this assumption silently.
 docker exec karna-redis redis-cli --no-auth-warning KEYS 'karna:rl:local_ratelimit_test:*' \
     | xargs -r docker exec karna-redis redis-cli --no-auth-warning DEL >/dev/null 2>&1 || true
 
