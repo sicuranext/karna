@@ -500,17 +500,22 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             end
 
             -- determine action label
-            -- precedence: sanitized > block > detect > log
+            -- precedence: sanitized > rate_limited > block > detect > log
             -- - sanitized: rule had fix_matched_parts and the engine
             --   stripped dangerous chars before forwarding upstream
             --   (Karna's FP-mitigation primitive — request still goes
             --   through, just neutralized)
+            -- - rate_limited: rule had rate_limit and the Redis counter
+            --   exceeded the configured limit (returned 429)
             -- - block: blocking mode + fixed_response → 403 returned
             -- - detect: monitoring mode + fixed_response → 200 logged
-            -- - log: rule fired without a response action (pass / setvar)
+            -- - log: rule fired without a response action (pass / setvar
+            --   / under-threshold rate_limit increment)
             local action_label = "log"
             if matched.sanitized then
                 action_label = "sanitized"
+            elseif matched.rate_limited then
+                action_label = "rate_limited"
             elseif rule.action and rule.action.fixed_response then
                 if plugin_conf.engine_blocking_mode then
                     action_label = "block"
@@ -638,29 +643,32 @@ _M.redis_connect = function(self)
     return red
 end
 
+-- Increment a Redis counter (atomically via INCR) and, if the key
+-- was newly created by this call, set its TTL to `expire_time`
+-- seconds — fixed-window rate-limit semantics. Returns the new
+-- counter value on success, or nil if Redis is unreachable / the
+-- INCR failed; callers (notably the `rate_limit` rule action) treat
+-- nil as "counter unavailable, fail open".
 _M.redis_incr_key = function(self, key, expire_time)
     local redis_client = self:redis_connect()
+    if not redis_client then return nil end
 
-    if redis_client then
-        -- check if key exists
-        local exists, err = redis_client:get(key)
+    local exists, _err_get = redis_client:get(key)
 
-        local res, err = redis_client:incr(key)
-        if not res then
-            kong.log.err("Karna: failed to increment key: ", err)
-            return
-        end
+    local res, err = redis_client:incr(key)
+    if not res then
+        kong.log.err("Karna: failed to increment key: ", err)
+        return nil
+    end
 
-        if exists == ngx.null then
-            if expire_time then
-                local ok, err = redis_client:expire(key, expire_time)
-                if not ok then
-                    kong.log.err("Karna: failed to set expire time for key: ", err)
-                    return
-                end
-            end
+    if exists == ngx.null and expire_time then
+        local ok, expire_err = redis_client:expire(key, expire_time)
+        if not ok then
+            kong.log.err("Karna: failed to set expire time for key: ", expire_err)
         end
     end
+
+    return tonumber(res)
 end
 
 _M.redis_incr_key_async = function(premature, self, plugin_conf, key, expire_time)

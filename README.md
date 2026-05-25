@@ -162,6 +162,74 @@ maps in `start.py` — every CRS rule we intentionally don't fire (and
 why) is enumerated there. Anything not listed and still failing is a
 real gap, please open an issue.
 
+## Rate limiting
+
+Karna has a native `rate_limit` rule action. No second plugin in the
+chain, no separate config surface — the same rule that detects a
+condition can also throttle requests that match it. Counters live in
+Redis (`redis_host` / `redis_port` / `redis_password` in the plugin
+config; the dev image's `redis` service is the reference setup).
+
+Mechanics: when a rule with `rate_limit` fires, Karna atomically
+`INCR`s a Redis key `karna:rl:<rule_id>:<resolved_key>` and sets a
+TTL = `window_seconds` the first time the key is created (fixed-
+window semantics). If the post-increment counter exceeds `limit`,
+the rule returns the configured response (defaults to 429 Too Many
+Requests with an automatic `Retry-After` header). Under-threshold
+matches still increment the counter but flow upstream.
+
+Example: cap `/api/login` to 5 attempts per minute per source IP and
+return a friendly message when exceeded.
+
+```json
+{
+  "id": "rl-login-per-ip",
+  "phase": "access",
+  "log": true,
+  "message": "login rate limit",
+  "tags": ["ratelimit", "auth"],
+  "conditions": [{
+    "op": "beginsWith",
+    "transform": [],
+    "value": "/api/login",
+    "variables": ["request.raw_path"]
+  }],
+  "action": {
+    "rate_limit": {
+      "key": "%{remote_addr}",
+      "limit": 5,
+      "window_seconds": 60,
+      "response": {
+        "status_code": 429,
+        "body": "Too many login attempts. Try again in a minute.",
+        "headers": { "content-type": "text/plain" }
+      }
+    }
+  }
+}
+```
+
+Configuration fields:
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `key` | string | `"%{remote_addr}"` | Counter cardinality. Supports `%{var}` macros — currently `%{remote_addr}`, `%{request.method}`, `%{request.host}`, `%{request.scheme}`, `%{request.path}`. Unrecognised macros stay literal. |
+| `limit` | number | `0` (block-all if set) | Maximum requests allowed in the window. |
+| `window_seconds` | number | `60` | TTL of the counter; fixed-window starting at first request. |
+| `response` | object | 429 / `Too Many Requests\r\n` | Optional override for `status_code`, `body`, `headers`. `Retry-After` is set automatically to `window_seconds` unless you supply it yourself. |
+
+Audit log integration: when the counter crosses the threshold, the
+match is logged with `action: "rate_limited"` plus
+`rate_limit_count` / `rate_limit_limit` / `rate_limit_window` /
+`rate_limit_key` fields. Under-threshold matches log with
+`action: "log"` and the same metadata, so a dashboard can show
+"requests on this rule, threshold pressure" without the rule needing
+to fire its terminal action.
+
+Detection-only mode (`engine_blocking_mode=false`) still increments
+the counter — useful for dialing in a threshold before turning the
+gate on. The terminal 429 only happens when blocking is enabled.
+
 ## Sanitize, don't block — Karna's killer feature
 
 The biggest source of WAF false positives is rules firing on benign

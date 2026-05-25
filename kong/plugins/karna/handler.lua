@@ -73,6 +73,43 @@ local get_plugin_dynamic_rules = function(plugin_conf)
   return parsed
 end
 
+-- Lightweight `%{var}` resolver for access-phase callers that need to
+-- resolve a small set of request-context macros (rate_limit key,
+-- response override body) without paying the cost of the full
+-- inspection_table parser (which eagerly reads the request body and
+-- has measurable PL1 side effects when invoked early). Falls back to
+-- leaving unrecognised macros literal — same fail-soft posture as
+-- engine:replace_variable_in_string when its inspection_table is
+-- empty. Supported macros today:
+--   %{remote_addr}     — ngx.var.remote_addr (Kong-visible client IP)
+--   %{request.method}  — HTTP method
+--   %{request.host}    — Host header
+--   %{request.scheme}  — http / https
+--   %{request.path}    — raw path (no querystring)
+-- Anything else stays literal.
+local resolve_request_macros = function(str)
+  if type(str) ~= "string" then return str end
+  -- Cheap early-out for the common case of no macros at all. The
+  -- 2-character `%{` substring is what gsub's pattern matches; we
+  -- pass plain=true so the search is a literal byte-match (a
+  -- previous version used `%%{` which is actually the 3-character
+  -- sequence `%`,`%`,`{` and silently skipped every callsite).
+  if not str:find("%{", 1, true) then return str end
+
+  local resolvers = {
+    ["remote_addr"]    = function() return tostring(ngx.var.remote_addr or "") end,
+    ["request.method"] = function() return tostring(kong.request.get_method() or "") end,
+    ["request.host"]   = function() return tostring(kong.request.get_host() or "") end,
+    ["request.scheme"] = function() return tostring(kong.request.get_scheme() or "") end,
+    ["request.path"]   = function() return tostring(kong.request.get_path() or "") end,
+  }
+  return (str:gsub("%%{([^}]+)}", function(name)
+    local fn = resolvers[name]
+    if fn then return fn() end
+    return "%{" .. name .. "}"  -- leave literal
+  end))
+end
+
 -- Selector grammar for `rule_action_overrides` / `rule_response_overrides`.
 -- `selector` matches when ANY positive criterion (ids / id_ranges / tags)
 -- matches AND no `except_*` criterion matches. Empty positive set means
@@ -227,7 +264,7 @@ local apply_action_and_response_overrides = function(plugin_conf, rule)
         end
         if ov.response.status_code then new_fr.status_code = ov.response.status_code end
         if ov.response.body then
-          new_fr.body = engine:replace_variable_in_string(ov.response.body)
+          new_fr.body = resolve_request_macros(ov.response.body)
         end
         if ov.response.headers then
           for k, v in pairs(ov.response.headers) do new_fr.headers[k] = v end
@@ -381,6 +418,60 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       match_entry.sanitized = true
       -- skip the block branch; sanitize already mutated the upstream
       -- request and the response should be whatever upstream returns.
+      return
+    end
+
+    -- Rate-limit action: when a rule with `rate_limit` declared on its
+    -- action fires, Karna increments a Redis counter keyed by the
+    -- rule id + the resolved `key` macro (default `%{remote_addr}`),
+    -- sets a TTL = `window_seconds` the first time the counter is
+    -- created (fixed-window semantics), and:
+    --   - if the post-incr count exceeds `limit` → respond with the
+    --     configured response (defaults to 429 Too Many Requests).
+    --   - otherwise → request continues to upstream as if the rule
+    --     hadn't fired.
+    -- Counter increments happen regardless of engine_blocking_mode
+    -- (detection-only dry runs are useful for tuning thresholds);
+    -- the terminal 429 only fires when blocking is on.
+    if rule_matched_obj.action and rule_matched_obj.action.rate_limit then
+      local rl = rule_matched_obj.action.rate_limit
+      local limit = tonumber(rl.limit) or 0
+      local window = tonumber(rl.window_seconds) or 60
+      local key_macro = rl.key
+      if type(key_macro) ~= "string" or key_macro == "" then
+        key_macro = "%{remote_addr}"
+      end
+      local resolved_key = resolve_request_macros(key_macro)
+      local full_key = "karna:rl:" .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
+
+      utils.redis_host = plugin_conf.redis_host
+      utils.redis_port = plugin_conf.redis_port
+      utils.redis_password = plugin_conf.redis_password
+
+      local count = utils:redis_incr_key(full_key, window)
+      match_entry.rate_limit_count = count
+      match_entry.rate_limit_limit = limit
+      match_entry.rate_limit_window = window
+      match_entry.rate_limit_key = full_key
+      match_entry.rate_limited = (count ~= nil and limit > 0 and count > limit)
+
+      if plugin_conf.engine_blocking_mode and match_entry.rate_limited then
+        local resp = rl.response or {}
+        local headers = resp.headers
+        if type(headers) ~= "table" then
+          headers = { ["content-type"] = "text/plain", ["cache-control"] = "no-store" }
+        end
+        if not headers["retry-after"] and not headers["Retry-After"] then
+          headers["Retry-After"] = tostring(window)
+        end
+        response_exit(
+          tonumber(resp.status_code) or 429,
+          resp.body or "Too Many Requests\r\n",
+          headers
+        )
+      end
+      -- Counter has been bumped; the rule's role for this request is
+      -- done. Skip the standard block / control branches below.
       return
     end
 

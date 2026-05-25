@@ -145,6 +145,9 @@ jobs:
       - name: Action / response overrides regression (config-level)
         run: ./ka-regression-tests/sanitize/overrides.sh
 
+      - name: Rate-limit action regression (Redis counter + 429)
+        run: ./ka-regression-tests/sanitize/ratelimit.sh
+
       - name: Dump Kong logs on failure
         if: failure()
         run: |

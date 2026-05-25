@@ -874,13 +874,23 @@ _M.__match_op_rx_negative = function(variable_name, value_to_match_on, regex)
     return false, nil
 end
 _M.__match_op_beginswith = function(variable_name, value_to_match_on, string_to_match)
-    if variable_name and value_to_match_on then
-        local matched_table = {}
-        local m = string_match(value_to_match_on, "^" .. string_to_match)
-        if m then
-            matched_table["matched_on"] = variable_name
-            matched_table["matched_value"] = string.sub(value_to_match_on, 1, 100)
-            return true, matched_table
+    -- Plain prefix match. The previous implementation built a Lua pattern
+    -- `"^" .. string_to_match` and called `string.match`, which broke for
+    -- any prefix containing Lua-pattern metacharacters (`-`, `.`, `(`,
+    -- `+`, `*`, `?`, `[`, `]`, `^`, `$`, `%`) — e.g. `beginsWith
+    -- "/ratelimit-probe"` would silently never match because `-` is a
+    -- quantifier. Use `string.find` with the plain flag set and check
+    -- the start offset for true prefix semantics. Matches the
+    -- escape-and-anchor approach already used by __match_op_endswith.
+    if variable_name and value_to_match_on and string_to_match then
+        local start_idx = string_find(tostring(value_to_match_on),
+                                      tostring(string_to_match),
+                                      1, true)
+        if start_idx == 1 then
+            return true, {
+                ["matched_on"]    = variable_name,
+                ["matched_value"] = string.sub(tostring(value_to_match_on), 1, 100),
+            }
         end
     end
     return false, nil
@@ -2761,10 +2771,18 @@ end
 
 
 -- INSPECTION TABLE FUNCTIONS
+--
+-- Populates kong.ctx.plugin.inspection_table with a flat list of
+-- `{[name] = value}` entries that downstream consumers
+-- (`__get_value_from_inspection_table`, `replace_variable_in_string`)
+-- read to resolve `%{var}` macros. Idempotent: once populated for a
+-- request, subsequent calls return early so we don't duplicate rows.
+-- Called once from access (to support macros in rate_limit keys /
+-- response override bodies) and once from header_filter (response-
+-- side rule context).
 _M.get_inspection_table = function(self, plugin_conf)
-    if not kong.ctx.plugin.inspection_table then
-        kong.ctx.plugin.inspection_table = {}
-    end
+    if kong.ctx.plugin.inspection_table then return end
+    kong.ctx.plugin.inspection_table = {}
 
     --[[if plugin_conf then
         for k,v in pairs(plugin_conf) do
@@ -3141,6 +3159,19 @@ _M.__get_value_from_inspection_table = function(self, pattern, filter_out_patter
     local return_table = {}
     if not filter_out_pattern then
         filter_out_pattern = "^$"
+    end
+    -- `inspection_table` is populated by `get_inspection_table()` which
+    -- is invoked from `header_filter`. Access-phase callers (e.g. the
+    -- rate_limit dispatch resolving `%{remote_addr}` in the rule key)
+    -- can reach this before the table exists — return an empty result
+    -- rather than crashing on `pairs(nil)`. The macro `%{name}` then
+    -- stays unresolved in the caller's string, which is the desired
+    -- "fail-soft" behaviour: a literal `%{remote_addr}` becomes part of
+    -- the Redis key, which still functions (one counter per client
+    -- with the same literal) but is uniform across clients — better
+    -- than crashing the request.
+    if not kong.ctx.plugin or not kong.ctx.plugin.inspection_table then
+        return return_table
     end
     for _,v in pairs(kong.ctx.plugin.inspection_table) do
         for key,_ in pairs(v) do
