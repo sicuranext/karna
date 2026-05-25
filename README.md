@@ -533,37 +533,60 @@ via `env <NAME>;` directives in the main context.
 
 ## Supported operators
 
-The `op` field of a rule condition selects one of these operators.
+The `op` field of a rule condition names one of these operators.
 The set is dispatched by string equality in `ka_engine.lua` — anything
 not in this table will simply never match.
 
-Every binary operator has both a positive and a negated form
-(`!<op>`). The negation fires when the positive doesn't match AND
-the value being tested is set (a missing/`nil` variable doesn't
-satisfy a negated condition — the test is "value is present AND
-doesn't match", not "value is missing OR doesn't match").
+### Negation
 
-| Operator | Negation | Description |
+Every binary operator can be negated. Karna's canonical condition
+shape is `{op = "<base>", negated = true|false}` — a separate boolean
+field rather than a `!` prefix on the operator string. We deliberately
+moved away from ModSecurity's `!@op` syntax because:
+
+- The Lua field name is greppable (`negated:true` lights up every
+  negated condition in the codebase).
+- The default is "not negated" — `negated` is checked strictly
+  (`== true`), so stray truthy strings/numbers don't accidentally
+  invert a rule.
+- It separates "what operator" from "polarity of the match", which
+  was conflated in the legacy form.
+
+For back-compat, the engine still accepts `op = "!<base>"` on input —
+SecLang's `@!op` parser emits the canonical shape now, but
+hand-written JSON local rules can use either form. The legacy form is
+a back-compat surface, not the documented public API; new rules
+should use `negated`.
+
+Negation semantics: the negated form fires when the positive doesn't
+match AND the value being tested is set (a missing/`nil` variable
+doesn't satisfy a negated condition — the test is "value is present
+AND doesn't match", not "value is missing OR doesn't match"). One
+exception: `isSet` with `negated: true` is the only sensible way to
+spell "variable is absent", so it explicitly fires on a missing
+variable.
+
+| Operator | Negatable | Description |
 |---|---|---|
-| `rx`                  | `!rx`                | PCRE regex match against the variable value (uses `ngx.re.match` under the hood). |
-| `eq`                  | `!eq`                | Exact equality (strings or numbers). |
-| `ge` / `gt` / `lt` / `le` | `!ge` / `!gt` / `!lt` / `!le` | Numeric ordering — value must parse as a number. Non-numeric inputs fail closed. |
-| `beginsWith`          | `!beginsWith`        | String prefix match. |
-| `endsWith`            | `!endsWith`          | String suffix match. |
-| `contains`            | `!contains`          | Substring presence (literal, case-sensitive). |
-| `isSet`               | `!isSet`             | Whether the variable resolves to anything at all. |
-| `within`              | `!within`            | Variable value is one of the whitespace-separated tokens in `value`. |
-| `pm`                  | `!pm`                | Phrase match: any whitespace-separated token in `value` appears in the variable. |
-| `pmFromFile`          | `!pmFromFile`        | Like `pm`, but the phrase list is loaded from a file. |
-| `ipMatch`             | `!ipMatch`           | IPv4 / IPv6 / CIDR match against a comma- or whitespace-separated list. Uses `resty.ipmatcher`; compiled matcher cached per condition value. |
-| `libinjection_sqli`   | `!libinjection_sqli` | SQL-injection detection via `libinjection`. |
-| `libinjection_xss`    | `!libinjection_xss`  | XSS detection via `libinjection`. |
-| `validateUrlEncoding` | `!validateUrlEncoding` | Matches when input contains malformed `%XX` sequences. |
-| `validateUtf8Encoding`| `!validateUtf8Encoding` | Matches when input is NOT valid UTF-8 (lone continuation bytes, truncated sequences, overlong encodings, surrogates, codepoints > U+10FFFF). |
-| `validateByteRange`   | `!validateByteRange` | Matches when any byte in input falls OUTSIDE the `value` ranges (e.g. `"32-126,9,10,13"`). |
-| `unconditionalMatch`  | —                    | Always true. Used by CRS as the predicate of chains gated entirely by setvar side-effects on other conditions. |
-| `mcp_method_in`       | —                    | JSON-RPC `method` field is in `value` (MCP). |
-| `mcp_jsonrpc_valid`   | —                    | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
+| `rx`                  | ✓ | PCRE regex match against the variable value (uses `ngx.re.match` under the hood). |
+| `eq`                  | ✓ | Exact equality (strings or numbers). |
+| `ge` / `gt` / `lt` / `le` | ✓ | Numeric ordering — value must parse as a number. Non-numeric inputs fail closed. |
+| `beginsWith`          | ✓ | String prefix match. |
+| `endsWith`            | ✓ | String suffix match. |
+| `contains`            | ✓ | Substring presence (literal, case-sensitive). |
+| `isSet`               | ✓ | Whether the variable resolves to anything at all. With `negated: true`, fires on absence. |
+| `within`              | ✓ | Variable value is one of the whitespace-separated tokens in `value`. |
+| `pm`                  | ✓ | Phrase match: any whitespace-separated token in `value` appears in the variable. |
+| `pmFromFile`          | ✓ | Like `pm`, but the phrase list is loaded from a file. |
+| `ipMatch`             | ✓ | IPv4 / IPv6 / CIDR match against a comma- or whitespace-separated list. Uses `resty.ipmatcher`; compiled matcher cached per condition value. |
+| `libinjection_sqli`   | ✓ | SQL-injection detection via `libinjection`. |
+| `libinjection_xss`    | ✓ | XSS detection via `libinjection`. |
+| `validateUrlEncoding` | ✓ | Matches when input contains malformed `%XX` sequences. |
+| `validateUtf8Encoding`| ✓ | Matches when input is NOT valid UTF-8 (lone continuation bytes, truncated sequences, overlong encodings, surrogates, codepoints > U+10FFFF). |
+| `validateByteRange`   | ✓ | Matches when any byte in input falls OUTSIDE the `value` ranges (e.g. `"32-126,9,10,13"`). |
+| `unconditionalMatch`  | — | Always true. Used by CRS as the predicate of chains gated entirely by setvar side-effects on other conditions. |
+| `mcp_method_in`       | — | JSON-RPC `method` field is in `value` (MCP). |
+| `mcp_jsonrpc_valid`   | — | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
 
 Seclang translates CRS operators (`@detectSQLi`, `@streq`, `@detectXSS`,
 `@ipMatch`, …) to the engine-side names above. CRS-relevant gaps still
@@ -708,7 +731,8 @@ use `remove_variable_rx` rule controls:
             "condition_number": 1,
             "new_condition": {
                 "multi_match": false,
-                "op": "!isSet",
+                "op": "isSet",
+                "negated": true,
                 "transform": [],
                 "value": "",
                 "variables": [ "request.header.value:content-type" ]
@@ -740,7 +764,8 @@ use `remove_variable_rx` rule controls:
             "rule_id": "1234",
             "condition": {
                 "multi_match": false,
-                "op": "!isSet",
+                "op": "isSet",
+                "negated": true,
                 "transform": [],
                 "value": "",
                 "variables": [ "request.header.value:content-type" ]
@@ -1039,7 +1064,7 @@ applied normally. `value` is only treated as missing when it is `nil`
         { "op": "eq", "value": "POST", "variables": ["request.method"] },
         { "op": "isSet", "value": "", "variables": ["request.body.urlencode.value:username"] },
         { "op": "isSet", "value": "", "variables": ["request.body.urlencode.value:password"] },
-        { "op": "!isSet", "value": "", "variables": ["response.set_cookie.name:session"] }
+        { "op": "isSet", "negated": true, "value": "", "variables": ["response.set_cookie.name:session"] }
     ],
     "action": {
         "redis_incr_key": {

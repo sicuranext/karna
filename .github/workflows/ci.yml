@@ -44,6 +44,8 @@ jobs:
         run: lua ka-unittest/fix_matched_parts.lua
       - name: rule_action_overrides / rule_response_overrides (config-level)
         run: lua ka-unittest/rule_overrides.lua
+      - name: Op negation normalization (canonical vs legacy)
+        run: lua ka-unittest/op_negation_normalization.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

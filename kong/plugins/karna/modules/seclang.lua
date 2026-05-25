@@ -517,11 +517,13 @@ function seclang.__operator(op_line)
         op_args = op_args:gsub("[tT][xX]%.", "group:")
     end
 
-    if negate then
-        return "!"..op_translated, op_args
-    else
-        return op_translated, op_args
-    end
+    -- Canonical Karna shape: return `(op_base, args, negated)`.
+    -- ModSecurity's `@!op` prefix is the input format; on output we
+    -- always emit the base op + a separate `negated` boolean so the
+    -- match engine doesn't have to think about two notations.
+    -- (The engine's normalization layer still accepts legacy `!op`
+    -- for hand-written JSON rules — see __match_rule_conditions.)
+    return op_translated, op_args, negate
 end
 
 function seclang.__is_chained(raw_rule)
@@ -785,19 +787,24 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
         control = {},
         variables = {},
         operator = "",
-        operator_args = ""
+        operator_args = "",
+        operator_negated = false,
     }
 
-    rule.operator, rule.operator_args = seclang.__operator(operators)
+    rule.operator, rule.operator_args, rule.operator_negated = seclang.__operator(operators)
 
-    -- convert &variable count workarounds to isSet/!isSet
+    -- Convert ModSec's `&VAR @eq 0` / `&VAR !@eq 0` idioms — used as
+    -- "header missing" / "header present" sentinels — into Karna's
+    -- canonical `isSet` op with the `negated` flag set accordingly.
+    -- Carries the back-compat through the new (op_base, negated)
+    -- shape: `eq 0` with `negated=false` on a count variable becomes
+    -- the negative isSet (count==0 → not present), and `eq 0` with
+    -- `negated=true` becomes the positive isSet (count!=0 → present).
     if variables and string.find(variables, "^&") then
-        if rule.operator == "!eq" and rule.operator_args == "0" then
+        if rule.operator == "eq" and rule.operator_args == "0" then
             rule.operator = "isSet"
             rule.operator_args = ""
-        elseif rule.operator == "eq" and rule.operator_args == "0" then
-            rule.operator = "!isSet"
-            rule.operator_args = ""
+            rule.operator_negated = not rule.operator_negated
         end
     end
 
@@ -834,6 +841,7 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
     table.insert(rules[id]["conditions"], {
         variables = rule.variables,
         op = rule.operator,
+        negated = rule.operator_negated,
         value = rule.operator_args,
         transform = transformation_functions,
         multi_match = is_multi_match

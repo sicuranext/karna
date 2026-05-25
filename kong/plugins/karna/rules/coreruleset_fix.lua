@@ -170,7 +170,8 @@ _M.global_fps = {
                     condition_number = 1,
                     new_condition = {
                         multi_match = true,
-                        op = "!rx",
+                        op = "rx",
+                        negated = true,
                         transform = { "lowercase" },
                         value = "^[^;\\s/]+/[^;\\s/]+(?:\\s*;\\s*charset\\s*=\\s*\"?(?:utf-8|iso-8859-15?|windows-1252)\"?\\s*)?$",
                         variables = { "request.body.multipart.part.content_type" }

@@ -1895,23 +1895,36 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         values_to_try = multi_match_values
                     end
 
+                    -- Normalize the operator: Karna's canonical form is
+                    -- `{op = "<base>", negated = true|false}`. ModSecurity-
+                    -- style legacy form `op = "!<base>"` is still accepted
+                    -- (SecLang parsing, hand-written JSON local rules,
+                    -- coreruleset_fix entries written before the rename) —
+                    -- we strip the `!` and flip `negated` so the dispatch
+                    -- below only has to think about one shape.
+                    local op_base = condition.op or ""
+                    local negated = condition.negated == true
+                    if op_base:sub(1, 1) == "!" then
+                        op_base = op_base:sub(2)
+                        negated = true
+                    end
+
                     for _,try_value in pairs(values_to_try) do
                         if private_debug_enabled then
                             kong.log.debug("----> try_value on " .. variable_name .. ": [" .. tostring(try_value) .. "] (len=" .. tostring(#tostring(try_value)) .. ")")
                         end
                         -- operators
-                        if condition.op == "isSet" then
+                        if op_base == "isSet" and not negated then
                             rule_condition_has_matched, matched_table = self.__match_op_isset(values)
                         end
-                        if condition.op == "beginsWith" then
-                            rule_condition_has_matched, matched_table = self.__match_op_beginswith(variable_name, try_value, condition_value_resolved)
+                        if op_base == "beginsWith" then
+                            local fn = negated and self.__match_op_beginswith_negative or self.__match_op_beginswith
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!beginsWith" then
-                            rule_condition_has_matched, matched_table = self.__match_op_beginswith_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "rx" then
-                            rule_condition_has_matched, matched_table = self.__match_op_rx(variable_name, try_value, condition_value_resolved)
-                            if rule_condition_has_matched and matched_table then
+                        if op_base == "rx" then
+                            local fn = negated and self.__match_op_rx_negative or self.__match_op_rx
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
+                            if not negated and rule_condition_has_matched and matched_table then
                                 for krx,vrx in pairs(matched_table) do
                                     local m = string.match(krx, "^matched%_group%_([0-9]+)$")
                                     if m then
@@ -1920,117 +1933,70 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                                 end
                             end
                         end
-                        if condition.op == "!rx" then
-                            rule_condition_has_matched, matched_table = self.__match_op_rx_negative(variable_name, try_value, condition_value_resolved)
+                        if op_base == "libinjection_xss" then
+                            local fn = negated and self.__match_op_libinjection_xss_negative or self.__match_op_libinjection_xss
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value)
                         end
-                        if condition.op == "libinjection_xss" then
-                            rule_condition_has_matched, matched_table = self.__match_op_libinjection_xss(variable_name, try_value)
+                        if op_base == "libinjection_sqli" then
+                            local fn = negated and self.__match_op_libinjection_sqli_negative or self.__match_op_libinjection_sqli
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value)
                         end
-                        if condition.op == "!libinjection_xss" then
-                            rule_condition_has_matched, matched_table = self.__match_op_libinjection_xss_negative(variable_name, try_value)
+                        if op_base == "pm" then
+                            local fn = negated and self.__match_op_pm_negative or self.__match_op_pm
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "libinjection_sqli" then
-                            rule_condition_has_matched, matched_table = self.__match_op_libinjection_sqli(variable_name, try_value)
+                        if op_base == "pmFromFile" then
+                            local fn = negated and self.__match_op_pmFromFile_negative or self.__match_op_pmFromFile
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!libinjection_sqli" then
-                            rule_condition_has_matched, matched_table = self.__match_op_libinjection_sqli_negative(variable_name, try_value)
+                        if op_base == "eq" then
+                            local fn = negated and self.__match_op_eq_negative or self.__match_op_eq
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "pm" then
-                            rule_condition_has_matched, matched_table = self.__match_op_pm(variable_name, try_value, condition_value_resolved)
+                        if op_base == "lt" then
+                            local fn = negated and self.__match_op_lt_negative or self.__match_op_lt
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!pm" then
-                            rule_condition_has_matched, matched_table = self.__match_op_pm_negative(variable_name, try_value, condition_value_resolved)
+                        if op_base == "gt" then
+                            local fn = negated and self.__match_op_gt_negative or self.__match_op_gt
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "pmFromFile" then
-                            rule_condition_has_matched, matched_table = self.__match_op_pmFromFile(variable_name, try_value, condition_value_resolved)
+                        if op_base == "ge" then
+                            local fn = negated and self.__match_op_ge_negative or self.__match_op_ge
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!pmFromFile" then
-                            rule_condition_has_matched, matched_table = self.__match_op_pmFromFile_negative(variable_name, try_value, condition_value_resolved)
+                        if op_base == "le" then
+                            local fn = negated and self.__match_op_le_negative or self.__match_op_le
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "eq" then
-                            rule_condition_has_matched, matched_table = self.__match_op_eq(variable_name, try_value, condition_value_resolved)
+                        if op_base == "contains" then
+                            local fn = negated and self.__match_op_contains_negative or self.__match_op_contains
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!eq" then
-                            rule_condition_has_matched, matched_table = self.__match_op_eq_negative(variable_name, try_value, condition_value_resolved)
+                        if op_base == "ipMatch" then
+                            local fn = negated and self.__match_op_ipmatch_negative or self.__match_op_ipmatch
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "lt" then
-                            rule_condition_has_matched, matched_table = self.__match_op_lt(variable_name, try_value, condition_value_resolved)
+                        if op_base == "validateByteRange" then
+                            local fn = negated and self.__match_op_validateByteRange_negative or self.__match_op_validateByteRange
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!lt" then
-                            rule_condition_has_matched, matched_table = self.__match_op_lt_negative(variable_name, try_value, condition_value_resolved)
+                        if op_base == "validateUrlEncoding" then
+                            local fn = negated and self.__match_op_validateUrlEncoding_negative or self.__match_op_validateUrlEncoding
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "gt" then
-                            rule_condition_has_matched, matched_table = self.__match_op_gt(variable_name, try_value, condition_value_resolved)
+                        if op_base == "validateUtf8Encoding" then
+                            local fn = negated and self.__match_op_validateUtf8Encoding_negative or self.__match_op_validateUtf8Encoding
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!gt" then
-                            rule_condition_has_matched, matched_table = self.__match_op_gt_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "ge" then
-                            rule_condition_has_matched, matched_table = self.__match_op_ge(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!ge" then
-                            rule_condition_has_matched, matched_table = self.__match_op_ge_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "le" then
-                            rule_condition_has_matched, matched_table = self.__match_op_le(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!le" then
-                            rule_condition_has_matched, matched_table = self.__match_op_le_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "contains" then
-                            rule_condition_has_matched, matched_table = self.__match_op_contains(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!contains" then
-                            rule_condition_has_matched, matched_table = self.__match_op_contains_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "ipMatch" then
-                            rule_condition_has_matched, matched_table = self.__match_op_ipmatch(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!ipMatch" then
-                            rule_condition_has_matched, matched_table = self.__match_op_ipmatch_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "validateByteRange" then
-                            rule_condition_has_matched, matched_table = self.__match_op_validateByteRange(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!validateByteRange" then
-                            rule_condition_has_matched, matched_table = self.__match_op_validateByteRange_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "validateUrlEncoding" then
-                            rule_condition_has_matched, matched_table = self.__match_op_validateUrlEncoding(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!validateUrlEncoding" then
-                            rule_condition_has_matched, matched_table = self.__match_op_validateUrlEncoding_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "validateUtf8Encoding" then
-                            rule_condition_has_matched, matched_table = self.__match_op_validateUtf8Encoding(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "!validateUtf8Encoding" then
-                            rule_condition_has_matched, matched_table = self.__match_op_validateUtf8Encoding_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "unconditionalMatch" then
+                        if op_base == "unconditionalMatch" then
                             rule_condition_has_matched, matched_table = self.__match_op_unconditionalmatch(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "endsWith" then
-                            rule_condition_has_matched, matched_table = self.__match_op_endswith(variable_name, try_value, condition_value_resolved)
+                        if op_base == "endsWith" then
+                            local fn = negated and self.__match_op_endswith_negative or self.__match_op_endswith
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
-                        if condition.op == "!endsWith" then
-                            rule_condition_has_matched, matched_table = self.__match_op_endswith_negative(variable_name, try_value, condition_value_resolved)
-                        end
-                        if condition.op == "within" then
-                            local within_values = {}
-                            for w in string_gmatch(condition_value_resolved, "%S+") do
-                                table_insert(within_values, w)
-                            end
-                            for _, wv in pairs(within_values) do
-                                local escaped = string_gsub(wv, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
-                                if string_match(try_value, "^" .. escaped .. "$") then
-                                    rule_condition_has_matched = true
-                                    matched_table = { matched_on = variable_name, matched_value = try_value }
-                                    break
-                                end
-                            end
-                        end
-                        if condition.op == "!within" then
+                        if op_base == "within" then
                             local within_values = {}
                             for w in string_gmatch(condition_value_resolved, "%S+") do
                                 table_insert(within_values, w)
@@ -2043,7 +2009,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                                     break
                                 end
                             end
-                            if not found then
+                            if found ~= negated then
                                 rule_condition_has_matched = true
                                 matched_table = { matched_on = variable_name, matched_value = try_value }
                             end
@@ -2117,7 +2083,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                 end
 
                 if loop_counter == 0 then
-                    if condition.op == "!isSet" then
+                    if op_base == "isSet" and negated then
                         matches[#matches+1] = {
                             matched_on = table.concat(condition.variables, ","),
                             matched_value = ""
