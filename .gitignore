@@ -95,3 +95,10 @@ NOTES.local.md
 scratch/
 private/
 .notes/
+
+# === Performance benchmark harness (private — feeds an eventual blog post) ===
+# bench/ contains docker-compose stacks for Apache+ModSec2, nginx+ModSec3
+# and Karna side by side, the k6 scenario scripts, the orchestrator,
+# raw results, and the ongoing blog-post notes. Not part of Karna's
+# public surface and the result data is too noisy to publish raw.
+bench/

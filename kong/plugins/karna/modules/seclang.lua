@@ -793,20 +793,19 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
 
     rule.operator, rule.operator_args, rule.operator_negated = seclang.__operator(operators)
 
-    -- Convert ModSec's `&VAR @eq 0` / `&VAR !@eq 0` idioms — used as
-    -- "header missing" / "header present" sentinels — into Karna's
-    -- canonical `isSet` op with the `negated` flag set accordingly.
-    -- Carries the back-compat through the new (op_base, negated)
-    -- shape: `eq 0` with `negated=false` on a count variable becomes
-    -- the negative isSet (count==0 → not present), and `eq 0` with
-    -- `negated=true` becomes the positive isSet (count!=0 → present).
-    if variables and string.find(variables, "^&") then
-        if rule.operator == "eq" and rule.operator_args == "0" then
-            rule.operator = "isSet"
-            rule.operator_args = ""
-            rule.operator_negated = not rule.operator_negated
-        end
-    end
+    -- NOTE: a previous version of this code rewrote `&VAR @eq 0` /
+    -- `&VAR !@eq 0` into `isSet` with a flipped `negated` flag, on
+    -- the assumption that "count == 0" was equivalent to "variable
+    -- not set". That was wrong: Karna's `count:` virtual variable
+    -- resolves to the literal string `"0"` when the underlying
+    -- variable is absent, and `isSet` matches `"0"` as "value set"
+    -- (truthy in Lua), so the rewrite caused the rule to fire on
+    -- *every* request — a benign-traffic 50 % spurious-block rate
+    -- under load, masked for months by the cache-leak bug that
+    -- emptied the values map before the rule could evaluate.
+    -- The numeric op (`@eq 0`, `@gt 0`) already works correctly
+    -- against the count: virtual variable in the engine, so we
+    -- leave it alone.
 
     if variables and string.find(variables, "|") then
         string.gsub(variables, "([^|]+)", function (v)

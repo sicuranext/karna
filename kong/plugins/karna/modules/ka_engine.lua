@@ -1354,11 +1354,20 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
 
             local values, err = nil
 
-            if kong.ctx and kong.ctx.plugin then
-                if kong.ctx.plugin.ka_variable_cache[variable] then
-                    values = kong.ctx.plugin.ka_variable_cache[variable]
-                end
-            end
+            -- Per-request `ka_variable_cache` DISABLED — see the
+            -- write side below for the full write-up. Short version:
+            -- the cache aliased the same `values` table that
+            -- downstream branches mutated in place
+            -- (`remove_target_from_all_rules`,
+            -- `ids_targets[rule.id]`, plus `setvar` / `matched.value`
+            -- additions), so reads from cache returned an already-
+            -- corrupted view. A simple shallow-copy-on-read fix
+            -- closed ~half the leaks but still left attack
+            -- pass-through at ~30 % under load. Until the precise
+            -- mutation pattern is mapped, we trade a small per-
+            -- request perf cost for hard correctness. Bench numbers
+            -- to come.
+            -- (Was: load from kong.ctx.plugin.ka_variable_cache[variable].)
 
             if private_debug_enabled then
                 kong.log.inspect(rx_matched_values_cross_conditions)
@@ -1727,11 +1736,20 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
                 end
 
-                if variable and values then
-                    if kong.ctx and kong.ctx.plugin then
-                        kong.ctx.plugin.ka_variable_cache[variable] = values
-                    end
-                end
+                -- `ka_variable_cache` write site disabled in tandem
+                -- with the read side. The cache turned out to leak
+                -- mutations across rules in the same request, and
+                -- the cheapest correct fix while the precise
+                -- mutation pattern is mapped is to skip the cache
+                -- entirely. Repro from bench/BLOGPOST_NOTES.md:
+                --   for i in $(seq 1 20); do
+                --     curl -s -o /dev/null -w '%{http_code}\n' \
+                --       -H 'Host: integration.local' \
+                --       'http://127.0.0.1:28000/get?x=%3Cscript%3Ealert(1)%3C%2Fscript%3E'
+                --   done
+                -- With cache on, attacks pass through ~30 % of the
+                -- time; with cache off, 100 % blocked.
+                -- (Was: kong.ctx.plugin.ka_variable_cache[variable] = values)
 
             end
 
