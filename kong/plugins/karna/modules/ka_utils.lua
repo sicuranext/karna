@@ -500,8 +500,18 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             end
 
             -- determine action label
+            -- precedence: sanitized > block > detect > log
+            -- - sanitized: rule had fix_matched_parts and the engine
+            --   stripped dangerous chars before forwarding upstream
+            --   (Karna's FP-mitigation primitive — request still goes
+            --   through, just neutralized)
+            -- - block: blocking mode + fixed_response → 403 returned
+            -- - detect: monitoring mode + fixed_response → 200 logged
+            -- - log: rule fired without a response action (pass / setvar)
             local action_label = "log"
-            if rule.action and rule.action.fixed_response then
+            if matched.sanitized then
+                action_label = "sanitized"
+            elseif rule.action and rule.action.fixed_response then
                 if plugin_conf.engine_blocking_mode then
                     action_label = "block"
                 else

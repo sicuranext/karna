@@ -73,6 +73,176 @@ local get_plugin_dynamic_rules = function(plugin_conf)
   return parsed
 end
 
+-- Selector grammar for `rule_action_overrides` / `rule_response_overrides`.
+-- `selector` matches when ANY positive criterion (ids / id_ranges / tags)
+-- matches AND no `except_*` criterion matches. Empty positive set means
+-- "match everything" — useful for "override default for all rules".
+local selector_matches = function(selector, rule)
+  if not selector or not rule then return false end
+
+  -- except_* short-circuits negative.
+  if selector.except_ids and rule.id then
+    for _, eid in ipairs(selector.except_ids) do
+      if tostring(eid) == tostring(rule.id) then return false end
+    end
+  end
+  if selector.except_tags and rule.tags then
+    for _, etag in ipairs(selector.except_tags) do
+      for _, rtag in ipairs(rule.tags) do
+        if rtag == etag then return false end
+      end
+    end
+  end
+
+  -- positive: if no positive criteria, the selector matches everything
+  -- that wasn't excluded above. Useful for "fix every rule except …".
+  local has_positive = (selector.ids and #selector.ids > 0)
+                    or (selector.id_ranges and #selector.id_ranges > 0)
+                    or (selector.tags and #selector.tags > 0)
+                    or (selector.any == true)
+  if not has_positive then return false end
+  if selector.any == true then return true end
+
+  if selector.ids and rule.id then
+    for _, sid in ipairs(selector.ids) do
+      if tostring(sid) == tostring(rule.id) then return true end
+    end
+  end
+  if selector.id_ranges and rule.id then
+    local rule_id_n = tonumber(rule.id)
+    if rule_id_n then
+      for _, rng in ipairs(selector.id_ranges) do
+        local lo, hi = string.match(rng, "^(%d+)%-(%d+)$")
+        if lo and hi and rule_id_n >= tonumber(lo) and rule_id_n <= tonumber(hi) then
+          return true
+        end
+      end
+    end
+  end
+  if selector.tags and rule.tags then
+    for _, stag in ipairs(selector.tags) do
+      for _, rtag in ipairs(rule.tags) do
+        if rtag == stag then return true end
+      end
+    end
+  end
+
+  return false
+end
+
+-- Lazy-parse + cache the two override arrays per plugin_conf identity.
+-- Same caching scheme as `get_plugin_dynamic_rules`: keyed on
+-- `tostring(plugin_conf)` (worker-stable table address); Admin API
+-- reconfig invalidates the cache automatically by producing a new
+-- plugin_conf table.
+local DEFAULT_FIX_PATTERN = [=[[<>"';&|`$()]]=]
+
+local get_overrides_cached = function(plugin_conf)
+  local key = "overrides:" .. tostring(plugin_conf)
+  local cached = ka_rules:get(key)
+  if cached then return cached end
+
+  local out = { action_overrides = {}, response_overrides = {} }
+
+  for _, raw in ipairs(plugin_conf.rule_action_overrides or {}) do
+    local ok, parsed = pcall(cjson.decode, raw)
+    if ok and type(parsed) == "table" and parsed.selector and parsed.action then
+      table.insert(out.action_overrides, parsed)
+    else
+      kong.log.err("[karna] invalid rule_action_overrides entry: " .. tostring(raw):sub(1, 200))
+    end
+  end
+
+  for _, raw in ipairs(plugin_conf.rule_response_overrides or {}) do
+    local ok, parsed = pcall(cjson.decode, raw)
+    if ok and type(parsed) == "table" and parsed.selector and parsed.response then
+      table.insert(out.response_overrides, parsed)
+    else
+      kong.log.err("[karna] invalid rule_response_overrides entry: " .. tostring(raw):sub(1, 200))
+    end
+  end
+
+  ka_rules:set(key, out)
+  return out
+end
+
+-- Apply config-level overrides on top of the rule's declared action.
+-- Returns a fresh `action` table (or the original reference if no
+-- override matched). NEVER mutates the cached rule. The caller is
+-- expected to swap the action on a shallow copy of rule_matched_obj
+-- so downstream branches (sanitize dispatch, audit log) see the
+-- effective behaviour.
+local apply_action_and_response_overrides = function(plugin_conf, rule)
+  local overrides = get_overrides_cached(plugin_conf)
+  local n_a = #overrides.action_overrides
+  local n_r = #overrides.response_overrides
+  if n_a == 0 and n_r == 0 then return rule.action end
+
+  local effective = rule.action
+
+  -- action override (first matching wins)
+  if n_a > 0 then
+    for _, ov in ipairs(overrides.action_overrides) do
+      if selector_matches(ov.selector, rule) then
+        local t = ov.action and ov.action.type
+        if t == "fix" then
+          effective = {
+            fix_matched_parts = {
+              remove_chars_pattern = ov.action.remove_chars_pattern or DEFAULT_FIX_PATTERN,
+            },
+          }
+        elseif t == "passthrough" then
+          effective = { setvar = {} }
+        elseif t == "block" then
+          local base = (rule.action and rule.action.fixed_response) or {
+            status_code = 403,
+            body = "Forbidden\r\n",
+            headers = { ["content-type"] = "text/plain" },
+          }
+          effective = { fixed_response = {
+            status_code = base.status_code,
+            body = base.body,
+            headers = base.headers,
+          } }
+        end
+        break
+      end
+    end
+  end
+
+  -- response override (customises body/status/headers if action is block)
+  if n_r > 0 and effective and effective.fixed_response then
+    for _, ov in ipairs(overrides.response_overrides) do
+      if selector_matches(ov.selector, rule) then
+        local fr = effective.fixed_response
+        -- ensure we own the fixed_response table — it may still point
+        -- at the cached rule's original when no action override fired.
+        local new_fr = {
+          status_code = fr.status_code,
+          body = fr.body,
+          headers = {},
+        }
+        if fr.headers then
+          for k, v in pairs(fr.headers) do new_fr.headers[k] = v end
+        end
+        if ov.response.status_code then new_fr.status_code = ov.response.status_code end
+        if ov.response.body then
+          new_fr.body = engine:replace_variable_in_string(ov.response.body)
+        end
+        if ov.response.headers then
+          for k, v in pairs(ov.response.headers) do new_fr.headers[k] = v end
+        end
+        effective = { fixed_response = new_fr }
+        if rule.action and rule.action.setvar then effective.setvar = rule.action.setvar end
+        if rule.action and rule.action.fix_matched_parts then effective.fix_matched_parts = rule.action.fix_matched_parts end
+        break
+      end
+    end
+  end
+
+  return effective
+end
+
 -- Side-effects of a matched rule's `rule_control` list onto the
 -- per-request `kong.ctx.plugin.rule_controls`. Extracted so both the
 -- standard evaluate_rules path (first-match-wins) and the CRS-plugins
@@ -166,6 +336,51 @@ local evaluate_rules = function(plugin_conf, rules, phase)
        and rule_matched_obj.action.mcp_event_action
        and kong.ctx.plugin.mcp then
       kong.ctx.plugin.mcp.event_action = rule_matched_obj.action.mcp_event_action
+      return
+    end
+
+    -- Apply config-level action / response overrides. The original
+    -- rule object stays immutable — we shallow-copy and swap `.action`
+    -- so the rest of the dispatch (sanitize, fixed_response, audit
+    -- log) sees the effective behaviour. No-op (returns the original
+    -- action reference) when no override matches this rule.
+    if rule_matched_obj.action then
+      local effective_action = apply_action_and_response_overrides(plugin_conf, rule_matched_obj)
+      if effective_action ~= rule_matched_obj.action then
+        local copy = {}
+        for k, v in pairs(rule_matched_obj) do copy[k] = v end
+        copy.action = effective_action
+        rule_matched_obj = copy
+      end
+    end
+
+    -- Record the match so the log phase can surface it in audit log v2.
+    -- Without this, only the always-on gate violations (method/path/CT)
+    -- showed up in the v2 `matches[]` array; standard rule matches were
+    -- silently swallowed when blocking-mode response_exit'd. We populate
+    -- here once and let the downstream branches mutate `sanitized` /
+    -- response details before the log phase reads it.
+    local match_entry = {
+      rule = rule_matched_obj,
+      part = matches_info,
+      sanitized = false,
+    }
+    table.insert(kong.ctx.plugin.ka_matched_rules, match_entry)
+
+    -- sanitize-not-block: when a rule carries a `fix_matched_parts`
+    -- action, Karna strips dangerous characters from the matched
+    -- targets in-place and lets the request continue to upstream. This
+    -- is the killer FP-mitigation: a payload that looks like SQLi/XSS
+    -- but is actually a proper name ("O'Brien") or a street address
+    -- ("Via dell'Orso, 5") goes through with the unsafe characters
+    -- removed. Takes precedence over `fixed_response` when both are
+    -- declared on the same rule — sanitize wins because it preserves
+    -- the user journey.
+    if rule_matched_obj.action and rule_matched_obj.action.fix_matched_parts and matches_info then
+      engine:__fix_matching_parts(rule_matched_obj, matches_info)
+      match_entry.sanitized = true
+      -- skip the block branch; sanitize already mutated the upstream
+      -- request and the response should be whatever upstream returns.
       return
     end
 

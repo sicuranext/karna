@@ -100,6 +100,39 @@ local schema = {
           { rules_request = { type = "array", elements = { type = "string" } } },
           { rules_response = { type = "array", elements = { type = "string" } } },
 
+          -- Per-rule action and response overrides — Karna's escape
+          -- hatch for the "I trust this WAF, but for rule X I want to
+          -- sanitize instead of block / send a custom 451 instead of
+          -- 403" use case. Each entry is a JSON string with a
+          -- `selector` (any combination of `ids`, `id_ranges`, `tags`,
+          -- `except_ids`, `except_tags` — OR'd internally, except_*
+          -- subtracts) and the override payload.
+          --
+          -- rule_action_overrides changes WHAT the rule does:
+          --   { "selector": { "tags": ["attack-xss"] },
+          --     "action":   { "type": "fix",
+          --                   "remove_chars_pattern": "[<>\"'&;]" } }
+          --   { "selector": { "ids": ["941100"] },
+          --     "action":   { "type": "passthrough" } }
+          --   { "selector": { "id_ranges": ["941000-941999"] },
+          --     "action":   { "type": "block" } }
+          --
+          -- rule_response_overrides customises the response body /
+          -- status / headers when the (possibly overridden) action is
+          -- still a block. `body` supports `%{var}` template macros
+          -- resolved against the current request:
+          --   { "selector": { "ids": ["920420"] },
+          --     "response": { "status_code": 451,
+          --                   "body": "Refused: %{request.remote_addr}",
+          --                   "headers": { "x-blocked-by": "karna" } } }
+          --
+          -- First matching entry wins (declaration order). The
+          -- override mechanism never mutates the cached rule pack —
+          -- the engine shallow-copies the matched rule and swaps its
+          -- `action` per-request.
+          { rule_action_overrides = { type = "array", elements = { type = "string" }, default = {} } },
+          { rule_response_overrides = { type = "array", elements = { type = "string" }, default = {} } },
+
           { try_bas64decode_if_possible = { type = "boolean", default = false } },
 
           { auditlog_enabled = { type = "boolean", default = true } },

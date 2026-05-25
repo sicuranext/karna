@@ -2,9 +2,64 @@
 
 [![CI](https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg)](https://github.com/sicuranext/karna/actions/workflows/ci.yml)
 
-A WAF (Web Application Firewall) plugin for Kong Gateway. OWASP CoreRuleSet
-compatible, with first-class support for custom local rules, virtual
-patching, and ModSecurity-style rule controls.
+A modern WAF (Web Application Firewall) for Kong Gateway — OWASP
+CoreRuleSet compatible, MCP-aware, rate-limit-native, and the first
+WAF designed for **~0 false positives and zero unexpected blocks**.
+
+## Why Karna
+
+**Sanitize, don't block.** When a CRS rule fires on a payload that
+looks like SQLi or XSS but is actually a proper name (`O'Brien`), an
+Italian street address (`Via dell'Orso, 5`), or any innocuous string
+that happens to contain syntax-breaking characters, Karna can **strip
+the dangerous characters in place and forward the request upstream**
+instead of returning 403. The user is never blocked. The upstream
+never sees the unsafe input. False positives stop being incidents.
+See [Sanitize, don't block](#sanitize-dont-block-karnas-killer-feature)
+below.
+
+**Modern operator surface.**
+
+- **No restarts.** Add / remove / modify rules at runtime via Kong's
+  Admin API. No `kong reload`, no nginx restart, no SIGHUP. Config
+  cache invalidates per plugin instance on its own.
+- **No config files.** Rules, limits, policies — all in the plugin
+  schema, configurable per-service / per-route through the Admin API.
+- **Toggle scope.** Attach Karna selectively: a service, a route, a
+  consumer, globally. Disable it the same way.
+- **Two rule languages.** Write rules in SecLang (ModSec-compatible)
+  for the CRS pack and CRS exclusion plugins, or in JSON for inline
+  custom detections. Choose per rule.
+
+**Beyond detection.**
+
+- **Rate-limit rules** native in the rule language — no separate
+  plugin to chain.
+- **MCP-aware.** First-class detection on the Model Context Protocol
+  (Streamable HTTP transport): JSON-RPC envelope parsing, SSE
+  reassembly, per-event rule evaluation. No other WAF does this today.
+- **CRS exclusion plugins** loaded straight from upstream — drop a
+  WordPress / Drupal / Nextcloud exclusion pack on disk, enable it
+  per route. We don't fork upstream plugins.
+- **Sibling-plugin enrichment.** Karna reads `kong.ctx.shared` keys
+  set by GeoIP / ASN / UA-parser plugins and surfaces them as rule
+  variables and audit log fields.
+
+### How it differs from ModSecurity
+
+| | Karna | ModSecurity 3 / libmodsec |
+|---|---|---|
+| Runtime | Kong / OpenResty / LuaJIT | Apache, nginx, IIS (libmodsec) |
+| Rule reload | Live, per Admin API call | Service restart |
+| Rule scope | Per service / route / consumer / global | Server / vhost / location |
+| Configuration | Plugin schema (Admin API) | `*.conf` files on disk |
+| FP mitigation | **`fix_matched_parts` action — sanitize-and-forward** | Block, log, or anomaly score |
+| Rate limiting | Native rule action | Out of scope (needs another module) |
+| MCP / SSE | First-class | Not supported |
+| Rule language | SecLang **and** JSON | SecLang only |
+| Action override | Schema-level (`rule_action_overrides`, `rule_response_overrides`) | `SecRuleUpdateActionById` config snippet |
+
+## How it works
 
 Karna inspects every request against a layered rule pipeline:
 
@@ -50,11 +105,11 @@ the CRS regression framework expects.
 Headline numbers on the in-tree regression suite (CRS 4.26.0,
 `engine_blocking_mode=true`):
 
-- **PL1 raw pass rate (PARANOIA=1): 95.2%** (`2626 / 2757` tests).
+- **PL1 raw pass rate (PARANOIA=1): 94.1%** (`2594 / 2757` tests).
 - **PL1 in-scope pass rate: ≈ 97%** — excluding the four buckets
   Karna intentionally does not pursue: CRS response rules (950-956)
   / anomaly scoring (949 / 959 / 980) / `999-COMMON-EXCEPTIONS-AFTER`.
-- **PL2 raw pass rate (PARANOIA=2): 95.9%** (`3905 / 4071` tests).
+- **PL2 raw pass rate (PARANOIA=2): ≈ 96%** (~`3900 / 4071` tests).
 - **PL2-tagged-rules subset: ≈ 98%** — Karna handles the higher-
   paranoia rule pack as a first-class supported posture, not as an
   experimental tier.
@@ -74,18 +129,110 @@ cd crs-regression-test
 ./fetch-tests.sh                # downloads CRS 4.26.0 PL1 test YAMLs
 ./configure-kong.sh             # configures Kong + Karna plugin
 python3 start.py --testfile tests/
-# → "Passed tests: 2626 / 2757"
+# → "Passed tests: 2594 / 2757"
 
 CRS_MAX_PL=2 ./fetch-tests.sh   # extend to PL1+PL2
 PARANOIA=2 ./configure-kong.sh  # raise Karna paranoia ceiling
 python3 start.py --testfile tests/
-# → "Passed tests: 3905 / 4071"
+# → "Passed tests: ~3900 / 4071"
 ```
 
 The harness reads `KARNA_REMOVED_RULES` and `KARNA_ARCH_RESIDUAL_TESTS`
 maps in `start.py` — every CRS rule we intentionally don't fire (and
 why) is enumerated there. Anything not listed and still failing is a
 real gap, please open an issue.
+
+## Sanitize, don't block — Karna's killer feature
+
+The biggest source of WAF false positives is rules firing on benign
+input that happens to share syntax with attack payloads — an
+apostrophe in a proper name, angle brackets in a forum post, an
+ampersand in a query string. Traditional WAFs only know how to block.
+Karna can **neutralize** the unsafe characters and let the request
+through.
+
+The mechanism is a rule action called `fix_matched_parts`. When a
+rule with this action matches, Karna strips the configured
+character class from every matched target (path / query arg / header
+value / body) **in place**, then forwards the modified request
+upstream. No 403 is ever returned; the upstream receives a string
+free of syntax-breaking characters; the audit log records the match
+with `action: "sanitized"`.
+
+A local JSON rule that sanitizes the `name` query arg:
+
+```json
+{
+  "id": "sanitize-name-field",
+  "phase": "access",
+  "log": true,
+  "conditions": [{
+    "op": "rx",
+    "transform": [],
+    "value": "[<>\"'&;]",
+    "variables": ["request.arg.value:name"]
+  }],
+  "action": {
+    "fix_matched_parts": { "remove_chars_pattern": "[<>\"'&;]" }
+  },
+  "tags": ["sanitize"],
+  "message": "neutralize XSS-shape chars in name"
+}
+```
+
+With this rule active, `GET /signup?name=O'Brien` reaches the
+upstream as `?name=OBrien`. `GET /signup?name=<script>alert(1)</script>`
+reaches the upstream as `?name=scriptalert(1)/script`. Same logic
+applies to body args, headers, URL path.
+
+### Override the CRS pack's actions
+
+For the OWASP CRS rule pack — which is the default behaviour for most
+deployments — you don't want to rewrite every rule by hand. Karna
+exposes two config-level overrides:
+
+- **`rule_action_overrides`** changes what an existing rule does.
+  Switch entire tag scopes from block to sanitize:
+  ```json
+  {
+    "selector": { "tags": ["attack-xss"] },
+    "action":   { "type": "fix",
+                  "remove_chars_pattern": "[<>\"'&;]" }
+  }
+  ```
+  Or disable a class of detection entirely:
+  ```json
+  {
+    "selector": { "id_ranges": ["941000-941999"] },
+    "action":   { "type": "passthrough" }
+  }
+  ```
+
+- **`rule_response_overrides`** customises the body / status / headers
+  when the (possibly overridden) action is still a block:
+  ```json
+  {
+    "selector": { "tags": ["attack-sqli"] },
+    "response": { "status_code": 451,
+                  "body":        "Refused: %{request.remote_addr}",
+                  "headers":     { "x-blocked-by": "your-org" } }
+  }
+  ```
+
+Selector grammar in both arrays:
+
+| Field | Type | Behaviour |
+|---|---|---|
+| `ids` | `["941100", "942270"]` | OR'd match against `rule.id` |
+| `id_ranges` | `["941000-941999"]` | numeric range, lower / upper inclusive |
+| `tags` | `["attack-xss"]` | any tag in the list intersects `rule.tags` |
+| `except_ids` | `["941110"]` | rule excluded even if positive match |
+| `except_tags` | `["paranoia-level/3"]` | same, but on tags |
+| `any` | `true` | match every rule (used with `except_*`) |
+
+First matching entry wins, in declaration order. Overrides never
+mutate the cached rule pack — Karna shallow-copies the matched rule
+and swaps its action per request.
 
 ## Multipart parser hardening
 

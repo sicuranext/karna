@@ -40,6 +40,10 @@ jobs:
         run: lua ka-unittest/transformations.lua
       - name: SecLang ctl:* directives (CRS exclusion plugin parser)
         run: lua ka-unittest/seclang_ctl_directives.lua
+      - name: fix_matched_parts action (sanitize-not-block primitive)
+        run: lua ka-unittest/fix_matched_parts.lua
+      - name: rule_action_overrides / rule_response_overrides (config-level)
+        run: lua ka-unittest/rule_overrides.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
@@ -134,6 +138,12 @@ jobs:
             tail -80 regression.log
             exit 1
           fi
+
+      - name: Sanitize-not-block regression (fix_matched_parts integration)
+        run: ./ka-regression-tests/sanitize/run.sh
+
+      - name: Action / response overrides regression (config-level)
+        run: ./ka-regression-tests/sanitize/overrides.sh
 
       - name: Dump Kong logs on failure
         if: failure()
