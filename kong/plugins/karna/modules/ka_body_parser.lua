@@ -353,8 +353,24 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
             table.insert(values, {
                 [prefix .. ".name:"..name_suffix] = part.name
             })
+            -- ModSec ARGS scope for multipart: only NON-file parts
+            -- (form fields, no `filename=`) contribute their body to
+            -- ARGS. A file-upload part's bytes go to FILES_TMP_CONTENT
+            -- in ModSec — NOT ARGS — and CRS doesn't inspect them by
+            -- default. Karna previously folded every part body
+            -- (including multi-KB file uploads) into `.value:` which
+            -- the ARGS getter merges, so every ARGS-targeted CRS rule
+            -- re-scanned the full file content. On the bench's
+            -- 3×10 KB multipart upload that was ~94% of request CPU
+            -- (jit.p, 2026-05-26: 60% ngx.re.match + 34% @pmFromFile,
+            -- all against the file bytes). File-part bodies now go
+            -- under `.file_content:` which the ARGS merge skips, so
+            -- they're not scanned as parameters — matching ModSec.
+            local value_key = part.filename
+                and (prefix .. ".file_content:"..name_suffix)
+                or  (prefix .. ".value:"..name_suffix)
             table.insert(values, {
-                [prefix .. ".value:"..name_suffix] = part.body
+                [value_key] = part.body
             })
 
             if try_base64decode_if_possible then

@@ -642,6 +642,15 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
     local skip_body_for_args = (body_type == "xml")
     if body_values and not skip_body_for_args then
         for k,v in pairs(body_values) do
+            -- Multipart file-upload bodies are emitted under
+            -- `.file_content:` (see ka_body_parser). They are NOT
+            -- parameters — ModSec keeps file bytes out of ARGS — so
+            -- skip them from the merged ARGS map. This both matches
+            -- ModSec scope and keeps multi-KB uploads out of every
+            -- ARGS-targeted regex.
+            if string_find(k, ".file_content:", 1, true) then
+                goto continue
+            end
             if not values[k] then
                 if has_ignore then
                     if rule_control.ignore_variables["request.body.value"] then
