@@ -32,16 +32,24 @@ end
 _M.urlencoded = function(self, prefix, raw_body, try_base64decode_if_possible)
     local values = {}
 
+    -- Duplicate keys in urlencoded form bodies are legal — checkboxes,
+    -- multi-select widgets, and various PHP/Rails frameworks all emit
+    -- `foo=a&foo=b` (or `foo[]=a&foo[]=b`). The original code aborted
+    -- the entire parse on the second occurrence which dropped every
+    -- ARGS value, breaking detection for any payload that happens to
+    -- repeat a name (CRS 941290 test 1 sends two `var=` blocks; with
+    -- the abort, ARGS was empty and the rule never fired).
+    -- Resolve by appending a `:<n>` index to the label for the 2nd+
+    -- occurrence; the engine resolves these via a prefix walk anyway.
+    local dup_counts = {}
     local insert_new_value = function(label, value)
-        --[[table.insert(values, {
-            [label] = value
-        })]]--
         if not values[label] then
             values[label] = value
-        else
-            kong.log.debug("Duplicated key found: " .. label)
-            return nil, "duplicated key found"
+            return true, nil
         end
+        dup_counts[label] = (dup_counts[label] or 1) + 1
+        local indexed = label .. ":" .. tostring(dup_counts[label])
+        values[indexed] = value
         return true, nil
     end
 

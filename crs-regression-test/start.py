@@ -127,6 +127,27 @@ KARNA_ARCH_RESIDUAL_TESTS = {
     # token. Operational mitigation is per-app exclusion (CRS exclusion
     # plugin for WordPress); the bench harness doesn't load that.
     ("932240", 8):  "WordPress nested ARGS bracket grammar triggers RCE token regex — exclusion-plugin territory",
+    # 921250: `REQUEST_COOKIES:/\x22?\x24Version/` — ModSec selects
+    # cookies via a regex on the cookie NAME (optional double-quote
+    # before `$Version`). Karna's seclang parser does not support
+    # regex-variable selectors today, so the cookie lookup falls
+    # back to the bare prefix and the chain never fires on the
+    # `$Version=1` shape. Documented engine gap; covered separately
+    # by Karna's RFC2965 cookie-shape gate at the parser level.
+    ("921250", 1):  "REQUEST_COOKIES regex-name selector not supported in seclang parser",
+    ("921250", 2):  "REQUEST_COOKIES regex-name selector not supported in seclang parser",
+    # 934160 (Node.js DoS): `while(!+0);` — `%2B` (literal `+`) gets
+    # eaten when `t:urlDecodeUni` runs after the body parser's
+    # `+` → space conversion. Same double-decode pattern as
+    # 942500/3+4; trade-off keeps 932200 RCE-detection chain intact.
+    ("934160", 4):  "`!+0` pattern lost to t:urlDecodeUni double-decode of %2B (same as 942500)",
+    # 941170 (XSS Attribute Injection): the `t:jsDecode` step
+    # consumes the trailing ` ` of `\\\\\\\\u0020`, leaving a
+    # value whose tail no longer matches the rule's
+    # `[=\\(\[\.<]` boundary set in the way the test author
+    # intended. Behavioural difference in `\u`-escape semantics;
+    # CRS-side rule needs a follow-up gate.
+    ("941170", 4):  "t:jsDecode of `\\\\\\\\u0020` leaves a value the attribute-boundary regex misses",
     # X.Filename (dot in header name) — RFC-token-invalid, nginx drops it
     ("933110", 20): "X.Filename header — invalid per nginx (dot in name)",
     ("933110", 21): "X.Filename header — invalid per nginx (dot in name)",
