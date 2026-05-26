@@ -1626,6 +1626,52 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     err = all_err
                 end
 
+                -- ARGS_GET → request.query.value / request.query.name.
+                -- ARGS_GET is the QUERY-STRING-ONLY arg set (vs ARGS which
+                -- merges query + body). CRS rules like 921160 target
+                -- ARGS_GET specifically to detect CRLF injection in
+                -- query-arg names without inspecting POST bodies.
+                -- The header_filter-phase inspection_table doesn't help
+                -- here (access-phase rules need values NOW), so resolve
+                -- directly from the urlencoded body_parser, which already
+                -- URL-decodes keys+values and exposes CRLF bytes for
+                -- detection regexes.
+                if variable == "request.query.value" then
+                    local qvals = _M.__get_values_request_query_value(false)
+                    if qvals then
+                        values = {}
+                        for k, v in pairs(qvals) do
+                            if string_find(k, "%.value:", 1, false) then
+                                values[k] = v
+                            end
+                        end
+                        if next(values) == nil then values = nil end
+                    end
+                elseif variable == "request.query.name" then
+                    local qvals = _M.__get_values_request_query_value(false)
+                    if qvals then
+                        values = {}
+                        for k, v in pairs(qvals) do
+                            if string_find(k, "%.name:", 1, false) then
+                                values[k] = v
+                            end
+                        end
+                        if next(values) == nil then values = nil end
+                    end
+                elseif string_find(variable, "^request%.query%.value%:") then
+                    local arg_name = string_match(variable, "^request%.query%.value%:(.*)")
+                    local qvals = _M.__get_values_request_query_value(false)
+                    if qvals then
+                        values = {}
+                        for k, v in pairs(qvals) do
+                            if string_find(k, ":" .. arg_name .. "$") then
+                                values[k] = v
+                            end
+                        end
+                        if next(values) == nil then values = nil end
+                    end
+                end
+
                 if variable == "request.raw_path" then
                     values, err = self.__get_values_request_raw_path()
                 end
@@ -3929,6 +3975,20 @@ _M.__qs_parser = function (self, raw_query_string, try_base64decode_if_possible)
             debug("         ` key-value: " .. keyval)
             local key,value = string_match(keyval, "([^=]+)=?(.*)")
             if key and value then
+                -- ModSec ARGS_GET semantics: split on raw `&`/`=` first
+                -- (so an `%3D` inside a value doesn't accidentally split
+                -- the keyval), then URL-decode key and value
+                -- independently. Detection rules with `t:none` (e.g.
+                -- 921160's CRLF-in-arg-name check) expect to see the
+                -- decoded bytes — without this an attacker can hide
+                -- `\r\n` inside `%0d%0a` and slip past every
+                -- name-targeted check.
+                if string_find(key, "[%%+]", 1, false) then
+                    key = ngx.unescape_uri(key)
+                end
+                if string_find(value, "[%%+]", 1, false) then
+                    value = ngx.unescape_uri(value)
+                end
                 debug("         ` key: " .. key)
                 debug("         ` value: " .. value)
                 table_insert(values, {
@@ -3954,6 +4014,11 @@ _M.__qs_parser = function (self, raw_query_string, try_base64decode_if_possible)
                     end
                 end
             else
+                -- key-only token (no `=`). Same decode contract as
+                -- the keyed branch above.
+                if string_find(keyval, "[%%+]", 1, false) then
+                    keyval = ngx.unescape_uri(keyval)
+                end
                 debug("         ` key2: " .. keyval)
                 table_insert(values, {
                     ["request.query.name:"..keyval:lower()] = keyval
