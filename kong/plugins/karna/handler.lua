@@ -689,6 +689,14 @@ function plugin:access(plugin_conf)
   -- the rejection produces an empty values table and slips through).
   engine:check_request_body_parser(plugin_conf)
 
+  -- DoS guard: cap arguments (query + urlencoded + multipart parts + JSON
+  -- keys) at limit_arg_num. The body is parsed+cached above, so counting
+  -- is cheap; over the limit we skip the ~160-rule scan (the real cost).
+  -- In blocking mode this already returned 403; the flag only matters in
+  -- detection mode, where we still skip the scan so a pathological request
+  -- can't pin the worker.
+  local ka_arg_limit_exceeded = engine:check_request_arg_count(plugin_conf)
+
   -- set local variables
   kong.ctx.plugin.rule_variables = {}
 
@@ -752,6 +760,15 @@ function plugin:access(plugin_conf)
         kong.log.err("Error parsing JSON rule: "..rule_parser_error)
       end
     end
+  end
+
+  -- Over the argument-count limit (detection mode): the body parsed clean
+  -- but carries more args than limit_arg_num. Skip all rule evaluation —
+  -- scanning a pathological request is the DoS. Setup above (local_rules,
+  -- tx_variables) already ran so later phases stay consistent; the
+  -- violation is recorded in ka_matched_rules for the audit log.
+  if ka_arg_limit_exceeded then
+    return
   end
 
   -- loop rule control

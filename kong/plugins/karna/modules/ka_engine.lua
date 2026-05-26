@@ -2589,6 +2589,91 @@ _M.check_request_body_parser = function(self, plugin_conf)
     end
 end
 
+-- DoS guard: cap the number of request arguments evaluated by the rule
+-- engine. Each argument (query param, urlencoded body field, multipart
+-- part, or JSON key) expands into one or more values that EVERY rule is
+-- matched against, so the rule-loop cost is ~ (rules × args). An attacker
+-- who inflates the arg count can pin a worker: a ~140 KB multipart body
+-- with 2000 tiny parts measured ~2 s of CPU (≈250× a benign request,
+-- 2026-05-26) — and 98% of that was the rule scan, not the parse.
+--
+-- This gate runs as an always-on validation gate BEFORE the rule loop.
+-- By this point the body is already parsed + cached (by
+-- check_request_body_parser for multipart, or here on first call for
+-- urlencoded/json), so counting is cheap; rejecting here skips the
+-- expensive scan entirely. It reuses limit_arg_num — the same limit the
+-- late, header_filter-phase check_arg_len applies — so the cap is
+-- configurable on the fly and there is no new schema knob.
+--
+-- Counting: one `.name:` key is emitted per argument (file or non-file
+-- part, query param, urlencoded field, JSON key). The per-part header
+-- sub-namespace (`request.body.multipart.part.header.name:`) is excluded
+-- so headers don't inflate the count beyond the real argument total.
+-- Returns true when over the limit so the access handler skips rule
+-- evaluation even in detection (non-blocking) mode — evaluating rules on
+-- a pathological request is the DoS, regardless of posture.
+_M.check_request_arg_count = function(self, plugin_conf)
+    local limit = plugin_conf.limit_arg_num
+    if not limit or limit <= 0 then
+        return false
+    end
+
+    local try_b64 = plugin_conf.try_bas64decode_if_possible
+    local arg_num = 0
+
+    local function count_names(values)
+        if not values then return end
+        for k in pairs(values) do
+            if string_find(k, ".name:", 1, true)
+               and not string_find(k, ".header.name:", 1, true) then
+                arg_num = arg_num + 1
+            end
+        end
+    end
+
+    count_names(self.__get_values_request_query_value(try_b64))
+    count_names(self.__get_values_request_body(try_b64))
+
+    if arg_num <= limit then
+        return false
+    end
+
+    table_insert(kong.ctx.plugin.ka_matched_rules, {
+        rule = {
+            id = "limit_arg_num",
+            log = true,
+            logdata = "",
+            message = "Request argument count limit reached (" .. tostring(arg_num)
+                .. " > " .. tostring(limit) .. ")",
+            phase = "access",
+            tags = { "karna", "access", "paranoia-level/1", "dos/arg-count" },
+            response_status_override = 403
+        },
+        part = {
+            {
+                matched_on = "request.arg.count",
+                matched_value = tostring(arg_num)
+            }
+        }
+    })
+
+    if plugin_conf.engine_blocking_mode then
+        return kong.response.exit(
+            403,
+            "Forbidden",
+            {
+                ["content-type"] = "text/plain",
+                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                ["x-karna-rule-id"] = "limit_arg_num"
+            }
+        )
+    end
+
+    -- detection mode: don't scan a pathological request (the scan is the
+    -- DoS); signal the access handler to skip rule evaluation.
+    return true
+end
+
 _M.method_allowed = function (self, plugin_conf)
     local request_method = request_get_method()
 
