@@ -2077,12 +2077,30 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     -- against "%{args._method}", producing a false
                     -- positive on every benign request that posts
                     -- a `_method` parameter (e.g. GitLab logout).
+                    --
+                    -- `__get_values_request_args` returns the merged
+                    -- query + body args, but its keys carry the
+                    -- source-namespace prefix (`request.query.value:foo`,
+                    -- `request.body.urlencode.value:foo`, …) — there
+                    -- is no flat `request.arg.value:` key in the
+                    -- result. Match the desired arg name by suffix:
+                    -- look for any key ending in `.value:<name>` or
+                    -- `:<name>` and use the first match.
                     if string.find(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:][^}]+}") then
                         local arg_values = _M.__get_values_request_args(self, nil, rule.rule_control)
                         condition_value_resolved = string_gsub(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:]([^}]+)}", function(arg_name)
                             if not arg_values then return "" end
-                            local key = "request.arg.value:" .. arg_name
-                            return arg_values[key] or ""
+                            local target = arg_name:lower()
+                            local val_suffix = ".value:" .. target
+                            for k, v in pairs(arg_values) do
+                                if string_find(k, val_suffix, 1, true) then
+                                    local tail_pos = string.find(k, val_suffix, 1, true)
+                                    if tail_pos and tail_pos + #val_suffix - 1 == #k then
+                                        return tostring(v)
+                                    end
+                                end
+                            end
+                            return ""
                         end)
                     end
 
