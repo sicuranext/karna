@@ -173,7 +173,16 @@ _M.global_fps = {
                         op = "rx",
                         negated = true,
                         transform = { "lowercase" },
-                        value = "^[^;\\s/]+/[^;\\s/]+(?:\\s*;\\s*charset\\s*=\\s*\"?(?:utf-8|iso-8859-15?|windows-1252)\"?\\s*)?$",
+                        -- media/subtype, optionally followed by:
+                        --   a charset clause whose value MUST be one of
+                        --   the four CRS-allowed charsets,
+                        --   AND/OR any number of other `name=value`
+                        --   parameter clauses (e.g. `boundary=inner` on
+                        --   a multipart part).
+                        -- Order is fixed (charset before others) which
+                        -- mirrors the canonical RFC 2045 ordering used
+                        -- by every common client.
+                        value = "^[^;\\s/]+/[^;\\s/]+(?:\\s*;\\s*charset\\s*=\\s*\"?(?:utf-8|iso-8859-15?|windows-1252)\"?)?(?:\\s*;\\s*(?!charset\\s*=)[^=;\\s]+\\s*=\\s*[^;]+)*\\s*$",
                         variables = { "request.body.multipart.part.content_type" }
                     }
                 }

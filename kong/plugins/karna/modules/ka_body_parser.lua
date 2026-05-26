@@ -277,6 +277,17 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
     self.debug("Trying to parse multipart body with content-type: " .. content_type)
 
     local multipart_data, mp_err = multipart:parse(raw_body, content_type)
+    -- Track per-name occurrence counts so duplicate parts (legitimate
+    -- per RFC 7578: the same `name=` can repeat — used by checkbox
+    -- groups, array uploads, and by attackers smuggling a clean part
+    -- next to a poisoned one). The first occurrence keeps the plain
+    -- `<prefix>:<name>` key; further occurrences are emitted as
+    -- `<prefix>:<name>:<index>` so the engine's prefix-match resolution
+    -- surfaces every value (CRS 922110's `MULTIPART_HEADERS_CONTENT_TYPES_*`
+    -- bag relies on that — Karna's coreruleset_fix override targets the
+    -- native namespace and needs *every* part's CT to be visible,
+    -- not just the last one).
+    local part_name_counts = {}
     if multipart_data then
         for _,part in pairs(multipart_data) do
             --[[
@@ -308,12 +319,22 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
             ]]--
 
             local name_lowercase = part.name:lower()
+            -- name_suffix is just the part name on first occurrence,
+            -- and `<name>:<n>` on subsequent occurrences. The engine
+            -- resolves `request.body.multipart.part.content_type` by
+            -- prefix-matching every key starting with that string, so
+            -- both forms participate in rule evaluation.
+            part_name_counts[name_lowercase] = (part_name_counts[name_lowercase] or 0) + 1
+            local name_suffix = name_lowercase
+            if part_name_counts[name_lowercase] > 1 then
+                name_suffix = name_lowercase .. ":" .. tostring(part_name_counts[name_lowercase])
+            end
 
             table.insert(values, {
-                [prefix .. ".name:"..name_lowercase] = part.name
+                [prefix .. ".name:"..name_suffix] = part.name
             })
             table.insert(values, {
-                [prefix .. ".value:"..name_lowercase] = part.body
+                [prefix .. ".value:"..name_suffix] = part.body
             })
 
             if try_base64decode_if_possible then
@@ -329,7 +350,7 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
                 local status, decoded = pcall(b64.decode_base64url, part.body)
                 if status then
                     table.insert(values, {
-                        [prefix .. ".value:"..name_lowercase.."_ka_b64_decoded"] = tostring(decoded)
+                        [prefix .. ".value:"..name_suffix.."_ka_b64_decoded"] = tostring(decoded)
                     })
                 else
                     self.debug("         ` BASE64 decode failed on:" .. tostring(part.body))
@@ -338,11 +359,11 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
 
             if part.filename then
                 table.insert(values, {
-                    [prefix .. ".filename:"..name_lowercase] = part.filename
+                    [prefix .. ".filename:"..name_suffix] = part.filename
                 })
                 if part.extension then
                     table.insert(values, {
-                        [prefix .. ".extension:"..name_lowercase] = part.extension
+                        [prefix .. ".extension:"..name_suffix] = part.extension
                     })
                 end
             end
@@ -358,16 +379,16 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
             for h_name, h_value in pairs(part.headers or {}) do
                 local hn = h_name:lower()
                 table.insert(values, {
-                    [prefix .. ".part.header.value:" .. name_lowercase .. ":" .. hn] = h_value
+                    [prefix .. ".part.header.value:" .. name_suffix .. ":" .. hn] = h_value
                 })
                 table.insert(values, {
-                    [prefix .. ".part.header.name:" .. name_lowercase .. ":" .. hn] = h_name
+                    [prefix .. ".part.header.name:" .. name_suffix .. ":" .. hn] = h_name
                 })
                 if hn == "content-type" then
                     -- Shortcut for the common case so rules don't have to
                     -- walk the part-header namespace just to read Content-Type.
                     table.insert(values, {
-                        [prefix .. ".part.content_type:" .. name_lowercase] = h_value
+                        [prefix .. ".part.content_type:" .. name_suffix] = h_value
                     })
                 end
             end
