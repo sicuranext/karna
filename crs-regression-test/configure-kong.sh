@@ -65,6 +65,30 @@ upsert_route() {
         curl -fs -X POST "${ADMIN}/services/echo/routes" "${payload[@]}" >/dev/null
         echo "route: created"
     fi
+
+    # Header-keyed catch-all route: matches `X-Karna-Test: true` for
+    # ANY Host. This lets the start.py harness preserve the test
+    # YAML's original Host header instead of rewriting it to
+    # `integration.local`, which is critical for rules that compare
+    # Host against another input (e.g. CRS 943110's session-fixation
+    # chain checks Referer's host vs Host header — rewriting Host
+    # breaks the chain's third condition and forces a false positive).
+    local hdr_route_id
+    hdr_route_id=$(curl -fs "${ADMIN}/services/echo/routes" | python3 -c "import sys,json; d=json.load(sys.stdin); print(next((r['id'] for r in d.get('data',[]) if r.get('name')=='karna-test-header-route'),''))")
+    local hdr_payload=(
+        -d "name=karna-test-header-route"
+        -d "headers.X-Karna-Test=true"
+        -d "paths[]=/"
+        -d "strip_path=false"
+    )
+    if [ -n "${hdr_route_id}" ]; then
+        curl -fs -X DELETE "${ADMIN}/routes/${hdr_route_id}" >/dev/null
+        curl -fs -X POST "${ADMIN}/services/echo/routes" "${hdr_payload[@]}" >/dev/null
+        echo "header route: replaced (${hdr_route_id} → new)"
+    else
+        curl -fs -X POST "${ADMIN}/services/echo/routes" "${hdr_payload[@]}" >/dev/null
+        echo "header route: created"
+    fi
 }
 
 upsert_plugin() {

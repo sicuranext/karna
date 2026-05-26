@@ -189,12 +189,27 @@ def send_request(test, rule_id):
         cl_found = False
         ct_found = False
         if "headers" in stage["input"]:
+            # If the YAML carries both Host and Referer headers, the
+            # test's intent is often to compare Host against the
+            # Referer's host (e.g. CRS 943110 session-fixation chain:
+            # "if Referer-host == Host then benign, else off-domain
+            # fixation attempt"). Rewriting Host to integration.local
+            # would break that comparison and turn the negative test
+            # into a false positive. When both headers are present
+            # we preserve the original Host and route through the
+            # header-keyed catch-all (`X-Karna-Test: true`) configured
+            # in configure-kong.sh. For all other tests we keep the
+            # historical behaviour (rewrite to integration.local), so
+            # rules that look at the host as an attack surface still
+            # see a stable value.
+            preserve_host = ("Referer" in stage["input"]["headers"]
+                             or "referer" in stage["input"]["headers"])
             for key, value in stage["input"]["headers"].items():
                 if key == "Host" or key == "host":
-                    #if not "example" in value:
-                    headers += "Host: integration.local\r\n"
-                    #else:
-                    #    headers += f"Host: {value}\r\n"
+                    if preserve_host:
+                        headers += f"Host: {value}\r\n"
+                    else:
+                        headers += "Host: integration.local\r\n"
                     continue
 
                 if key == "Accept-Encoding" and not test["test_id"] in ["920520-7"]:
@@ -202,7 +217,7 @@ def send_request(test, rule_id):
 
                 if key == "Content-Length" or key == "content-length":
                     cl_found = True
-                
+
                 if key == "Content-Type" or key == "content-type":
                     ct_found = True
 
