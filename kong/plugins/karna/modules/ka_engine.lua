@@ -542,11 +542,31 @@ _M.__get_values_request_query_value = function(try_b64)
         return {}, nil
     end
 
+    -- Per-request cache. CRS bundles ~100 rules whose variables list
+    -- includes ARGS_GET / ARGS_GET_NAMES — without caching, every rule
+    -- iteration was re-parsing the query string fresh, which on
+    -- random-fields traffic with a couple dozen args meant
+    -- urldecoding the same payload ~100× per request. The cache holds
+    -- a `{ [variable] = value }` dict keyed by the cache index
+    -- (`b64` vs `raw`).
+    local cache_key = try_b64 and "b64" or "raw"
+    if kong.ctx.plugin then
+        if not kong.ctx.plugin.query_values_cache then
+            kong.ctx.plugin.query_values_cache = {}
+        end
+        if kong.ctx.plugin.query_values_cache[cache_key] ~= nil then
+            return kong.ctx.plugin.query_values_cache[cache_key], nil
+        end
+    end
+
     local values, err = body_parser:urlencoded("request.query", request_get_raw_query(), try_b64)
     if err then
         return nil, err
     end
 
+    if kong.ctx.plugin then
+        kong.ctx.plugin.query_values_cache[cache_key] = values
+    end
     return values, nil
 end
 _M.__get_values_request_args = function (self, try_b64, rule_control)
@@ -554,14 +574,34 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
         return {}, nil
     end
 
+    -- Two-tier per-request cache. The merged BASE map (query + body,
+    -- minus XML-when-body-is-xml) is identical across every rule
+    -- that doesn't carry a `rule_control.ignore_variables` directive
+    -- — i.e. the vast majority of CRS rules. Without this cache the
+    -- merge ran ~50 times per request on a 5-arg GET, which dropped
+    -- bench scenario 02 (random-fields) from 460 RPS to 39 RPS. The
+    -- few rules that DO set ignore_variables get the filtering
+    -- branch on top of the cached base, which is still cheaper than
+    -- rebuilding from scratch.
+    local has_ignore = (rule_control and rule_control.ignore_variables) and true or false
+    local cache_key = try_b64 and "b64" or "raw"
+    if kong.ctx.plugin then
+        if not kong.ctx.plugin.args_values_cache then
+            kong.ctx.plugin.args_values_cache = {}
+        end
+        if not has_ignore and kong.ctx.plugin.args_values_cache[cache_key] ~= nil then
+            return kong.ctx.plugin.args_values_cache[cache_key], nil
+        end
+    end
+
     local values = {}
 
-    local query_values, err = self.__get_values_request_query_value()
+    local query_values, err = self.__get_values_request_query_value(try_b64)
     if err then
         return nil, err
     end
 
-    local body_values, err = self.__get_values_request_body()
+    local body_values, err = self.__get_values_request_body(try_b64)
     if err then
         return nil, err
     end
@@ -570,7 +610,7 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
     if query_values then
         for k,v in pairs(query_values) do
             if not values[k] then
-                if rule_control and rule_control.ignore_variables then
+                if has_ignore then
                     if rule_control.ignore_variables["request.query.value"] then
                         if rule_control.ignore_variables["request.query.value"][k] then
                             goto continue
@@ -600,7 +640,7 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
     if body_values and not skip_body_for_args then
         for k,v in pairs(body_values) do
             if not values[k] then
-                if rule_control and rule_control.ignore_variables then
+                if has_ignore then
                     if rule_control.ignore_variables["request.body.value"] then
                         if rule_control.ignore_variables["request.body.value"][k] then
                             goto continue
@@ -611,6 +651,10 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
             end
             ::continue::
         end
+    end
+
+    if not has_ignore and kong.ctx.plugin then
+        kong.ctx.plugin.args_values_cache[cache_key] = values
     end
 
     return values, nil
