@@ -198,6 +198,7 @@ function seclang.__get_variable_name(varname)
         ["REQUEST_COOKIES"]         = "request.cookie.value",
         ["REQUEST_COOKIES_NAMES"]   = "request.cookie.name",
         ["REQUEST_BODY"]            = "request.body",
+        ["REQUEST_BODY_LENGTH"]     = "request.body.length",
         ["REQBODY_PROCESSOR"]       = "request.body.processor",
 
         ["ARGS"]                    = "request.arg.value",

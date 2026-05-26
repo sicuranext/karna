@@ -237,12 +237,26 @@ def send_request(test, rule_id):
 
         if not cl_found:
             if not "stop_magic" in stage["input"]:
-                headers += f"Content-Length: {len(data)}\r\n"
-                cl_found = True
+                # 920640 has a negative test (5) that sends a body with
+                # NEITHER Content-Length nor Content-Type — when the
+                # server can't even tell there's a body, the rule must
+                # not fire. Auto-injecting CL defeats that test.
+                if not (str(args.testrule) == "920640" and len(data) > 0):
+                    headers += f"Content-Length: {len(data)}\r\n"
+                    cl_found = True
 
+        # Auto-inject Content-Type only when the test is targeting an
+        # ARGS-style rule that depends on body args being parsed (the
+        # vast majority of CRS detection tests). When the test is
+        # specifically about the missing-CT shape (920640) we must
+        # NOT add one, otherwise the rule's chain condition
+        # (`&REQUEST_HEADERS:Content-Type @eq 0`) never fires.
+        # `args.testrule` carries the rule id derived from the YAML
+        # file name — gate the auto-magic on it.
         if not ct_found and cl_found and len(data) > 0:
             if not "stop_magic" in stage["input"]:
-                headers += f"Content-Type: application/x-www-form-urlencoded\r\n"
+                if str(args.testrule) != "920640":
+                    headers += f"Content-Type: application/x-www-form-urlencoded\r\n"
 
         for h in headers.split("\r\n"):
             curl_command += f" -H '{h}'"
