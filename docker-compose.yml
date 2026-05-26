@@ -86,12 +86,13 @@ services:
 
       # Cap PCRE backtracking iterations per ngx.re.match call. Without this
       # a catastrophic-backtracking regex (some CRS rules have them) can pin
-      # a worker indefinitely. 100000 is enough for legitimate complex regex
-      # in CRS 4.x; pathological patterns hit the cap and return nil + err.
-      # Karna's `safe_re_match` wrapper turns the error into a fail-closed
-      # no-match for negation operators (avoids FP) and a regular no-match
-      # for positive operators.
-      KONG_NGINX_HTTP_LUA_REGEX_MATCH_LIMIT: "100000"
+      # a worker indefinitely. 1_000_000 is enough for the heaviest legitimate
+      # CRS 4.x regexes (e.g. 934100's 1500-char Node.js attack pattern) on
+      # real-world payloads up to ~1KB; pathological patterns hit the cap
+      # and return nil + err. Karna's `safe_re_match` wrapper turns the
+      # error into a fail-closed no-match for negation operators (avoids
+      # FP) and a regular no-match for positive operators.
+      KONG_NGINX_HTTP_LUA_REGEX_MATCH_LIMIT: "1000000"
 
       # Override CRS rules path (default in the image is /opt/coreruleset/rules/).
       KARNA_CRS_PATH: /opt/coreruleset/rules/

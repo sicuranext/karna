@@ -83,21 +83,33 @@ _M.urlencoded = function(self, prefix, raw_body, try_base64decode_if_possible)
                     value = ngx.unescape_uri(value)
                 end
 
-                if string_match(value, "^[%{%[]") and pcall(cjson.decode,value) then
-                    local body_json_flat = self:json("request.body", value, try_base64decode_if_possible)
-
-                    for _,vv in pairs(body_json_flat) do
-                        local ok, err = insert_new_value(label_plain_value, vv)
-                        if not ok then
-                            kong.log.debug("Error inserting keyname: " .. err)
-                            return nil, err
+                -- Insert the raw decoded value FIRST so detection rules
+                -- that target the urlencoded arg directly (`ARGS:test`)
+                -- still see the JSON payload as one string. This is what
+                -- ModSec's parser exposes. Then, if the value looks like
+                -- JSON, additionally flatten it under a JSON-shaped
+                -- prefix derived from the parent key so structured-arg
+                -- targets (request.body.json.value:then etc.) work too.
+                local ok, err = insert_new_value(label_plain_value, value)
+                if not ok then
+                    kong.log.debug("Error inserting keyname: " .. err)
+                    return nil, err
+                end
+                if string_match(value, "^[%{%[]") and pcall(cjson.decode, value) then
+                    local nested_prefix = prefix .. ".json:" .. key:lower()
+                    local body_json_flat = self:json(nested_prefix, value, try_base64decode_if_possible)
+                    for _, vv in pairs(body_json_flat or {}) do
+                        if type(vv) == "table" then
+                            for k_inner, v_inner in pairs(vv) do
+                                -- Best-effort: skip on dup. JSON parses
+                                -- may emit the same key path multiple
+                                -- times (mixed-shape lists); tolerate
+                                -- those rather than aborting the parse.
+                                if not values[k_inner] then
+                                    values[k_inner] = v_inner
+                                end
+                            end
                         end
-                    end
-                else
-                    local ok, err = insert_new_value(label_plain_value, value)
-                    if not ok then
-                        kong.log.debug("Error inserting keyname: " .. err)
-                        return nil, err
                     end
                 end
 
