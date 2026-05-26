@@ -2330,6 +2330,37 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                                 resolved_value = string_gsub(resolved_value, "%%{tx%.(%d+)}", function(n)
                                     return rx_matched_values_cross_conditions["group:" .. n] or ""
                                 end)
+                                -- resolve %{ARGS.<name>} / %{ARGS:<name>}.
+                                -- CRS 922100 stitches the multipart
+                                -- `_charset_` part's body into a tx
+                                -- variable via this macro before the
+                                -- chain's @within check runs; without
+                                -- resolution the literal macro text
+                                -- ends up in TX and the rule misfires.
+                                if string.find(resolved_value, "%%{[Aa][Rr][Gg][Ss][%.:][^}]+}") then
+                                    local arg_values = _M.__get_values_request_args(self, nil, rule.rule_control)
+                                    resolved_value = string_gsub(resolved_value, "%%{[Aa][Rr][Gg][Ss][%.:]([^}]+)}", function(arg_name)
+                                        if not arg_values then return "" end
+                                        local target = arg_name:lower()
+                                        local val_suffix = ".value:" .. target
+                                        for k, v in pairs(arg_values) do
+                                            local tail_pos = string.find(k, val_suffix, 1, true)
+                                            if tail_pos and tail_pos + #val_suffix - 1 == #k then
+                                                return tostring(v)
+                                            end
+                                        end
+                                        return ""
+                                    end)
+                                end
+                                -- resolve %{tx.<name>} dynamic lookups
+                                -- (non-numeric) for setvar self-reference
+                                -- patterns like
+                                -- `tx.foo=foo,%{tx.foo}`.
+                                if string.find(resolved_value, "%%{tx%.[%w_]+}") then
+                                    resolved_value = string_gsub(resolved_value, "%%{tx%.([%w_]+)}", function(tx_name)
+                                        return tostring(kong.ctx.plugin.tx_variables[tx_name] or "")
+                                    end)
+                                end
                                 -- skip anomaly score variables
                                 if not string_find(resolved_name, "anomaly_score") then
                                     kong.ctx.plugin.tx_variables[resolved_name] = resolved_value
