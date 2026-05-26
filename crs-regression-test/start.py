@@ -232,31 +232,28 @@ def send_request(test, rule_id):
 
                 headers += f"{key}: {value}\r\n"
 
-            if not "Host" in stage["input"]["headers"] and not "host" in stage["input"]["headers"]:
+            # `autocomplete_headers: false` in the YAML means the test
+            # is explicit about *exactly* the headers it wants sent;
+            # the harness MUST NOT auto-inject Host/Content-Length/
+            # Content-Type. The stock crs-toolchain runner honours this
+            # field — without it many protocol-enforcement tests (920180,
+            # 920280, 920290, 920340, 920640, ...) lose their meaning
+            # because the missing header gets silently added back.
+            autocomplete = stage["input"].get("autocomplete_headers", True)
+            host_in_yaml = "Host" in stage["input"]["headers"] or "host" in stage["input"]["headers"]
+            if not host_in_yaml and autocomplete:
                 headers += "Host: karna-test\r\n"
 
-        if not cl_found:
-            if not "stop_magic" in stage["input"]:
-                # 920640 has a negative test (5) that sends a body with
-                # NEITHER Content-Length nor Content-Type — when the
-                # server can't even tell there's a body, the rule must
-                # not fire. Auto-injecting CL defeats that test.
-                if not (str(args.testrule) == "920640" and len(data) > 0):
-                    headers += f"Content-Length: {len(data)}\r\n"
-                    cl_found = True
+        autocomplete = stage["input"].get("autocomplete_headers", True)
 
-        # Auto-inject Content-Type only when the test is targeting an
-        # ARGS-style rule that depends on body args being parsed (the
-        # vast majority of CRS detection tests). When the test is
-        # specifically about the missing-CT shape (920640) we must
-        # NOT add one, otherwise the rule's chain condition
-        # (`&REQUEST_HEADERS:Content-Type @eq 0`) never fires.
-        # `args.testrule` carries the rule id derived from the YAML
-        # file name — gate the auto-magic on it.
+        if not cl_found:
+            if not "stop_magic" in stage["input"] and autocomplete:
+                headers += f"Content-Length: {len(data)}\r\n"
+                cl_found = True
+
         if not ct_found and cl_found and len(data) > 0:
-            if not "stop_magic" in stage["input"]:
-                if str(args.testrule) != "920640":
-                    headers += f"Content-Type: application/x-www-form-urlencoded\r\n"
+            if not "stop_magic" in stage["input"] and autocomplete:
+                headers += f"Content-Type: application/x-www-form-urlencoded\r\n"
 
         for h in headers.split("\r\n"):
             curl_command += f" -H '{h}'"
