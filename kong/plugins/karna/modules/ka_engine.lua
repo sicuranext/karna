@@ -474,6 +474,31 @@ _M.__get_values_request_body_scalars = function()
     end
 
     local values = {}
+    -- ModSec selects REQBODY_PROCESSOR from the Content-Type header
+    -- before the body is parsed, so the variable is set even when the
+    -- body is empty. CRS rule 920539 (and any future helper) relies on
+    -- that to disable an attack rule for the chosen processor without
+    -- caring whether the request actually carried a body. Mirror that:
+    -- emit `request.body.processor` whenever a recognised CT is
+    -- present, independent of body length. `request.body.length` is
+    -- still derived from the actual bytes.
+    do
+        local content_type = kong.request.get_header("content-type")
+        if content_type then
+            local proc_type = utils:request_body_parser_type()
+            -- ModSec's REQBODY_PROCESSOR exposes the processor as an
+            -- uppercase token (URLENCODED / MULTIPART / XML / JSON / …).
+            -- CRS rules (e.g. 920539's `@streq JSON`, 901's
+            -- `!@rx (?:URLENCODED|MULTIPART|…)`) compare
+            -- case-sensitively. Karna's internal type tag stays
+            -- lowercase everywhere else. "text" is the default fallback
+            -- shape Karna uses for unrecognised CTs; only surface it
+            -- when CT is actually present (above) so unset stays unset.
+            if proc_type then
+                values["request.body.processor"] = proc_type:upper()
+            end
+        end
+    end
     local content_length_header = kong.request.get_header("content-length")
     if content_length_header and tonumber(content_length_header) > 0 then
         local request_body = request_get_raw_body()
@@ -497,15 +522,11 @@ _M.__get_values_request_body_scalars = function()
             -- left empty. Mirroring that here avoids broad regex / pmFromFile
             -- targets accidentally matching the raw wire bytes of an XML or
             -- multipart payload when the rule author expected only structured
-            -- inspection. request.body.length and request.body.processor are
-            -- metadata; they're always exposed.
+            -- inspection. request.body.length is metadata.
             if request_body_type == "urlencoded" or request_body_type == "text" then
                 values["request.body"] = request_body
             end
             values["request.body.length"] = tostring(#request_body)
-            if request_body_type then
-                values["request.body.processor"] = request_body_type
-            end
         end
     end
 
@@ -561,7 +582,22 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
             ::continue::
         end
     end
-    if body_values then
+    -- ModSec-compat ARGS scope: ARGS / ARGS_NAMES variables refer to
+    -- parameter-style key/value pairs (query string + urlencoded body
+    -- + multipart parts). They specifically do NOT include XML element
+    -- names / attribute names / element values — those live in their
+    -- own XML:/* and XML://@* variables. JSON keys/values map onto
+    -- ARGS in ModSec (the JSON processor synthesises ARGS entries),
+    -- so json.* is kept in scope here.
+    --
+    -- Without this filter, Karna previously folded `request.body.xml.*`
+    -- entries (incl. element names) into ARGS, causing CRS rules whose
+    -- ARGS-targeted regex incidentally matched an XML element name
+    -- to fire on benign XML payloads — a 944120-class false positive
+    -- that the regression suite catches with `no_expect_ids`.
+    local body_type = utils:request_body_parser_type()
+    local skip_body_for_args = (body_type == "xml")
+    if body_values and not skip_body_for_args then
         for k,v in pairs(body_values) do
             if not values[k] then
                 if rule_control and rule_control.ignore_variables then
@@ -872,12 +908,25 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
 
         for _,rule in pairs(raw_rules) do
             -- if plugin_conf.private_debug and request header x-karna-test-rule-id is set, filter rule.id for the header value
+            -- Helper rules (no `fixed_response` action — i.e. `pass`-action
+            -- ctl:/setvar: rules) are ALWAYS allowed through, even when a
+            -- target rule id is pinned. Some CRS rules depend on a sibling
+            -- helper firing first to set TX variables or call
+            -- ctl:ruleRemoveById (e.g. 920539 disables 920540 when the
+            -- body processor is JSON). Filtering helpers out alongside
+            -- the target leaves the target running in an artificial
+            -- context the rule wasn't written for, and the test mis-fires.
             if plugin_conf.private_debug then
                 local test_rule_id = kong.request.get_header("x-karna-test-rule-id")
                 if test_rule_id then
-                    if test_rule_id ~= tostring(rule.id) then
+                    local rule_action = rule.action or {}
+                    local is_terminal_rule = rule_action.fixed_response
+                                          or rule_action.fix_matched_parts
+                                          or rule_action.rate_limit
+                                          or rule_action.mcp_event_action
+                    if is_terminal_rule and test_rule_id ~= tostring(rule.id) then
                         goto continue
-                    else
+                    elseif test_rule_id == tostring(rule.id) then
                         kong.log.inspect(rule)
                     end
                 end
@@ -2285,7 +2334,8 @@ _M.check_request_body_parser = function(self, plugin_conf)
             "Forbidden",
             {
                 ["content-type"] = "text/plain",
-                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                ["x-karna-rule-id"] = "request_body_parser_violation"
             }
         )
     end
@@ -2326,7 +2376,8 @@ _M.method_allowed = function (self, plugin_conf)
                 "Method Not Allowed",
                 {
                     ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                    ["x-karna-rule-id"] = "method_allowed"
                 }
             )
         end
@@ -3118,7 +3169,7 @@ _M.get_inspection_table = function(self, plugin_conf)
 
             if request_body_type == "json" then
                 if pcall(cjson.decode,request_body) then
-                    table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type) })
+                    table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type):upper() })
                     local json_flattened = body_parser:json("request.body.json", request_body, plugin_conf.try_bas64decode_if_possible)
                     for _,v in pairs(json_flattened) do
                         table_insert(kong.ctx.plugin.inspection_table, v)
@@ -3127,7 +3178,7 @@ _M.get_inspection_table = function(self, plugin_conf)
             end
 
             if request_body_type == "xml" then
-                table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type) })
+                table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type):upper() })
                 local xml_flattened = body_parser:xml("request.body.xml", request_body)
                 for _,v in pairs(xml_flattened) do
                     table_insert(kong.ctx.plugin.inspection_table, v)
@@ -3135,7 +3186,7 @@ _M.get_inspection_table = function(self, plugin_conf)
             end
 
             if request_body_type == "urlencoded" then
-                table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type) })
+                table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type):upper() })
                 local urlencoded_flattened = body_parser:urlencoded("request.body.urlencode", request_body, plugin_conf.try_bas64decode_if_possible)
                 inspect(urlencoded_flattened)
                 for _,v in pairs(urlencoded_flattened) do
@@ -3144,7 +3195,7 @@ _M.get_inspection_table = function(self, plugin_conf)
             end
 
             if request_body_type == "multipart" then
-                table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type) })
+                table_insert(kong.ctx.plugin.inspection_table, { ["request.body.processor"] = tostring(request_body_type):upper() })
                 local multipart_flattened = body_parser:multipart("request.body.multipart", request_body, plugin_conf.try_bas64decode_if_possible)
                 for _,v in pairs(multipart_flattened) do
                     table_insert(kong.ctx.plugin.inspection_table, v)
@@ -3680,6 +3731,11 @@ _M.__set_rule_inspection_table = function(self, rule, condition, plugin_conf)
 
             elseif variable == "request.body.processor" then
                 local body_parser_type = utils:request_body_parser_type()
+                -- Mirror ModSec REQBODY_PROCESSOR's uppercase shape so
+                -- CRS rules with `@streq JSON` / `@rx (?:JSON|XML…)`
+                -- match. See companion emission in the body_scalars
+                -- path.
+                if body_parser_type then body_parser_type = body_parser_type:upper() end
                 self:__add_value_to_rule_inspection_table(condition.transform, {["request.body.processor"] = body_parser_type}, multi_match_enabled)
             elseif variable == "request.raw_body_if_type_unknown" then
                 local body_parser_type = utils:request_body_parser_type()
@@ -4545,7 +4601,8 @@ _M.check_arg_len = function(self, plugin_conf)
                 "Request argument length limit reached",
                 {
                     ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                    ["x-karna-rule-id"] = "check_arg_len"
                 }
             )
         end
@@ -4652,7 +4709,8 @@ _M.uri_path_check_violation = function(self, plugin_conf)
                 "Request URI path contains illegal characters",
                 {
                     ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                    ["x-karna-rule-id"] = "uri_path_check_violation"
                 }
             )
         end
@@ -4712,7 +4770,8 @@ _M.check_request_headers_allowed = function(self, plugin_conf)
                 "Request headers not allowed",
                 {
                     ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                    ["x-karna-rule-id"] = "check_request_headers_allowed"
                 }
             )
         end
@@ -4750,7 +4809,8 @@ _M.check_request_headers_allowed = function(self, plugin_conf)
                 "Request headers not allowed",
                 {
                     ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                    ["x-karna-rule-id"] = "check_request_headers_allowed"
                 }
             )
         end
@@ -4802,7 +4862,8 @@ _M.check_request_content_type_charset = function(self, plugin_conf)
                         "Request Content-Type charset not allowed",
                         {
                             ["content-type"] = "text/plain",
-                            ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                            ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                            ["x-karna-rule-id"] = "check_request_content_type_charset"
                         }
                     )
                 end

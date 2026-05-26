@@ -481,10 +481,21 @@ local evaluate_rules = function(plugin_conf, rules, phase)
 
         if rule_matched_obj.action.fixed_response then
           if plugin_conf.private_debug then
+            -- Echo the matched rule id in a response header as well.
+            -- The JSON body in `private_debug` mode carries the same
+            -- info, but HTTP HEAD responses strip the body — the header
+            -- is the only channel that survives, so test harnesses
+            -- (CRS regression suite) can identify which rule fired
+            -- regardless of method.
+            local dbg_headers = rule_matched_obj.action.fixed_response.headers
+              or { ["content-type"] = "text/plain", ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate" }
+            if rule_matched_obj.id then
+              dbg_headers["x-karna-rule-id"] = tostring(rule_matched_obj.id)
+            end
             response_exit(
               rule_matched_obj.action.fixed_response.status_code or 403,
               cjson.encode(rule_matched_obj),
-              rule_matched_obj.action.fixed_response.headers or { ["content-type"] = "text/plain", ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate" }
+              dbg_headers
             )
           else
             response_exit(

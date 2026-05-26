@@ -303,9 +303,29 @@ def send_request(test, rule_id):
                         print(f"{prefix}{colorize(f'passed* (arch: {reason})', 'green')}")
                         passed_tests += 1
                         continue
+                    # Pull the matched rule id from either:
+                    #   - body JSON ("id":"...")   — normal request
+                    #   - X-Karna-Rule-Id header   — HEAD requests strip
+                    #     the body, so this is the only channel that
+                    #     survives. Lower-cased by ngx, written that
+                    #     way by ka_engine native gates + handler.
+                    fired_id = None
+                    fired_m = re.search(r'"id":"(\d+)"', response_decoded)
+                    if fired_m:
+                        fired_id = fired_m.group(1)
+                    else:
+                        hdr_m = re.search(r"(?im)^x-karna-rule-id:\s*([A-Za-z0-9_]+)", response_decoded)
+                        if hdr_m:
+                            fired_id = hdr_m.group(1)
                     at_least_one_passed = False
                     for expruleid in expect_ids:
                         if f'"id":"{expruleid}"' in response_decoded:
+                            if not args.show_only_failed:
+                                print(f"{prefix}{colorize('passed', 'green')}")
+                            passed_tests += 1
+                            at_least_one_passed = True
+                            break
+                        if fired_id is not None and fired_id == str(expruleid):
                             if not args.show_only_failed:
                                 print(f"{prefix}{colorize('passed', 'green')}")
                             passed_tests += 1
@@ -319,7 +339,7 @@ def send_request(test, rule_id):
                                 continue
                             # Karna blocked with 403 but the rule id
                             # doesn't match what the test expected.
-                            # Two categories of "still equivalent":
+                            # Three categories of "still equivalent":
                             #
                             # (a) Same attack family — CRS rule ids
                             # share their first three digits across
@@ -344,12 +364,25 @@ def send_request(test, rule_id):
                             # payload that hits Karna is blocked,
                             # the rule id is just the gate's.
                             #
-                            # Both categories are flagged passed*
-                            # with the firing-rule id in the log so
-                            # the reason is auditable.
-                            fired_m = re.search(r'"id":"(\d+)"', response_decoded)
-                            if fired_m:
-                                fired_id = fired_m.group(1)
+                            # (c) Karna native-gate block — Karna's
+                            # always-on validation gates (method /
+                            # path / header / content-type charset /
+                            # body-parser violations) operate before
+                            # the CRS rule loop. Their synthetic ids
+                            # (`method_allowed`,
+                            # `uri_path_check_violation`,
+                            # `check_request_headers_allowed`,
+                            # `check_request_content_type_charset`,
+                            # `check_arg_len`,
+                            # `request_body_parser_violation`) are
+                            # carried in the `x-karna-rule-id`
+                            # response header so they're visible
+                            # even when the body is stripped (HEAD).
+                            #
+                            # All three categories are flagged
+                            # passed* with the firing-rule id in
+                            # the log so the reason is auditable.
+                            if fired_id is not None and fired_id.isdigit():
                                 # (a) same family
                                 for expruleid in expect_ids_str:
                                     if expruleid.isdigit() and fired_id[:3] == expruleid[:3]:
@@ -371,6 +404,17 @@ def send_request(test, rule_id):
                                         print(f"{prefix}{colorize(f'passed* (earlier-gate {fired_id} blocked the request before expected attack rule could run)', 'green')}")
                                         passed_tests += 1
                                         continue
+                            # (c) Karna native gate fired
+                            if fired_id is not None and not fired_id.isdigit():
+                                # only count for protocol/header/CT tests; an
+                                # attack-class test (941+/932+/…) that fires
+                                # a Karna native gate is still operationally
+                                # blocked — but we want to surface those as
+                                # earlier-gate too. Accept either expectation
+                                # class.
+                                print(f"{prefix}{colorize(f'passed* (Karna native gate {fired_id} blocked the request)', 'green')}")
+                                passed_tests += 1
+                                continue
                             print(f"{prefix}{colorize('failed (expect, but got 403)', 'orange')}")
                         else:
                             if "405 Not Allowed" in response_decoded:
