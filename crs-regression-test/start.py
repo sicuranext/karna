@@ -178,10 +178,17 @@ def send_request(test, rule_id):
         data = ""
         if "data" in stage["input"]:
             data = stage["input"]["data"]
+            # YAML stores `\xXX` byte escapes as literal text (5c 78 ...).
+            # The stock CRS regression runner (`crs-toolchain`) decodes
+            # those to real bytes before sending so detection rules like
+            # 941310 (US-ASCII malformed XSS, uses raw 0xBC/0xBE) actually
+            # see byte values, not the ASCII text `\xbc`. Decode `\xXX`
+            # here so we match that contract.
+            data = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), data)
             # normalize line endings to \r\n
             data = data.replace("\r\n", "\n").replace("\n", "\r\n")
             #print(f"DEBUG: data len={len(data)}, has CR={chr(13) in data}")
-            
+
             # for curl command, replace all \r\n with \\r\\n
             curl_data = data.replace("\r\n", "\\r\\n")
             curl_command += f" -d '{curl_data}'"
@@ -257,7 +264,19 @@ def send_request(test, rule_id):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(5)
         s.connect((args.host, args.port))
-        s.send(request.encode())
+        # Encoding strategy: tests that depend on raw single-byte
+        # sequences (941310's `\xbc<script>\xbe...`) need each Python
+        # str char mapped 1:1 to its numeric byte value — that's
+        # latin-1. Tests that use codepoints > 0xFF (934120 SSRF with
+        # enclosed-alphanumeric Unicode in the URI) need UTF-8 so the
+        # multi-byte form reaches the server. Pick based on max codepoint
+        # in the request — if everything fits in a byte, latin-1; else
+        # fall back to UTF-8.
+        try:
+            payload_bytes = request.encode('latin-1')
+        except UnicodeEncodeError:
+            payload_bytes = request.encode('utf-8')
+        s.send(payload_bytes)
         try:
             response = s.recv(40968)
         except socket.timeout:
