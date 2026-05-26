@@ -42,8 +42,15 @@ local schema = {
           { total_arg_value_length = { type = "number", default = 64000 } },
 
           -- restricted_extensions
-          -- default: .asa/ .asax/ .ascx/ .backup/ .bak/ .bat/ .cdx/ .cer/ .cfg/ .cmd/ .com/ .config/ .conf/ .cs/ .csproj/ .csr/ .dat/ .db/ .dbf/ .dll/ .dos/ .htr/ .htw/ .ida/ .idc/ .idq/ .inc/ .ini/ .key/ .licx/ .lnk/ .log/ .mdb/ .old/ .pass/ .pdb/ .pol/ .printer/ .pwd/ .rdb/ .resources/ .resx/ .sql/ .swp/ .sys/ .vb/ .vbs/ .vbproj/ .vsdisco/ .webinfo/ .xsd/ .xsx/
-          { restricted_extensions = { type = "array", elements = { type = "string" }, default = { "asa", "asax", "ascx", "backup", "bak", "bat", "cdx", "cer", "cfg", "cmd", "com", "config", "conf", "cs", "csproj", "csr", "dat", "db", "dbf", "dll", "dos", "htr", "htw", "ida", "idc", "idq", "inc", "ini", "key", "licx", "lnk", "log", "mdb", "old", "pass", "pdb", "pol", "printer", "pwd", "rdb", "resources", "resx", "sql", "swp", "sys", "vb", "vbs", "vbproj", "vsdisco", "webinfo", "xsd", "xsx", } } },
+          -- Aligned with the CRS 4.x default `tx.restricted_extensions`
+          -- set (crs-setup.conf.example). Anything an operator does
+          -- NOT want exposed via the URL path — secret keys
+          -- (`.pem`, `.key`, `.crt`, `.pfx`), server-side config
+          -- (`.config`, `.ini`, `.conf`), backup/working copies
+          -- (`.bak`, `.swp`, `.old`), shell scripts (`.sh`, `.bat`,
+          -- `.cmd`) — belongs here. Operators can shrink the list
+          -- per-deployment via the plugin schema if it's too strict.
+          { restricted_extensions = { type = "array", elements = { type = "string" }, default = { "ani", "asa", "asax", "ascx", "back", "backup", "bak", "bck", "bk", "bkp", "bat", "cdx", "cer", "cfg", "cnf", "cmd", "com", "compositefont", "config", "conf", "copy", "crt", "cs", "csproj", "csr", "dat", "db", "dbf", "dist", "dll", "dos", "dpkg-dist", "drv", "gadget", "hta", "htr", "htw", "ida", "idc", "idq", "inc", "inf", "ini", "jks", "jse", "key", "licx", "lnk", "log", "mdb", "msc", "ocx", "old", "pass", "pdb", "pem", "pfx", "pif", "pol", "prf", "printer", "pwd", "rdb", "rdp", "reg", "resources", "resx", "sav", "save", "scr", "sct", "sh", "shs", "sql", "sqlite", "sqlite3", "swap", "swo", "swp", "sys", "temp", "tfstate", "tlb", "tmp", "vb", "vbe", "vbs", "vbproj", "vsdisco", "vxd", "webinfo", "ws", "wsc", "wsf", "wsh", "xsd", "xsx", } } },
 
           -- allowed_request_content_type_charset
           -- default: |utf-8| |iso-8859-1| |iso-8859-15| |windows-1252|
