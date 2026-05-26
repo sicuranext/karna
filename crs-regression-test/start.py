@@ -189,27 +189,20 @@ def send_request(test, rule_id):
         cl_found = False
         ct_found = False
         if "headers" in stage["input"]:
-            # If the YAML carries both Host and Referer headers, the
-            # test's intent is often to compare Host against the
-            # Referer's host (e.g. CRS 943110 session-fixation chain:
-            # "if Referer-host == Host then benign, else off-domain
-            # fixation attempt"). Rewriting Host to integration.local
-            # would break that comparison and turn the negative test
-            # into a false positive. When both headers are present
-            # we preserve the original Host and route through the
-            # header-keyed catch-all (`X-Karna-Test: true`) configured
-            # in configure-kong.sh. For all other tests we keep the
-            # historical behaviour (rewrite to integration.local), so
-            # rules that look at the host as an attack surface still
-            # see a stable value.
-            preserve_host = ("Referer" in stage["input"]["headers"]
-                             or "referer" in stage["input"]["headers"])
+            # Preserve the test's original Host header whenever the
+            # YAML carries one. The `karna-test-header-route` Kong
+            # route configured by configure-kong.sh matches on
+            # `X-Karna-Test: true` for ANY host, so the request still
+            # reaches Karna regardless of Host value. CRS rules
+            # routinely compare Host against another captured input
+            # (Referer's host for 943110, an ARGS-embedded URL for
+            # 931130 RFI off-domain checks, the Host shape itself for
+            # 920350). Rewriting Host to a fixed value broke all of
+            # those rules' FP-suppression paths and produced spurious
+            # blocks on benign test inputs.
             for key, value in stage["input"]["headers"].items():
                 if key == "Host" or key == "host":
-                    if preserve_host:
-                        headers += f"Host: {value}\r\n"
-                    else:
-                        headers += "Host: integration.local\r\n"
+                    headers += f"Host: {value}\r\n"
                     continue
 
                 if key == "Accept-Encoding" and not test["test_id"] in ["920520-7"]:

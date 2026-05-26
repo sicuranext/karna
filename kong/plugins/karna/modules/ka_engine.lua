@@ -1006,7 +1006,20 @@ _M.__match_op_rx = function(variable_name, value_to_match_on, regex)
         local m, _ = safe_re_match(value_to_match_on, regex, "sjo")
         if m then
             matched_table["matched_on"] = variable_name
+            -- `matched_value` is the operator-detail field exposed in
+            -- audit logs and capped at 100 chars for readability.
+            -- `matched_value_full` carries the entire untruncated value
+            -- the rule actually saw — chained CRS rules use
+            -- `MATCHED_VARS` (mapped to Karna's `matched.value`) to
+            -- re-inspect that value with an FP-suppression regex
+            -- (e.g. 942440's second condition: "the matched arg looks
+            -- like a JWT, so don't fire"). Truncating to 100 chars
+            -- breaks JWTs longer than that — the suppression regex
+            -- never matches a chopped JWT and the FP suppression
+            -- silently regresses. Keep the cap for the log view,
+            -- expose the full value for chain semantics.
             matched_table["matched_value"] = string.sub(value_to_match_on, 1, 100)
+            matched_table["matched_value_full"] = value_to_match_on
             for i=0,#m do
                 matched_table["matched_group_"..i] = m[i]
             end
@@ -1804,8 +1817,12 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     if #matches > 0 then
                         values = {}
                         for n, m in ipairs(matches) do
-                            if m and m.matched_value ~= nil then
-                                values["matched.value:" .. n] = tostring(m.matched_value)
+                            if m and (m.matched_value_full ~= nil or m.matched_value ~= nil) then
+                                -- prefer the untruncated value when the
+                                -- operator stored it; fall back to the
+                                -- 100-char log view for ops that don't
+                                -- expose a full version yet.
+                                values["matched.value:" .. n] = tostring(m.matched_value_full or m.matched_value)
                             end
                         end
                     end
