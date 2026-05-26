@@ -2069,6 +2069,23 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                         end)
                     end
 
+                    -- resolve `%{ARGS.<name>}` / `%{ARGS:<name>}`
+                    -- macros against the request's arg map. Used by
+                    -- 920650 chain cond2 (`REQUEST_METHOD !@streq
+                    -- %{ARGS._method}`) — without this, the macro
+                    -- stays literal and the streq compares "POST"
+                    -- against "%{args._method}", producing a false
+                    -- positive on every benign request that posts
+                    -- a `_method` parameter (e.g. GitLab logout).
+                    if string.find(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:][^}]+}") then
+                        local arg_values = _M.__get_values_request_args(self, nil, rule.rule_control)
+                        condition_value_resolved = string_gsub(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:]([^}]+)}", function(arg_name)
+                            if not arg_values then return "" end
+                            local key = "request.arg.value:" .. arg_name
+                            return arg_values[key] or ""
+                        end)
+                    end
+
                     rule_condition_has_matched, matched_table = false, nil
 
                     -- build list of values to try matching on
