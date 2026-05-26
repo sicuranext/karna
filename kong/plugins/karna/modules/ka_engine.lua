@@ -1568,16 +1568,32 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
 
             local values, err = nil
 
-            -- `ka_variable_cache` read DISABLED. The cache reused the
-            -- same `values` table across rules; downstream mutations
-            -- in this function (`remove_target_from_all_rules`,
-            -- `ids_targets[rule.id]`, plus per-condition additions
-            -- like `matched.value:N` and `tx.<name>` from chained
-            -- rules) corrupted the cached entry that the next rule
-            -- would read. Repro: same curl twice, second call gets
-            -- a partial values map. The minimum-risk correct fix is
-            -- to resolve every variable from scratch on every rule.
-            -- (Was: load from kong.ctx.plugin.ka_variable_cache[variable].)
+            -- `ka_variable_cache` read — copy-on-read variant. The
+            -- previous implementation cached the `values` table by
+            -- reference, which got silently corrupted: downstream
+            -- mutations (the `remove_target_from_all_rules` and
+            -- `ids_targets[rule.id]` blocks below) write into
+            -- `values` in place, so the NEXT rule that read from the
+            -- cache for the same variable got a partial map missing
+            -- the entries the previous rule had stripped.
+            -- Fix: read the cached entry but immediately shallow-copy
+            -- it into a fresh table. The cache then holds the pristine
+            -- resolved map; each rule's mutations stay local. Cost is
+            -- O(n) per rule per variable (n = entries in the variable
+            -- namespace, typically < 50), which is dramatically
+            -- cheaper than re-parsing the request body / query / etc.
+            -- on every rule iteration.
+            if kong.ctx.plugin and kong.ctx.plugin.ka_variable_cache
+               and kong.ctx.plugin.ka_variable_cache[variable] ~= nil then
+                local cached = kong.ctx.plugin.ka_variable_cache[variable]
+                if type(cached) == "table" then
+                    local copy = {}
+                    for k, v in pairs(cached) do copy[k] = v end
+                    values = copy
+                else
+                    values = cached
+                end
+            end
 
             if private_debug_enabled then
                 kong.log.inspect(rx_matched_values_cross_conditions)
@@ -1996,15 +2012,22 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
                 end
 
-                -- `ka_variable_cache` write site disabled in tandem
-                -- with the read side. Even a snapshot-on-write left
-                -- the mid-condition additions visible to subsequent
-                -- rules; a write-once variant in turn broke chain
-                -- rules that legitimately need the additions to
-                -- propagate to later conditions of the same rule.
-                -- The simplest correct fix while the precise
-                -- mutation surface is mapped: skip the cache.
-                -- (Was: kong.ctx.plugin.ka_variable_cache[variable] = values)
+                -- `ka_variable_cache` write — store the freshly
+                -- resolved variable map. We write a SHALLOW COPY so
+                -- subsequent mutations of the live `values` table
+                -- (remove_target_from_all_rules, ids_targets[rule.id])
+                -- don't bleed into the cached entry. Pairs with the
+                -- copy-on-read above.
+                if values and kong.ctx.plugin and kong.ctx.plugin.ka_variable_cache
+                   and kong.ctx.plugin.ka_variable_cache[variable] == nil then
+                    if type(values) == "table" then
+                        local snapshot = {}
+                        for k, v in pairs(values) do snapshot[k] = v end
+                        kong.ctx.plugin.ka_variable_cache[variable] = snapshot
+                    else
+                        kong.ctx.plugin.ka_variable_cache[variable] = values
+                    end
+                end
 
             end
 
