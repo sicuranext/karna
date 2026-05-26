@@ -342,6 +342,9 @@ _M.load_rules = function(self)
 
     -- Store dfiles in module for access during rule evaluation
     _M._ka_dfiles = dfiles
+    -- Invalidate the lowercased-dfile memo so it's rebuilt against the
+    -- freshly-loaded data files on the next pmFromFile match.
+    _M._ka_dfiles_lower = {}
 
     debug("+++++++++> Sending " .. tostring(#rules) .. " rules")
 
@@ -1167,11 +1170,26 @@ _M.__match_op_pm = function(variable_name, valute_to_match_on, condition_value)
         end
     end
 end
+-- Lowercased-data-file cache. @pmFromFile is case-insensitive, so we
+-- compare a lowercased subject against lowercased patterns. The pattern
+-- side is STATIC (the .data file contents), so lowercasing it on every
+-- match — for every entry, every value, every request — was burning
+-- ~14% of request CPU (jit.p, 2026-05-26). Lowercase each file once and
+-- memoise, keyed by the same condition_value the raw dfile uses.
+_M._ka_dfiles_lower = {}
 _M.__match_op_pmFromFile = function(variable_name, value_to_match_on, condition_value)
     local ka_dfiles = _M._ka_dfiles
     if ka_dfiles and ka_dfiles[condition_value] then
+        local lowered = _M._ka_dfiles_lower[condition_value]
+        if not lowered then
+            lowered = {}
+            for i, dvalue in ipairs(ka_dfiles[condition_value]) do
+                lowered[i] = dvalue:lower()
+            end
+            _M._ka_dfiles_lower[condition_value] = lowered
+        end
         local subject = value_to_match_on:lower()
-        for _,dvalue in pairs(ka_dfiles[condition_value]) do
+        for i = 1, #lowered do
             -- Plain substring search (no pattern interpretation). Entries in
             -- CRS .data files routinely contain Lua-pattern metacharacters —
             -- `.` (any char), `-` (lazy quantifier), `(`, `)`, `+`, `?`, `*`,
@@ -1179,7 +1197,7 @@ _M.__match_op_pmFromFile = function(variable_name, value_to_match_on, condition_
             -- match (FP surface: `com.x` would match `comAx`) and risks
             -- catastrophic backtracking on long subjects. CRS's @pmFromFile
             -- is a phrase match, not a regex.
-            if string_find(subject, dvalue:lower(), 1, true) then
+            if string_find(subject, lowered[i], 1, true) then
                 local matched_table = {
                     ["matched_on"] = variable_name,
                     ["matched_value"] = string.sub(value_to_match_on, 1, 100)
@@ -2056,6 +2074,31 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                 end
             end
 
+            -- Macro-presence flags, computed ONCE per condition and
+            -- memoised on the (cached, shared) condition table. The
+            -- four macro families below (%{group:N}, %{request_headers.X},
+            -- %{tx.X}, %{ARGS.X}) are detected with Lua-pattern
+            -- `string.find` — and `condition.value` is static, so
+            -- running those finds inside the per-value inner loop was
+            -- ~68% of total request CPU on benign traffic (jit.p,
+            -- 2026-05-26). Memoising the booleans turns each per-value
+            -- check into a single table lookup; the expensive
+            -- substitution branches only run for the handful of rules
+            -- that actually carry a macro. Writing the memo on the
+            -- shared condition table is race-safe: the value is a pure
+            -- function of condition.value, identical across workers.
+            local mflags = condition._ka_macro_flags
+            if mflags == nil then
+                local cv = condition.value or ""
+                mflags = {
+                    grp  = string.find(cv, "%%%{group%:", 1, false) ~= nil,
+                    hdr  = string.find(cv, "%%%{request_headers%.", 1, false) ~= nil,
+                    tx   = string.find(cv, "%%{tx%.", 1, false) ~= nil,
+                    args = string.find(cv, "%%{[Aa][Rr][Gg][Ss][%.:]", 1, false) ~= nil,
+                }
+                condition._ka_macro_flags = mflags
+            end
+
             if values then
                 local loop_counter = 0
                 local rule_condition_has_matched, matched_table = false, nil
@@ -2080,7 +2123,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
 
                     -- convert %{group:[0-9]+} on value_to_match_on to the value of corresponding rx_matched_values_cross_conditions
-                    if string.find(condition_value_resolved, "%%%{(group%:[0-9]+)%}") then
+                    if mflags.grp and string.find(condition_value_resolved, "%%%{(group%:[0-9]+)%}") then
                         if private_debug_enabled then
                             kong.log.debug("--------> condition_value_resolved before replacement: " .. tostring(condition_value_resolved))
                         end
@@ -2099,7 +2142,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
 
                     -- resolve %{request_headers.<name>} macros in condition_value_resolved
-                    if string.find(condition_value_resolved, "%%%{request_headers%.") then
+                    if mflags.hdr then
                         for header_name in string.gmatch(condition_value_resolved, "%%%{request_headers%.([^}]+)%}") do
                             local header_value = request_get_header(header_name)
                             if header_value then
@@ -2113,7 +2156,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     end
 
                     -- resolve %{tx.*} variables from plugin_conf
-                    if plugin_conf and string.find(condition_value_resolved, "%%{tx%.") then
+                    if plugin_conf and mflags.tx then
                         if string.find(condition_value_resolved, "%%{tx%.allowed_request_content_type_charset}") then
                             -- CRS convention: each charset entry is pipe-
                             -- wrapped (`|utf-8|`) and cond1's setvar wraps
@@ -2199,7 +2242,7 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                     -- result. Match the desired arg name by suffix:
                     -- look for any key ending in `.value:<name>` or
                     -- `:<name>` and use the first match.
-                    if string.find(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:][^}]+}") then
+                    if mflags.args and string.find(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:][^}]+}") then
                         local arg_values = _M.__get_values_request_args(self, nil, rule.rule_control)
                         condition_value_resolved = string_gsub(condition_value_resolved, "%%{[Aa][Rr][Gg][Ss][%.:]([^}]+)}", function(arg_name)
                             if not arg_values then return "" end
@@ -4172,12 +4215,21 @@ _M.__qs_parser = function (self, raw_query_string, try_base64decode_if_possible)
 end
 
 _M.__apply_transformation = function(self, tfunc, value)
-    local cache_key = md5(tfunc..value)
-    --kong.log.debug("Setting Cache key: "..cache_key)
+    -- Cache key: `tfunc \1 value` used directly as a Lua table key.
+    -- The previous implementation md5'd this — pointless: LuaJIT
+    -- hashes string keys natively, and the md5 itself was ~7% of
+    -- total request CPU on benign traffic (jit.p, 2026-05-26) because
+    -- it ran on every transform of every value. The `\1` separator
+    -- can't appear in a transform-function name, so there's no
+    -- collision between e.g. (tfunc="ab",value="c") and
+    -- (tfunc="a",value="bc"). The transform cache still earns its
+    -- keep within a request (the same arg value is lowercased /
+    -- urldecoded by dozens of rules that share the transform).
+    local cache_key = tfunc .. "\1" .. value
 
-    if kong.ctx.plugin.ka_value_cache[cache_key] then
-        kong.log.debug("Using cache for transformation: "..tfunc.." on value: "..tostring(value).. " -> "..tostring(kong.ctx.plugin.ka_value_cache[cache_key]))
-        return kong.ctx.plugin.ka_value_cache[cache_key]
+    local cached = kong.ctx.plugin.ka_value_cache[cache_key]
+    if cached ~= nil then
+        return cached
     end
 
     -- kong.log.debug("Applying transformation: "..tfunc.." on value: "..tostring(value))
@@ -4416,16 +4468,26 @@ _M.__apply_transformation = function(self, tfunc, value)
     -- (no replacement callback) — it always returned nil and the
     -- transformation was a silent no-op.
     if tfunc == "utf8toUnicode" then
-        local new_string, _, err = ngx.re.gsub(
-            result_string,
-            [=[[\xC2-\xDF][\x80-\xBF]|[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3}]=],
-            function(m)
-                return utils:hexFromUTF8(m[0])
-            end,
-            "sjo"
-        )
-        if new_string then
-            result_string = new_string
+        -- Fast path: utf8toUnicode only rewrites multi-byte UTF-8
+        -- sequences (lead bytes 0xC2-0xF4). A pure-ASCII value has
+        -- none, so the ngx.re.gsub scan is guaranteed to be a no-op.
+        -- Skipping it for ASCII saved the single biggest transform
+        -- cost on benign traffic (jit.p, 2026-05-26: ngx.re.gsub was
+        -- ~17% of request CPU, almost all on ASCII args that can't
+        -- match). `string_find` with a byte-class pattern is far
+        -- cheaper than compiling+running the alternation gsub.
+        if string_find(result_string, "[\194-\244]") then
+            local new_string, _, err = ngx.re.gsub(
+                result_string,
+                [=[[\xC2-\xDF][\x80-\xBF]|[\xE0-\xEF][\x80-\xBF]{2}|[\xF0-\xF4][\x80-\xBF]{3}]=],
+                function(m)
+                    return utils:hexFromUTF8(m[0])
+                end,
+                "sjo"
+            )
+            if new_string then
+                result_string = new_string
+            end
         end
     end
 

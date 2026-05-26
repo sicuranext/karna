@@ -22,6 +22,10 @@ local ka_rules, err = lrucache.new(10000)
 local debug = kong.log.debug
 local inspect = kong.log.inspect
 
+-- Captured once at module load. When unset (production default) the
+-- profiling trigger in the access phase is dead code.
+local _KARNA_PROFILE_ENABLED = os.getenv("KARNA_PROFILE") ~= nil
+
 -- Parse and cache the rules a specific plugin instance contributes
 -- dynamically — i.e. CRS exclusion plugins loaded from disk
 -- (`crs_plugins_enabled` entries under `crs_plugins_path/<name>/plugins/`)
@@ -612,6 +616,25 @@ function plugin:access(plugin_conf)
   -- skip access phase if response sent from cache
   if kong.ctx.shared.response_from_cache then
     return
+  end
+
+  -- jit.p profiling trigger — only active when KARNA_PROFILE env is
+  -- set on the worker (so this is a literal no-op in production: the
+  -- os.getenv result is captured once at module load). Drive it with:
+  --   X-Karna-Profile: start  → begin LuaJIT sampling profiler
+  --   X-Karna-Profile: stop   → stop + flush report to
+  --                             /tmp/karna-jitp.txt
+  -- Run with KONG_NGINX_WORKER_PROCESSES=1 so all load hits the one
+  -- worker the profiler is attached to.
+  if _KARNA_PROFILE_ENABLED then
+    local pdir = kong.request.get_header("x-karna-profile")
+    if pdir == "start" then
+      require("jit.p").start("3Fli", "/tmp/karna-jitp.txt")
+      return kong.response.exit(200, "profile started\n")
+    elseif pdir == "stop" then
+      pcall(function() require("jit.p").stop() end)
+      return kong.response.exit(200, "profile stopped\n")
+    end
   end
 
   -- if ignore from local IPs
