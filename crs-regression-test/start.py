@@ -65,6 +65,15 @@ KARNA_OUT_OF_SCOPE_FAMILIES = {
 # user position 2026-05-23). These are flagged passed* with the
 # architectural reason instead of being misleadingly counted as failed.
 KARNA_ARCH_RESIDUAL_TESTS = {
+    # CRS expects `application/cloudevents+json` and
+    # `application/cloudevents-batch+json` to trip 920420, because the
+    # stock CRS allow-list does NOT include them. Karna's
+    # `request_content_type_allowed` default DOES include both —
+    # cloudevents has been a common request shape in serverless
+    # deployments since CloudEvents 1.0 and we prefer permissive over
+    # surprising. Operators can tighten the list via the schema.
+    ("920420", 19): "application/cloudevents+json is in Karna's default allow-list (CRS default excludes it)",
+    ("920420", 20): "application/cloudevents-batch+json is in Karna's default allow-list (CRS default excludes it)",
     # X.Filename (dot in header name) — RFC-token-invalid, nginx drops it
     ("933110", 20): "X.Filename header — invalid per nginx (dot in name)",
     ("933110", 21): "X.Filename header — invalid per nginx (dot in name)",

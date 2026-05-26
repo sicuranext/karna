@@ -545,28 +545,26 @@ end
 
 function seclang.__get_tfunc(actions)
     local tfuncs = {}
-    local t_none_found = false
 
     for tfunc_raw in actions:gmatch("t:([^,]+)") do
         if tfunc_raw ~= "none" then
             table.insert(tfuncs, tfunc_raw)
-        else
-            t_none_found = true
         end
-    end
-
-    -- add urlDecodeUni as default only when t:none was NOT specified
-    -- ModSecurity resets all transformations on t:none, so we respect that
-    if not t_none_found then
-        local urldecode_found = false
-        for k,v in pairs(tfuncs) do
-            if v == "urlDecode" or v == "urlDecodeUni" then
-                urldecode_found = true
-            end
-        end
-        if not urldecode_found then
-            table.insert(tfuncs, 1, "urlDecodeUni")
-        end
+        -- `t:none` is a parser-only marker in ModSec — it resets any
+        -- inherited transformation chain, which only matters if
+        -- SecDefaultAction had set defaults. Karna doesn't honour
+        -- SecDefaultAction, so an explicit transform list is the
+        -- complete transform list. We don't add `t:none` itself to
+        -- the runtime list and we don't add an implicit urlDecodeUni.
+        --
+        -- Previously Karna inserted `urlDecodeUni` as a default when
+        -- the rule omitted any `t:` directive. That diverged from
+        -- ModSec semantics (no implicit transforms) and produced
+        -- spurious FPs in chained rules whose second condition reads
+        -- a TX variable that legitimately contains `+` — e.g. 920420
+        -- cond2 (`t:lowercase` only) where `+` in `application/soap+xml`
+        -- got rewritten to space by the implicit urlDecodeUni, breaking
+        -- the `@within` allow-list check.
     end
 
     return tfuncs
