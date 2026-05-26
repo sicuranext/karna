@@ -4148,9 +4148,14 @@ _M.__apply_transformation = function(self, tfunc, value)
     end
 
     if tfunc == "replaceComments" then
-        -- remove all comments
-        result_string = string_gsub(result_string, "/%*.-%*/", "")
-        result_string = string_gsub(result_string, "//.-\n", "")
+        -- ModSec `replaceComments` REPLACES each comment block with a
+        -- single space (not strips it). The distinction matters: with
+        -- a strip, `RePLAcE/*test*/INTO` becomes `RePLAcEINTO` and
+        -- SQLi-keyword regexes that look for word boundaries miss it
+        -- (CRS 942350 test 5). With a space, it becomes
+        -- `RePLAcE INTO` and matches as intended.
+        result_string = string_gsub(result_string, "/%*.-%*/", " ")
+        result_string = string_gsub(result_string, "//.-\n", " ")
     end
 
     -- removeCommentsChar
