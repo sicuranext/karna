@@ -1549,101 +1549,208 @@ _M.__match_op_endswith_negative = function(variable_name, value_to_match_on, con
 end
 
 -- ── Lua rule prefilter ───────────────────────────────────────────────
--- Extract a SOUND set of required literals from a positive @rx pattern.
--- A value can match the regex only if at least one returned literal is
--- present in it (case-folded). The rule loop string.find-gates the regex
--- with these, skipping the (expensive) ngx.re.match when none are present.
+-- Extract a SOUND set of required literals from a positive @rx pattern: a
+-- value can match the regex only if AT LEAST ONE returned literal is present
+-- (case-folded). The rule loop string.find-gates the regex with these,
+-- skipping the (expensive) ngx.re.match when none are present.
 --
--- Soundness rules (when in doubt → return nil = "don't gate", fail-open):
---   * pattern carries a %{...} macro              → nil (pattern varies per req)
---   * split on TOP-LEVEL `|` into branches; the regex matches iff SOME
---     branch matches, so we need a required literal in EVERY branch.
---   * within a branch, only literals at paren-depth 0 are guaranteed
---     required (literals inside (...) may be optional/alternated). A run
---     made optional by a following ? * { is trimmed by one char.
---   * any branch without a depth-0 literal of length >= PF_MINLEN → nil.
--- Conservative by design: it under-gates (misses literals nested in
--- groups) but NEVER reports a literal that isn't truly required, so it
--- can never cause a real match to be skipped. The full CRS regression
--- suite is the soundness backstop.
-local PF_MINLEN = 3
-local function pf_extract_literals(pattern)
-    if not pattern or pattern == "" then return nil end
-    if string_find(pattern, "%{", 1, true) then return nil end  -- macro
+-- Recursive structure (each step returns a gate-set or nil = "can't gate"):
+--   * ALTERNATION  a|b|c  : match ⇒ some branch matches ⇒ that branch's
+--       literal present. Need a gate-set for EVERY branch (else a branch
+--       could match with no gate literal → unsound); the result is their
+--       union. Any branch with no gate-set → nil.
+--   * CONCATENATION of atoms : match ⇒ every REQUIRED atom matches. Pick
+--       the single most-selective required atom's gate-set (sufficient and
+--       cheapest). Optional atoms (trailing ? * {0,..}) contribute nothing.
+--   * GROUP  (?:…)/(…)/(?i:…)/(?<name>…)  required → recurse into it.
+--   * ASSERTION  (?=…)/(?!…)/(?<=…)/(?<!…) and bare flags (?i) → nothing
+--       (negative lookahead literals are ANTI-required — extracting them
+--       would be the worst kind of unsound skip).
+--   * char-class […], dot, anchors, \escapes → no literal.
+--   * \xHH / \x{..} consumed WHOLE (a naive 2-char skip leaks the hex
+--       digits as bogus literal text — that wrongly skipped 920540).
+-- When in doubt (macro %{…}, unbalanced, unknown construct, too-deep
+-- nesting) → nil ⇒ regex always runs (fail-open). The CRS regression suite
+-- is the soundness backstop: diff it before/after any change here.
+local PF_MINLEN  = 3   -- shortest literal worth gating on
+local PF_MAXSET  = 4   -- max literals in a gate-set; beyond this the
+                       -- per-value string.find cost approaches the regex it
+                       -- would save, so we don't gate (return nil)
+local PF_MAXDEPTH = 12 -- recursion guard against pathological nesting
 
-    -- split top-level alternation (respect (), [], escapes)
-    local branches, buf, depth, in_cls, i, n = {}, {}, 0, false, 1, #pattern
+-- split top-level alternation (respect (), [], escapes)
+local function pf_split_alt(p)
+    local out, buf, depth, in_cls, i, n = {}, {}, 0, false, 1, #p
     while i <= n do
-        local c = string.sub(pattern, i, i)
-        if c == "\\" and i < n then
-            buf[#buf+1] = string.sub(pattern, i, i+1); i = i + 2
-        elseif in_cls then
-            buf[#buf+1] = c
-            if c == "]" then in_cls = false end
-            i = i + 1
+        local c = string.sub(p, i, i)
+        if c == "\\" and i < n then buf[#buf+1] = string.sub(p, i, i+1); i = i + 2
+        elseif in_cls then buf[#buf+1] = c; if c == "]" then in_cls = false end; i = i + 1
         elseif c == "[" then in_cls = true; buf[#buf+1] = c; i = i + 1
         elseif c == "(" then depth = depth + 1; buf[#buf+1] = c; i = i + 1
         elseif c == ")" then depth = depth - 1; buf[#buf+1] = c; i = i + 1
-        elseif c == "|" and depth == 0 then
-            branches[#branches+1] = table.concat(buf); buf = {}; i = i + 1
+        elseif c == "|" and depth == 0 then out[#out+1] = table.concat(buf); buf = {}; i = i + 1
         else buf[#buf+1] = c; i = i + 1 end
     end
-    branches[#branches+1] = table.concat(buf)
+    out[#out+1] = table.concat(buf)
+    return out
+end
 
-    local lits = {}
-    for _, br in ipairs(branches) do
-        local best, cur = "", {}
-        local d, cls, j, m = 0, false, 1, #br
-        local function flush(optional)
-            if #cur > 0 then
-                local run = table.concat(cur)
-                if optional then run = string.sub(run, 1, #run - 1) end
-                if #run > #best then best = run end
-                cur = {}
+-- index of the ')' matching the '(' at position i (nil if unbalanced)
+local function pf_match_paren(p, i)
+    local depth, in_cls, n = 0, false, #p
+    while i <= n do
+        local c = string.sub(p, i, i)
+        if c == "\\" and i < n then i = i + 2
+        elseif in_cls then if c == "]" then in_cls = false end; i = i + 1
+        elseif c == "[" then in_cls = true; i = i + 1
+        elseif c == "(" then depth = depth + 1; i = i + 1
+        elseif c == ")" then depth = depth - 1; if depth == 0 then return i end; i = i + 1
+        else i = i + 1 end
+    end
+    return nil
+end
+
+-- read a quantifier at position j → (next_index, is_optional)
+local function pf_quant(br, j)
+    local c = string.sub(br, j, j)
+    if c == "?" or c == "*" then return j + 1, true end
+    if c == "+" then return j + 1, false end
+    if c == "{" then
+        local close = string.find(br, "}", j, true)
+        if not close then return j, false end
+        local lo = string.match(string.sub(br, j + 1, close - 1), "^(%d*)")
+        return close + 1, (lo == "" or lo == "0")
+    end
+    return j, false
+end
+
+-- parse one branch (no top-level |) into atoms, or nil if unparseable
+local function pf_parse_atoms(br)
+    local atoms, i, n, lit = {}, 1, #br, {}
+    local function flush()
+        if #lit > 0 then atoms[#atoms+1] = { kind = "lit", payload = table.concat(lit), optional = false }; lit = {} end
+    end
+    while i <= n do
+        local c = string.sub(br, i, i)
+        if c == "\\" and i < n then
+            flush()
+            local nc = string.sub(br, i + 1, i + 1)
+            local endi
+            if nc == "x" and string.sub(br, i + 2, i + 2) == "{" then
+                local cl = string.find(br, "}", i + 2, true); endi = cl and cl + 1 or n + 1
+            elseif nc == "x" then
+                local k = i + 2; while (k - (i + 2)) < 2 and string.match(string.sub(br, k, k), "%x") do k = k + 1 end; endi = k
+            else endi = i + 2 end
+            i = (pf_quant(br, endi))
+        elseif c == "[" then
+            flush()
+            local j = i + 1
+            if string.sub(br, j, j) == "^" then j = j + 1 end
+            if string.sub(br, j, j) == "]" then j = j + 1 end
+            while j <= n and string.sub(br, j, j) ~= "]" do
+                if string.sub(br, j, j) == "\\" then j = j + 2 else j = j + 1 end
+            end
+            if j > n then return nil end
+            i = (pf_quant(br, j + 1))
+            atoms[#atoms+1] = { kind = "class" }
+        elseif c == "(" then
+            flush()
+            local close = pf_match_paren(br, i); if not close then return nil end
+            local inner = string.sub(br, i + 1, close - 1)
+            local q, opt = pf_quant(br, close + 1)
+            local kind = "group"
+            if string.sub(inner, 1, 1) == "?" then
+                local p2 = string.sub(inner, 2, 2)
+                if p2 == "=" or p2 == "!" then kind = "noop"
+                elseif p2 == "<" then
+                    local p3 = string.sub(inner, 3, 3)
+                    if p3 == "=" or p3 == "!" then kind = "noop"
+                    else local r = string.match(inner, "^%?<[^>]*>(.*)$"); if r then inner = r else kind = "noop" end end
+                elseif p2 == ":" then inner = string.sub(inner, 3)
+                elseif p2 == "P" then local r = string.match(inner, "^%?P<[^>]*>(.*)$"); if r then inner = r else kind = "noop" end
+                else
+                    local flags, rest = string.match(inner, "^%?([a-zA-Z]*)(.*)$")
+                    if rest and string.sub(rest, 1, 1) == ":" then inner = string.sub(rest, 2)
+                    else kind = "noop" end
+                end
+            end
+            if kind == "noop" then atoms[#atoms+1] = { kind = "noop" }
+            else atoms[#atoms+1] = { kind = "group", payload = inner, optional = opt } end
+            i = q
+        elseif c == "." then flush(); i = (pf_quant(br, i + 1)); atoms[#atoms+1] = { kind = "any" }
+        elseif c == "^" or c == "$" then flush(); i = i + 1
+        elseif string.match(c, "%w") then
+            local nx = string.sub(br, i + 1, i + 1)
+            if nx == "?" or nx == "*" then flush(); i = i + 2
+            elseif nx == "{" then
+                local close = string.find(br, "}", i + 1, true)
+                if close then flush(); i = close + 1 else lit[#lit+1] = c; i = i + 1 end
+            else lit[#lit+1] = c; i = i + 1 end
+        else flush(); i = i + 1 end
+    end
+    flush()
+    return atoms
+end
+
+local function pf_selectivity(set)
+    local mn = math.huge
+    for k = 1, #set do if #set[k] < mn then mn = #set[k] end end
+    return mn, #set
+end
+-- prefer the more selective gate-set: larger minimum-literal-length, then fewer literals
+local function pf_pick(a, b)
+    if not a then return b end
+    if not b then return a end
+    local am, ac = pf_selectivity(a)
+    local bm, bc = pf_selectivity(b)
+    if am ~= bm then return (am > bm) and a or b end
+    return (ac <= bc) and a or b
+end
+
+local pf_required        -- forward declaration (mutual recursion)
+local function pf_branch_lits(br, depth)
+    local atoms = pf_parse_atoms(br)
+    if not atoms then return nil end
+    local best = nil
+    for k = 1, #atoms do
+        local atom = atoms[k]
+        if not atom.optional then
+            local set = nil
+            if atom.kind == "lit" and #atom.payload >= PF_MINLEN then
+                set = { string.lower(atom.payload) }
+            elseif atom.kind == "group" then
+                set = pf_required(atom.payload, depth + 1)
+            end
+            if set then best = pf_pick(best, set) end
+        end
+    end
+    return best
+end
+pf_required = function(pattern, depth)
+    if depth > PF_MAXDEPTH then return nil end
+    if not pattern or pattern == "" then return nil end
+    local branches = pf_split_alt(pattern)
+    if #branches > 1 then
+        local seen, union = {}, {}
+        for _, b in ipairs(branches) do
+            local rb = pf_branch_lits(b, depth)
+            if not rb then return nil end  -- a branch with no gate literal ⇒ unsound to gate
+            for _, l in ipairs(rb) do
+                if not seen[l] then seen[l] = true; union[#union+1] = l end
+                if #union > PF_MAXSET then return nil end  -- too many literals to gate cheaply
             end
         end
-        while j <= m do
-            local c = string.sub(br, j, j)
-            if c == "\\" and j < m then
-                -- Skip the WHOLE escape token and contribute nothing to the
-                -- literal. Critically `\xHH` / `\x{..}` are multi-char hex
-                -- escapes for a single byte — naively skipping 2 chars would
-                -- leak the hex digits as bogus literal text (e.g. `\x5c` →
-                -- "5c"), which would gate on a literal the value never
-                -- contains and wrongly skip the regex (unsound).
-                flush(false)
-                local nc = string.sub(br, j + 1, j + 1)
-                if nc == "x" and string.sub(br, j + 2, j + 2) == "{" then
-                    local close = string.find(br, "}", j + 2, true)
-                    j = close and (close + 1) or (m + 1)
-                elseif nc == "x" then
-                    local k = j + 2
-                    while (k - (j + 2)) < 2 and string.match(string.sub(br, k, k), "%x") do
-                        k = k + 1
-                    end
-                    j = k
-                else
-                    j = j + 2
-                end
-            elseif cls then
-                if c == "]" then cls = false end
-                j = j + 1
-            elseif c == "[" then flush(false); cls = true; j = j + 1
-            elseif c == "(" then flush(false); d = d + 1; j = j + 1
-            elseif c == ")" then flush(false); d = d - 1; j = j + 1
-            elseif d == 0 and string.match(c, "%w") then
-                cur[#cur+1] = c; j = j + 1
-                local nx = string.sub(br, j, j)
-                if nx == "?" or nx == "*" or nx == "{" then flush(true) end
-            else flush(false); j = j + 1 end
-        end
-        flush(false)
-        if #best < PF_MINLEN then
-            return nil  -- this branch has no guaranteed literal → can't gate
-        end
-        lits[#lits+1] = string.lower(best)
+        return (#union > 0) and union or nil
     end
-    return (#lits > 0) and lits or nil
+    return pf_branch_lits(branches[1], depth)
+end
+
+local function pf_extract_literals(pattern)
+    if not pattern or pattern == "" then return nil end
+    if string_find(pattern, "%{", 1, true) then return nil end  -- ModSec macro: varies per request
+    local set = pf_required(pattern, 1)
+    if set and #set > PF_MAXSET then return nil end
+    return set
 end
 
 _M.__match_rule_conditions = function(self, rule, plugin_conf)
