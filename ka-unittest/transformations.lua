@@ -264,7 +264,11 @@ print("== removeCommentsChar ==")
 eq("strips /* */ //",   "removeCommentsChar", "a/*b*/c//d#e", "abcde")
 
 print("== replaceComments ==")
-eq("strips C-style block", "replaceComments", "a/* hidden */b", "ab")
+-- ModSec replaceComments REPLACES each /* */ block with a SINGLE SPACE
+-- (not strip), so token boundaries survive: `a/* */b` → `a b`, not `ab`.
+-- This is detection-critical (e.g. RePLAcE/*x*/INTO → RePLAcE INTO must
+-- still match the SQLi word-boundary regex; see ka_engine replaceComments).
+eq("replaces C-style block with a space", "replaceComments", "a/* hidden */b", "a b")
 
 print("== length ==")
 eq("returns numeric length", "length", "abcde", 5)
