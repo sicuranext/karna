@@ -1548,6 +1548,104 @@ _M.__match_op_endswith_negative = function(variable_name, value_to_match_on, con
     return false, nil
 end
 
+-- ── Lua rule prefilter ───────────────────────────────────────────────
+-- Extract a SOUND set of required literals from a positive @rx pattern.
+-- A value can match the regex only if at least one returned literal is
+-- present in it (case-folded). The rule loop string.find-gates the regex
+-- with these, skipping the (expensive) ngx.re.match when none are present.
+--
+-- Soundness rules (when in doubt → return nil = "don't gate", fail-open):
+--   * pattern carries a %{...} macro              → nil (pattern varies per req)
+--   * split on TOP-LEVEL `|` into branches; the regex matches iff SOME
+--     branch matches, so we need a required literal in EVERY branch.
+--   * within a branch, only literals at paren-depth 0 are guaranteed
+--     required (literals inside (...) may be optional/alternated). A run
+--     made optional by a following ? * { is trimmed by one char.
+--   * any branch without a depth-0 literal of length >= PF_MINLEN → nil.
+-- Conservative by design: it under-gates (misses literals nested in
+-- groups) but NEVER reports a literal that isn't truly required, so it
+-- can never cause a real match to be skipped. The full CRS regression
+-- suite is the soundness backstop.
+local PF_MINLEN = 3
+local function pf_extract_literals(pattern)
+    if not pattern or pattern == "" then return nil end
+    if string_find(pattern, "%{", 1, true) then return nil end  -- macro
+
+    -- split top-level alternation (respect (), [], escapes)
+    local branches, buf, depth, in_cls, i, n = {}, {}, 0, false, 1, #pattern
+    while i <= n do
+        local c = string.sub(pattern, i, i)
+        if c == "\\" and i < n then
+            buf[#buf+1] = string.sub(pattern, i, i+1); i = i + 2
+        elseif in_cls then
+            buf[#buf+1] = c
+            if c == "]" then in_cls = false end
+            i = i + 1
+        elseif c == "[" then in_cls = true; buf[#buf+1] = c; i = i + 1
+        elseif c == "(" then depth = depth + 1; buf[#buf+1] = c; i = i + 1
+        elseif c == ")" then depth = depth - 1; buf[#buf+1] = c; i = i + 1
+        elseif c == "|" and depth == 0 then
+            branches[#branches+1] = table.concat(buf); buf = {}; i = i + 1
+        else buf[#buf+1] = c; i = i + 1 end
+    end
+    branches[#branches+1] = table.concat(buf)
+
+    local lits = {}
+    for _, br in ipairs(branches) do
+        local best, cur = "", {}
+        local d, cls, j, m = 0, false, 1, #br
+        local function flush(optional)
+            if #cur > 0 then
+                local run = table.concat(cur)
+                if optional then run = string.sub(run, 1, #run - 1) end
+                if #run > #best then best = run end
+                cur = {}
+            end
+        end
+        while j <= m do
+            local c = string.sub(br, j, j)
+            if c == "\\" and j < m then
+                -- Skip the WHOLE escape token and contribute nothing to the
+                -- literal. Critically `\xHH` / `\x{..}` are multi-char hex
+                -- escapes for a single byte — naively skipping 2 chars would
+                -- leak the hex digits as bogus literal text (e.g. `\x5c` →
+                -- "5c"), which would gate on a literal the value never
+                -- contains and wrongly skip the regex (unsound).
+                flush(false)
+                local nc = string.sub(br, j + 1, j + 1)
+                if nc == "x" and string.sub(br, j + 2, j + 2) == "{" then
+                    local close = string.find(br, "}", j + 2, true)
+                    j = close and (close + 1) or (m + 1)
+                elseif nc == "x" then
+                    local k = j + 2
+                    while (k - (j + 2)) < 2 and string.match(string.sub(br, k, k), "%x") do
+                        k = k + 1
+                    end
+                    j = k
+                else
+                    j = j + 2
+                end
+            elseif cls then
+                if c == "]" then cls = false end
+                j = j + 1
+            elseif c == "[" then flush(false); cls = true; j = j + 1
+            elseif c == "(" then flush(false); d = d + 1; j = j + 1
+            elseif c == ")" then flush(false); d = d - 1; j = j + 1
+            elseif d == 0 and string.match(c, "%w") then
+                cur[#cur+1] = c; j = j + 1
+                local nx = string.sub(br, j, j)
+                if nx == "?" or nx == "*" or nx == "{" then flush(true) end
+            else flush(false); j = j + 1 end
+        end
+        flush(false)
+        if #best < PF_MINLEN then
+            return nil  -- this branch has no guaranteed literal → can't gate
+        end
+        lits[#lits+1] = string.lower(best)
+    end
+    return (#lits > 0) and lits or nil
+end
+
 _M.__match_rule_conditions = function(self, rule, plugin_conf)
     -- check if rule has been removed by a rule_control
     if self:__rule_control_rule_removed(rule) then
@@ -2305,15 +2403,47 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
                             rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
                         if op_base == "rx" then
-                            local fn = negated and self.__match_op_rx_negative or self.__match_op_rx
-                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
-                            if not negated and rule_condition_has_matched and matched_table then
-                                for krx,vrx in pairs(matched_table) do
-                                    local m = string.match(krx, "^matched%_group%_([0-9]+)$")
-                                    if m then
-                                        rx_matched_values_cross_conditions["group:" .. m] = vrx
+                            -- Lua prefilter: a POSITIVE rx can match try_value
+                            -- only if one of its required literals is present
+                            -- (case-folded). A cheap string.find gate skips the
+                            -- expensive ngx.re.match when they're absent. Literals
+                            -- are extracted+memoised per condition; patterns we
+                            -- can't soundly reduce (macros / no depth-0 literal /
+                            -- negated) are never gated → fall through to the regex
+                            -- (fail-open). We gate the SHARED lowercased value
+                            -- (via the cached lowercase transform) so it's sound
+                            -- for (?i) patterns and reused across rules.
+                            local run_rx = true
+                            if not negated then
+                                local pf = condition._ka_pf_lits
+                                if pf == nil then
+                                    pf = pf_extract_literals(condition.value) or false
+                                    condition._ka_pf_lits = pf
+                                end
+                                if pf then
+                                    local lv = self:__apply_transformation("lowercase", try_value)
+                                    local present = false
+                                    for li = 1, #pf do
+                                        if string_find(lv, pf[li], 1, true) then
+                                            present = true; break
+                                        end
+                                    end
+                                    run_rx = present
+                                end
+                            end
+                            if run_rx then
+                                local fn = negated and self.__match_op_rx_negative or self.__match_op_rx
+                                rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
+                                if not negated and rule_condition_has_matched and matched_table then
+                                    for krx,vrx in pairs(matched_table) do
+                                        local m = string.match(krx, "^matched%_group%_([0-9]+)$")
+                                        if m then
+                                            rx_matched_values_cross_conditions["group:" .. m] = vrx
+                                        end
                                     end
                                 end
+                            else
+                                rule_condition_has_matched, matched_table = false, nil
                             end
                         end
                         if op_base == "libinjection_xss" then
