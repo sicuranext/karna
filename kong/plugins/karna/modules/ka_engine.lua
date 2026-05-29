@@ -2364,15 +2364,25 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     -- apply transformation_functions
                     local value_to_match_on = orig_value
                     local multi_match_values = {}
-                    for _,tfunc in pairs(condition.transform) do
-                        if type(value_to_match_on) == "string" then
-                            value_to_match_on = self:__apply_transformation(tfunc, value_to_match_on)
-                            if condition.multi_match then
-                                table_insert(multi_match_values, value_to_match_on)
-                            end
-                        else
-                            if private_debug_enabled then
-                                kong.log.debug("Value is not a string, skipping transformation function " .. tostring(tfunc))
+                    if condition._tchain then
+                        -- Stage 2 fast path: precompiled chain function
+                        -- (ka_compile.compile_transform_chain) with each
+                        -- transform step unrolled. Semantics verbatim
+                        -- from the fallback loop below.
+                        local mt
+                        value_to_match_on, mt = condition._tchain(self, orig_value, condition.multi_match)
+                        if mt then multi_match_values = mt end
+                    else
+                        for _,tfunc in pairs(condition.transform) do
+                            if type(value_to_match_on) == "string" then
+                                value_to_match_on = self:__apply_transformation(tfunc, value_to_match_on)
+                                if condition.multi_match then
+                                    table_insert(multi_match_values, value_to_match_on)
+                                end
+                            else
+                                if private_debug_enabled then
+                                    kong.log.debug("Value is not a string, skipping transformation function " .. tostring(tfunc))
+                                end
                             end
                         end
                     end

@@ -87,24 +87,118 @@ local _RULE_INTERNAL_FIELDS = {
     _compiled_logged = true,
 }
 
--- Return a shallow copy of a rule table with engine-internal fields
--- stripped. Safe for cjson.encode and any caller that wants a
--- "publishable" view of the rule (response body for private_debug,
--- audit log payload, MCP rule echoes).
+local _CONDITION_INTERNAL_FIELDS = {
+    _ka_pf_lits = true,  -- @rx literal prefilter memo (engine-managed)
+    _tchain     = true,  -- precompiled transform chain closure (stage 2)
+}
+
+-- Return a 2-level filtered copy of a rule table with engine-internal
+-- fields stripped at BOTH the rule level (`_compiled`, `_compiled_logged`)
+-- AND the per-condition level (`_ka_pf_lits`, `_tchain`). Safe for
+-- cjson.encode and any caller that wants a "publishable" view of the
+-- rule (response body for private_debug, audit log payload, MCP rule
+-- echoes). The condition-level filter is required because the encoder
+-- recurses into nested tables — a function field on a condition fails
+-- the encode just as surely as one on the rule.
 function _M.public_view(rule)
     if type(rule) ~= "table" then return rule end
     local out = {}
     for k, v in pairs(rule) do
-        if not _RULE_INTERNAL_FIELDS[k] then
+        if _RULE_INTERNAL_FIELDS[k] then
+            -- skip
+        elseif k == "conditions" and type(v) == "table" then
+            local conds = {}
+            for i, c in ipairs(v) do
+                if type(c) == "table" then
+                    local cc = {}
+                    for ck, cv in pairs(c) do
+                        if not _CONDITION_INTERNAL_FIELDS[ck] then
+                            cc[ck] = cv
+                        end
+                    end
+                    conds[i] = cc
+                else
+                    conds[i] = c
+                end
+            end
+            out[k] = conds
+        else
             out[k] = v
         end
     end
     return out
 end
 
+-- Stage 2: precompiled per-condition transform chain.
+--
+-- The engine's table-walk applies the chain via a runtime `for tfunc in
+-- condition.transform` loop at `ka_engine.lua:2367-2378`. Generating a
+-- straight-line function with each call unrolled removes the per-value
+-- iteration overhead and gives LuaJIT a fixed-shape callsite. The
+-- function still calls `engine:__apply_transformation(tfunc, value)`
+-- per step — value-level caching stays where it is. Stages 3-5 will
+-- replace those internal calls with the specific transform helpers.
+--
+-- Semantics preserved verbatim from the loop:
+--   - Each step is guarded by `type(value) == "string"`: if a transform
+--     returns a non-string (e.g. `t:length` → number), subsequent steps
+--     skip without erroring.
+--   - When `want_multi` is true (condition.multi_match), each
+--     successful step appends its result to the multi-match list. The
+--     list returned is `nil` when `want_multi` is false (the caller
+--     fills it with `{}` for symmetry).
+--
+-- Returns the closure or nil for an empty/nil transform list (the
+-- caller leaves condition._tchain unset and the engine takes the
+-- fallback loop, which is a 0-iteration no-op in that case anyway).
+function _M.compile_transform_chain(transforms)
+    if type(transforms) ~= "table" or #transforms == 0 then
+        return nil
+    end
+
+    local lines = {
+        "return function(engine, value, want_multi)",
+        "    local mt = want_multi and {} or nil",
+    }
+    for _, tfunc in ipairs(transforms) do
+        local quoted = string.format("%q", tostring(tfunc))
+        lines[#lines + 1] = "    if type(value) == \"string\" then"
+        lines[#lines + 1] = "        value = engine:__apply_transformation("
+                            .. quoted .. ", value)"
+        lines[#lines + 1] = "        if mt then mt[#mt + 1] = value end"
+        lines[#lines + 1] = "    end"
+    end
+    lines[#lines + 1] = "    return value, mt"
+    lines[#lines + 1] = "end"
+
+    local src = table.concat(lines, "\n")
+    local chunk, err = load(src, "@ka_compile/tchain")
+    if not chunk then
+        if kong and kong.log and kong.log.err then
+            kong.log.err("[ka_compile] tchain compile error: ", err)
+        end
+        return nil
+    end
+    return chunk()
+end
+
+-- Walk a rule's conditions and attach a precompiled transform chain to
+-- each condition that carries a non-empty `condition.transform` array.
+-- Init-worker / dynamic-rule-load mutation only — same policy as
+-- `condition._ka_pf_lits` (see comment block at ka_engine.lua:1782).
+local function compile_rule_conditions(rule)
+    if not rule.conditions then return end
+    for _, condition in ipairs(rule.conditions) do
+        if type(condition) == "table" and condition.transform then
+            condition._tchain = _M.compile_transform_chain(condition.transform)
+        end
+    end
+end
+
 -- Convenience: compile a list of rules in-place, attaching the closure
--- to `rule._compiled` for each successfully compiled rule. Returns
--- (compiled_count, total_count) so callers can log coverage at
+-- to `rule._compiled` for each successfully compiled rule. Also wires
+-- per-condition precompiled artifacts (transform chain — stage 2).
+-- Returns (compiled_count, total_count) so callers can log coverage at
 -- init_worker / dynamic-rule load time.
 function _M.compile_rules(rules, plugin_conf)
     local compiled = 0
@@ -113,6 +207,7 @@ function _M.compile_rules(rules, plugin_conf)
     for _, rule in pairs(rules) do
         if type(rule) == "table" then
             total = total + 1
+            compile_rule_conditions(rule)
             local closure = _M.compile_rule(rule, plugin_conf)
             if closure then
                 rule._compiled = closure
