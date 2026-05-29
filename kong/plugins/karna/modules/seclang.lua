@@ -1,5 +1,4 @@
 local seclang = {}
-local inspect = require "inspect"
 local rules = {}
 local rule_last_id = 0
 local rule_is_chained = false
@@ -884,9 +883,6 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
     end
 
     rule_last_id = id
-    --print("KongArmour Parsed Rule: " .. id)
-    --print("Rule:")
-    --print(inspect(rule))
 
 end
 

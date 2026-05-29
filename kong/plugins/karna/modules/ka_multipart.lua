@@ -1,5 +1,4 @@
 local re_match  = ngx.re.match
-local inspect = require "inspect"
 local _M = {}
 
 -- Escape Lua pattern metacharacters in an arbitrary string so it can be

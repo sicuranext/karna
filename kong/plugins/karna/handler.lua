@@ -20,7 +20,6 @@ local ipmatcher         = require "resty.ipmatcher"
 local ka_rules, err = lrucache.new(10000)
 
 local debug = kong.log.debug
-local inspect = kong.log.inspect
 
 -- Captured once at module load. When unset (production default) the
 -- profiling trigger in the access phase is dead code.
