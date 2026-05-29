@@ -90,6 +90,7 @@ local _RULE_INTERNAL_FIELDS = {
 local _CONDITION_INTERNAL_FIELDS = {
     _ka_pf_lits = true,  -- @rx literal prefilter memo (engine-managed)
     _tchain     = true,  -- precompiled transform chain closure (stage 2)
+    _resolvers  = true,  -- precompiled variable resolver array (stage 3)
 }
 
 -- Return a 2-level filtered copy of a rule table with engine-internal
@@ -182,15 +183,272 @@ function _M.compile_transform_chain(transforms)
     return chunk()
 end
 
--- Walk a rule's conditions and attach a precompiled transform chain to
--- each condition that carries a non-empty `condition.transform` array.
+-- Stage 3: precompiled per-variable resolver.
+--
+-- The engine's variable dispatcher in `__match_rule_conditions_impl`
+-- (~lines 1875-2305) is a chain of `if string_find(variable, "^...")
+-- elseif variable == "..." ...` branches that runs for every (rule,
+-- condition, variable) tuple at request time. For most rules the
+-- correct branch is reached only after walking past 5-10 unmatched
+-- patterns. Stage 3 picks the branch ONCE at init_worker — for each
+-- variable string in `condition.variables`, emit a closure that
+-- directly calls the right helper (e.g. `engine:__get_values_request_args`)
+-- with any pattern-derived arguments (arg names, header names, tx
+-- variable names) pre-extracted as upvalues.
+--
+-- The closure signature is `function(engine, rule) -> values, err`.
+-- Returning nil from compile_variable_resolver leaves the slot empty
+-- and the engine falls back to the dispatcher chain for that variable.
+-- That keeps the engine's behaviour authoritative for any variable
+-- shape we haven't whitelisted here.
+--
+-- Variables that depend on per-condition context (`matched.value`,
+-- `group:<N>`, `group_rx:<pattern>`) are intentionally NOT precompiled
+-- — they need access to the `matches` / `rx_matched_values_cross_conditions`
+-- locals inside the condition loop, which the resolver can't see.
+function _M.compile_variable_resolver(variable)
+    if type(variable) ~= "string" or variable == "" then
+        return nil
+    end
+
+    -- tx:<name> — ModSec TX:VAR lookup from kong.ctx.plugin.tx_variables.
+    if string.sub(variable, 1, 3) == "tx:" then
+        local tx_name = string.sub(variable, 4)
+        return function(engine, rule)
+            if kong.ctx.plugin.tx_variables
+               and kong.ctx.plugin.tx_variables[tx_name] ~= nil then
+                return { [variable] = tostring(kong.ctx.plugin.tx_variables[tx_name]) }
+            end
+            return nil
+        end
+    end
+
+    -- request.arg.value (canonical ARGS — query + body urlencoded merge).
+    if variable == "request.arg.value" then
+        return function(engine, rule)
+            return engine:__get_values_request_args(false, rule.rule_control)
+        end
+    end
+
+    -- request.arg.name — ARGS_NAMES (every arg key name).
+    if variable == "request.arg.name" then
+        return function(engine, rule)
+            local all_values, all_err = engine:__get_values_request_args(false, rule.rule_control)
+            if all_values then
+                local out = {}
+                for k, v in pairs(all_values) do
+                    if string.find(k, "%.name:", 1, false) then
+                        out[k] = v
+                    end
+                end
+                return out, all_err
+            end
+            return nil, all_err
+        end
+    end
+
+    -- request.arg.value:<name> — single ARGS entry by name. Suffix
+    -- patterns precomputed; the closure only iterates and filters.
+    if string.sub(variable, 1, 19) == "request.arg.value:" then
+        local arg_name = string.sub(variable, 19)
+        -- The leading `:` in the substring boundary: variable is
+        -- "request.arg.value:<name>" (no `:` index 19 because string
+        -- indexes are 1-based — `request.arg.value:` is 18 chars).
+        -- Recompute precisely:
+        arg_name = string.match(variable, "^request%.arg%.value%:(.*)")
+        if arg_name == nil then return nil end
+        local suffix1 = "%." .. arg_name .. "$"
+        local suffix2 = ":" .. arg_name .. "$"
+        return function(engine, rule)
+            local all_values, all_err = engine:__get_values_request_args(false, rule.rule_control)
+            if all_values then
+                local out = {}
+                for k, v in pairs(all_values) do
+                    if string.find(k, suffix1) or string.find(k, suffix2) then
+                        out[k] = v
+                    end
+                end
+                return out, all_err
+            end
+            return nil, all_err
+        end
+    end
+
+    -- request.query.value / request.query.name / request.query.value:<name>
+    if variable == "request.query.value" then
+        return function(engine, rule)
+            local qvals = engine.__get_values_request_query_value(false)
+            if qvals then
+                local out = {}
+                for k, v in pairs(qvals) do
+                    if string.find(k, "%.value:", 1, false) then
+                        out[k] = v
+                    end
+                end
+                if next(out) ~= nil then return out end
+            end
+            return nil
+        end
+    end
+    if variable == "request.query.name" then
+        return function(engine, rule)
+            local qvals = engine.__get_values_request_query_value(false)
+            if qvals then
+                local out = {}
+                for k, v in pairs(qvals) do
+                    if string.find(k, "%.name:", 1, false) then
+                        out[k] = v
+                    end
+                end
+                if next(out) ~= nil then return out end
+            end
+            return nil
+        end
+    end
+    if string.find(variable, "^request%.query%.value%:") then
+        local arg_name = string.match(variable, "^request%.query%.value%:(.*)")
+        local suffix = ":" .. arg_name .. "$"
+        return function(engine, rule)
+            local qvals = engine.__get_values_request_query_value(false)
+            if qvals then
+                local out = {}
+                for k, v in pairs(qvals) do
+                    if string.find(k, suffix) then
+                        out[k] = v
+                    end
+                end
+                if next(out) ~= nil then return out end
+            end
+            return nil
+        end
+    end
+
+    -- request.raw_path
+    if variable == "request.raw_path" then
+        return function(engine, rule)
+            return engine.__get_values_request_raw_path()
+        end
+    end
+
+    -- request.path_with_query — kong.request live, init_worker-guarded.
+    if variable == "request.path_with_query" then
+        return function(engine, rule)
+            if ngx.get_phase() ~= "init_worker" then
+                return { ["request.path_with_query"] = tostring(kong.request.get_path_with_query()) }
+            end
+            return nil
+        end
+    end
+
+    -- request.method
+    if variable == "request.method" then
+        return function(engine, rule)
+            if ngx.get_phase() ~= "init_worker" then
+                return { ["request.method"] = tostring(kong.request.get_method()) }
+            end
+            return nil
+        end
+    end
+
+    -- request.http_version — emitted in canonical "HTTP/X.Y" shape
+    if variable == "request.http_version" then
+        return function(engine, rule)
+            if ngx.get_phase() ~= "init_worker" then
+                local v = kong.request.get_http_version()
+                if v then
+                    return { ["request.http_version"] = "HTTP/" .. tostring(v) }
+                end
+            end
+            return nil
+        end
+    end
+
+    -- request.line — full HTTP request line ("METHOD /uri HTTP/x.y").
+    if variable == "request.line" then
+        return function(engine, rule)
+            if ngx.get_phase() ~= "init_worker" then
+                local line = ngx.var.request
+                if line then
+                    return { ["request.line"] = tostring(line) }
+                end
+            end
+            return nil
+        end
+    end
+
+    -- request.basename
+    if variable == "request.basename" then
+        return function(engine, rule)
+            return engine.__get_values_basename()
+        end
+    end
+
+    -- request.raw_query
+    if variable == "request.raw_query" then
+        return function(engine, rule)
+            return engine.__get_values_request_raw_query()
+        end
+    end
+
+    -- request.header.value / request.header.value:<name>
+    if variable == "request.header.value" then
+        return function(engine, rule)
+            return engine.__get_values_request_headers_all()
+        end
+    end
+    if string.find(variable, "^request%.header%.value:") then
+        return function(engine, rule)
+            return engine.__get_values_request_header(variable)
+        end
+    end
+
+    -- request.cookie.value
+    if variable == "request.cookie.value" then
+        return function(engine, rule)
+            return engine:__get_values_request_cookie(false)
+        end
+    end
+
+    -- Scalar body variables — request.body, request.body.length, request.body.processor.
+    if variable == "request.body"
+       or variable == "request.body.length"
+       or variable == "request.body.processor" then
+        return function(engine, rule)
+            local scalars = engine.__get_values_request_body_scalars()
+            if scalars and scalars[variable] ~= nil then
+                return { [variable] = tostring(scalars[variable]) }
+            end
+            return nil
+        end
+    end
+
+    return nil
+end
+
+-- Walk a rule's conditions and attach precompiled artifacts:
+--   condition._tchain    — transform chain closure (stage 2)
+--   condition._resolvers — parallel array to condition.variables; each
+--                          slot is either a resolver closure (stage 3)
+--                          or nil (engine falls back to dispatcher).
 -- Init-worker / dynamic-rule-load mutation only — same policy as
 -- `condition._ka_pf_lits` (see comment block at ka_engine.lua:1782).
 local function compile_rule_conditions(rule)
     if not rule.conditions then return end
     for _, condition in ipairs(rule.conditions) do
-        if type(condition) == "table" and condition.transform then
-            condition._tchain = _M.compile_transform_chain(condition.transform)
+        if type(condition) == "table" then
+            if condition.transform then
+                condition._tchain = _M.compile_transform_chain(condition.transform)
+            end
+            if type(condition.variables) == "table" and #condition.variables > 0 then
+                local resolvers = {}
+                local any = false
+                for i, var in ipairs(condition.variables) do
+                    local fn = _M.compile_variable_resolver(var)
+                    resolvers[i] = fn
+                    if fn ~= nil then any = true end
+                end
+                if any then condition._resolvers = resolvers end
+            end
         end
     end
 end

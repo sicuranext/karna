@@ -1833,7 +1833,9 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
         -- → rule fired without ever entering cond2's FP-suppression
         -- check. Track a per-condition flag and only count once.
         local condition_already_counted = false
-        for _,variable in pairs(condition.variables) do
+        local var_idx = 0
+        for _, variable in pairs(condition.variables) do
+            var_idx = var_idx + 1
 
             if private_debug_enabled then
                 kong.log.debug("----> (rule " .. tostring(rule.id) .. ") Evaluating condition " .. tostring(i) .. "/" .. tostring(rule_conditions) .. " on variable: " .. tostring(variable) .. " with operator: " .. tostring(condition.op) .. " and value: " .. tostring(condition.value))
@@ -1873,6 +1875,22 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
             end
 
             if not values then
+                -- Stage 3 fast path: precompiled per-variable resolver.
+                -- compile_variable_resolver maps the variable string to
+                -- a closure that calls the right helper directly with
+                -- pattern-derived bits (arg names, header names, tx-var
+                -- names) pre-extracted as upvalues. Skips the
+                -- pattern-matching chain below. Returns nil for shapes
+                -- the compiler doesn't whitelist (matched.value,
+                -- group:N, count:*, complex multipart/xml/json/mcp);
+                -- the engine then falls through to the dispatcher.
+                local _used_resolver = false
+                if condition._resolvers and condition._resolvers[var_idx] then
+                    values, err = condition._resolvers[var_idx](self, rule)
+                    _used_resolver = true
+                end
+
+                if not _used_resolver then
                 -- if condition operator is not isSet or !isSet
 
                 -- ModSec `TX:<name>` variable lookup → resolve from
@@ -2284,6 +2302,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         values = { [variable] = tostring(v or "") }
                     end
                 end
+                end  -- close `if not _used_resolver` (stage 3)
 
                 -- `ka_variable_cache` write — store the freshly
                 -- resolved variable map. We write a SHALLOW COPY so
