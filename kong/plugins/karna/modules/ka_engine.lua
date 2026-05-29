@@ -1862,9 +1862,27 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                and kong.ctx.plugin.ka_variable_cache[variable] ~= nil then
                 local cached = kong.ctx.plugin.ka_variable_cache[variable]
                 if type(cached) == "table" then
-                    local copy = {}
-                    for k, v in pairs(cached) do copy[k] = v end
-                    values = copy
+                    -- CSE fast path: the defensive deep-copy exists ONLY to
+                    -- shield the cached table from the two mutation sites
+                    -- below (remove_target_from_all_rules / ids_targets[rule.id]).
+                    -- When neither will fire for this rule — the overwhelming
+                    -- common case on benign traffic — we can read the cached
+                    -- table directly and skip the per-rule O(n) copy (jit.p:
+                    -- ~16% of request CPU on scenario 02, since every rule
+                    -- re-copies the same ARGS map). Behind a flag so the win
+                    -- can be A/B-toggled; falls back to the copy otherwise.
+                    local rc = kong.ctx.plugin.rule_controls
+                    local will_mutate = rc and (
+                        (rc.remove_target_from_all_rules and #rc.remove_target_from_all_rules > 0)
+                        or (rc.ids_targets and rc.ids_targets[rule.id] ~= nil)
+                    )
+                    if plugin_conf.engine_fast_path and not will_mutate then
+                        values = cached
+                    else
+                        local copy = {}
+                        for k, v in pairs(cached) do copy[k] = v end
+                        values = copy
+                    end
                 else
                     values = cached
                 end

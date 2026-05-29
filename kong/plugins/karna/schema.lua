@@ -13,6 +13,7 @@ local schema = {
           { set_karna_headers = { type = "boolean", default = false } },
           { engine_blocking_mode = { type = "boolean", default = false } },
           { coreruleset_enabled = { type = "boolean", default = true } },
+          { engine_fast_path = { type = "boolean", default = false } },
           { local_rules_enabled = { type = "boolean", default = true } },
 
           -- MCP (Model Context Protocol) — see modules/ka_mcp.lua.
