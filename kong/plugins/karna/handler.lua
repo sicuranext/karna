@@ -14,6 +14,7 @@ local utils             = require "kong.plugins.karna.ka_utils"
 local seclang           = require "kong.plugins.karna.ka_seclang"
 local ka_mcp            = require "kong.plugins.karna.ka_mcp"
 local ka_compile        = require "kong.plugins.karna.ka_compile"
+local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
 local ipmatcher         = require "resty.ipmatcher"
@@ -654,6 +655,29 @@ function plugin:init_worker()
     ka_rules:set("ka_dfiles", ka_dfiles)
 
     debug("#########> Loaded "..tostring(#rules).." global rules on worker number "..ngx.worker.id())
+
+    -- RE2 @rx gate (engine_re2_scan spike — memory karna-re2-spike). Build the
+    -- RE2::Set over gateable CRS @rx once per worker; config-independent, so
+    -- built unconditionally (usage is flag-gated at request time). nil when
+    -- libka_re2.so is unavailable -> engine_re2_scan falls back to the Lua path.
+    local ok_gate, gate = pcall(ka_re2_gate.build, rules)
+    if ok_gate and gate then
+      engine._re2_gate = gate
+      local st = gate.stats or {}
+      kong.log.notice("[karna] RE2 gate built: "..tostring(gate.gateable).." gateable ("
+            ..tostring(gate.conditional).." conditional) / "
+            ..tostring(gate.n_patterns).." patterns / "..tostring(gate.rejected)
+            .." RE2-rejected / "..tostring(#gate.specs).." scan specs"
+            .." | excl: not_rx="..tostring(st.not_rx).." negated="..tostring(st.negated)
+            .." multimatch="..tostring(st.multimatch).." macro="..tostring(st.macro)
+            .." unresolvable="..tostring(st.unresolvable).." / total="..tostring(st.total))
+      kong.log.notice("[karna] RE2 gate unresolvable vars: "..tostring(gate.unres))
+    else
+      engine._re2_gate = nil
+      if not ok_gate then
+        debug("#########> RE2 gate build error (engine_re2_scan disabled): "..tostring(gate))
+      end
+    end
   end
 end
 

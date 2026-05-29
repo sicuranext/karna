@@ -14,6 +14,14 @@ local schema = {
           { engine_blocking_mode = { type = "boolean", default = false } },
           { coreruleset_enabled = { type = "boolean", default = true } },
           { engine_fast_path = { type = "boolean", default = false } },
+          -- engine_re2_scan: Direction B spike (memory karna-re2-spike).
+          -- When true (and libka_re2.so is loadable), gate per-rule @rx
+          -- evaluation with a single RE2::Set scan per request value — rules
+          -- whose @rx matched nothing are skipped; matched ones still run the
+          -- full Lua path (captures/chain/setvar stay in Lua). Default off;
+          -- A/B via Admin-API PATCH on a warm container. Falls back to the
+          -- pure-Lua @rx path when the lib is missing or a pattern is rejected.
+          { engine_re2_scan = { type = "boolean", default = false } },
           { local_rules_enabled = { type = "boolean", default = true } },
 
           -- MCP (Model Context Protocol) — see modules/ka_mcp.lua.

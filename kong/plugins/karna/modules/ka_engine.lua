@@ -972,6 +972,37 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
             kong.log.debug("Looping rules for phase: " .. phase .. " / rule count: " .. tostring(#raw_rules) .. " / nginx worker number: " .. tostring(ngx.worker.id()))
         end
 
+        -- RE2 @rx gate (engine_re2_scan spike — memory karna-re2-spike).
+        -- Compute ONCE per request (cached on ctx, reused across rule packs):
+        -- a single RE2::Set scan over the distinct transformed request values
+        -- yields the set of @rx patterns that could match. Gateable rules whose
+        -- gating pattern is absent are skipped below (their cond1 @rx matched
+        -- nothing -> cannot fire). Fail-open: scan error / flag off / no gate ->
+        -- re2_gate stays nil -> the skip is a no-op and every rule runs the
+        -- normal Lua path. Captures/chains/setvar all stay in Lua, in rule-order.
+        local re2_gate = nil
+        if plugin_conf.engine_re2_scan and self._re2_gate and kong.ctx.plugin then
+            if not kong.ctx.plugin._re2_done then
+                local ok, m = pcall(self._re2_gate.run, self)
+                kong.ctx.plugin._re2_matched = (ok and type(m) == "table") and m or false
+                kong.ctx.plugin._re2_done = true
+                -- Cheap per-request emptiness flags for conditionally-gateable
+                -- rules (cond1 mixes a resolvable var with an opaque cookie/body
+                -- namespace): such a rule is skippable only when its opaque
+                -- namespace is empty this request. See ka_re2_gate OPAQUE_CLASS.
+                local cl = tonumber(request_get_header("content-length"))
+                kong.ctx.plugin._re2_has_body = (cl ~= nil and cl > 0)
+                    or (request_get_header("transfer-encoding") ~= nil)
+                kong.ctx.plugin._re2_has_cookie = (request_get_header("cookie") ~= nil)
+                if not ok and private_debug_enabled then
+                    kong.log.debug("[re2] scan failed, falling back to Lua: " .. tostring(m))
+                end
+            end
+            if kong.ctx.plugin._re2_matched then
+                re2_gate = self._re2_gate
+            end
+        end
+
         for _,rule in pairs(raw_rules) do
             -- if plugin_conf.private_debug and request header x-karna-test-rule-id is set, filter rule.id for the header value
             -- Helper rules (no `fixed_response` action — i.e. `pass`-action
@@ -1013,6 +1044,25 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                 local cfg_pl = tonumber(plugin_conf.paranoia_level) or 1
                 if rule_pl > cfg_pl then
                     goto continue
+                end
+
+                -- RE2 gate skip: this rule's gating @rx (cond1) matched no
+                -- request value in the pre-pass scan, so it cannot fire. Only
+                -- rules in re2_gate.gate are gateable (positive cond1 @rx, all
+                -- vars resolvable, RE2-accepted pattern); all others fall
+                -- through to the full Lua evaluation. SOUND: see ka_re2_gate.
+                if re2_gate then
+                    local g = re2_gate.gate[tostring(rule.id)]
+                    if g then
+                        -- active-gateable iff every opaque namespace this rule
+                        -- needs-empty IS empty this request; then a clear bit
+                        -- proves cond1's @rx matched nothing it could see.
+                        local active = (not g.nc or not kong.ctx.plugin._re2_has_cookie)
+                                   and (not g.nb or not kong.ctx.plugin._re2_has_body)
+                        if active and not kong.ctx.plugin._re2_matched[g.sid] then
+                            goto continue
+                        end
+                    end
                 end
 
                 local rule_matched, matches = self:__match_rule_conditions(rule, plugin_conf)

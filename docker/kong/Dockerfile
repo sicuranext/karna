@@ -7,7 +7,7 @@
 # The plugin source itself is NOT baked: docker-compose mounts it read-only
 # from the repo and `luarocks make` is run at container start.
 
-FROM kong:3.9.0
+FROM kong:3.9.1
 
 USER root
 
@@ -17,7 +17,8 @@ ARG CRS_VERSION=4.26.0
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl git build-essential zlib1g-dev; \
+        ca-certificates curl git build-essential g++ zlib1g-dev \
+        libre2-dev; \
     \
     # libinjection: build .so from official source.
     git clone --depth 1 --branch "${LIBINJECTION_REF}" \
@@ -58,9 +59,14 @@ RUN set -eux; \
     mkdir -p /usr/local/openresty/nginx/logs; \
     chown -R kong:kong /usr/local/openresty/nginx/logs; \
     \
-    # Trim the image: drop build deps, keep only ca-certificates + zlib runtime.
+    # Trim the image: drop git + curl. KEEP build-essential/g++ and libre2-dev:
+    # the karna RE2 spike (memory karna-re2-spike) compiles
+    # src/libka_re2/ka_re2.cc -> /usr/local/lib/libka_re2.so at container start
+    # (the plugin C source is mounted, not baked), so the toolchain + libre2
+    # must persist at runtime. This is the dev/bench image — toolchain bloat is
+    # acceptable here; a slim production image would prebuild the .so via COPY.
     rm -rf /tmp/libinjection; \
-    apt-get purge -y --auto-remove git build-essential curl; \
+    apt-get purge -y --auto-remove git curl; \
     rm -rf /var/lib/apt/lists/*
 
 # compose overrides USER to root so luarocks can install plugin to /usr/local
