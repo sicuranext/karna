@@ -543,7 +543,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
             end
             response_exit(
               rule_matched_obj.action.fixed_response.status_code or 403,
-              cjson.encode(rule_matched_obj),
+              cjson.encode(ka_compile.public_view(rule_matched_obj)),
               dbg_headers
             )
           else

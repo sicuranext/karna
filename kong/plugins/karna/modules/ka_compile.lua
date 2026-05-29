@@ -78,6 +78,30 @@ function _M.dump_source(rule, plugin_conf, src)
     end
 end
 
+-- Engine-internal fields attached to rule tables by ka_compile. Any
+-- code path that JSON-encodes a rule (private_debug response body,
+-- audit log enrichment, …) must skip these — `_compiled` is a Lua
+-- function and `cjson.encode` rejects functions outright.
+local _RULE_INTERNAL_FIELDS = {
+    _compiled        = true,
+    _compiled_logged = true,
+}
+
+-- Return a shallow copy of a rule table with engine-internal fields
+-- stripped. Safe for cjson.encode and any caller that wants a
+-- "publishable" view of the rule (response body for private_debug,
+-- audit log payload, MCP rule echoes).
+function _M.public_view(rule)
+    if type(rule) ~= "table" then return rule end
+    local out = {}
+    for k, v in pairs(rule) do
+        if not _RULE_INTERNAL_FIELDS[k] then
+            out[k] = v
+        end
+    end
+    return out
+end
+
 -- Convenience: compile a list of rules in-place, attaching the closure
 -- to `rule._compiled` for each successfully compiled rule. Returns
 -- (compiled_count, total_count) so callers can log coverage at
