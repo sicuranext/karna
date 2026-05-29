@@ -1759,9 +1759,20 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
         return false, nil
     end
 
+    -- Rule-to-closure JIT path (workstream #2). When `compile_rule`
+    -- has attached a closure to `rule._compiled` at init_worker (or
+    -- lazily at dynamic-rule load time), prefer it over the table-walk
+    -- below. Stage 0 is no-op (compile_rule returns nil for every rule);
+    -- stages 1-5 progressively replace the table-walk for rules whose
+    -- shape the compiler can handle. Unhandled shapes leave _compiled
+    -- nil and fall through here. Both paths coexist permanently.
+    if rule._compiled then
+        return rule._compiled(self, plugin_conf)
+    end
+
     --kong.log.debug("\n\n")
     --kong.log.debug("Matching rule " .. tostring(rule.id) .. " for phase " .. rule.phase)
-    
+
     -- __apply_transformation = function(self, tfunc, value)
     local rule_conditions = #rule.conditions
     local matched_conditions = 0
@@ -1775,11 +1786,20 @@ _M.__match_rule_conditions = function(self, rule, plugin_conf)
         ██║██║██║ █╗ ██║███████║██████╔╝██╔██╗ ██║██║██╔██╗ ██║██║  ███╗██║██║
         ╚═╝╚═╝██║███╗██║██╔══██║██╔══██╗██║╚██╗██║██║██║╚██╗██║██║   ██║╚═╝╚═╝
         ██╗██╗╚███╔███╔╝██║  ██║██║  ██║██║ ╚████║██║██║ ╚████║╚██████╔╝██╗██╗
-        ╚═╝╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝╚═╝          
-    
-        do not change the value of any object inside "rule" table
-        nor modify its structure or content, and do not cache any value inside "condition" or "variable" tables.
-        changing those objects will have side effects on other rules evaluation since those objects are shared across all rules.
+        ╚═╝╚═╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝╚═╝
+
+        Do NOT mutate the "rule" / "condition" / "variable" tables FROM
+        THE REQUEST PHASE — they are shared across all workers and all
+        requests, so a per-request write here corrupts every subsequent
+        request's view of that rule. Specifically: never cache per-request
+        values on a condition or variable table inside this match path.
+
+        Init-worker memoization is explicitly allowed and is used today:
+          - `condition._ka_pf_lits` (literal prefilter, ka_engine:2525-2528)
+          - `rule._compiled`        (closure JIT, ka_compile.lua)
+          - `rule._compiled_logged` (one-shot private_debug guard)
+        Those fields are set once at init_worker (or once at lazy
+        dynamic-rule load), never inside the access phase.
     ]]--
     for i,condition in pairs(rule.conditions) do
         -- Track whether this condition has matched at all. The match

@@ -36,6 +36,7 @@ build = {
     ["kong.plugins."..pluginName..".ka_seclang"]      = "kong/plugins/"..pluginName.."/modules/seclang.lua",
     ["kong.plugins."..pluginName..".ka_mcp"]          = "kong/plugins/"..pluginName.."/modules/ka_mcp.lua",
     ["kong.plugins."..pluginName..".ka_mcp_sse"]      = "kong/plugins/"..pluginName.."/modules/ka_mcp_sse.lua",
+    ["kong.plugins."..pluginName..".ka_compile"]      = "kong/plugins/"..pluginName.."/modules/ka_compile.lua",
 
     ["kong.plugins."..pluginName..".libinjection"]    = "kong/plugins/"..pluginName.."/modules/libinjection.lua",
     ["kong.plugins."..pluginName..".slaxml"]          = "kong/plugins/"..pluginName.."/modules/slaxml.lua",
