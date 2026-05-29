@@ -29,6 +29,13 @@ ka_re2_t *ka_re2_new(int dot_nl)
     opt.set_log_errors(false);     // don't spew to stderr on a bad pattern
     opt.set_dot_nl(dot_nl != 0);   // 's' flag parity with Karna's ngx.re "sjo"
     opt.set_never_capture(true);   // Set membership only — no captures needed
+    // BYTE mode parity with PCRE/ngx.re. Karna's ngx.re.match runs without the
+    // 'u' flag => operates on raw bytes. RE2 defaults to UTF-8, where MALFORMED
+    // byte sequences (e.g. CRS 941310's US-ASCII evasion \xbc\xbe...) match
+    // differently than PCRE byte-mode — which silently broke detection once
+    // body values were gated. Latin1 treats each byte as its own char = PCRE
+    // byte semantics. (Validated by the CRS regression empty-diff.)
+    opt.set_encoding(RE2::Options::EncodingLatin1);
     // RE2::Set::Compile() fails if the combined program exceeds max_mem
     // (default 8 MB). A CRS @rx set is ~150-200 patterns, some large, so bump
     // the budget generously (well under the 2 GB worker cap).

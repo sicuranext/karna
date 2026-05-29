@@ -664,8 +664,7 @@ function plugin:init_worker()
     if ok_gate and gate then
       engine._re2_gate = gate
       local st = gate.stats or {}
-      kong.log.notice("[karna] RE2 gate built: "..tostring(gate.gateable).." gateable ("
-            ..tostring(gate.conditional).." conditional) / "
+      kong.log.notice("[karna] RE2 gate built: "..tostring(gate.gateable).." gateable / "
             ..tostring(gate.n_patterns).." patterns / "..tostring(gate.rejected)
             .." RE2-rejected / "..tostring(#gate.specs).." scan specs"
             .." | excl: not_rx="..tostring(st.not_rx).." negated="..tostring(st.negated)

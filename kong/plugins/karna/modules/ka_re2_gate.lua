@@ -25,22 +25,24 @@ local ka_compile = require "kong.plugins.karna.ka_compile"
 
 local _M = {}
 
--- Opaque request-value namespaces the gate can't resolve directly, mapped to an
--- "emptiness class". A rule whose cond1 mixes a resolvable var (ARGS, headers…)
--- with one of these is CONDITIONALLY gateable: skippable on a given request ONLY
--- when the opaque namespace is provably empty that request (no body / no cookie),
--- so the rule's @rx can only match a value the pre-pass DID scan. On a request
--- that DOES carry that namespace (XML/cookie/file attack), the rule is NOT gated
--- and runs the full Lua path — sound, and validated by the CRS regression.
---   "cookie" => empty unless a Cookie header is present
---   "body"   => empty unless the request carries a body (XML/multipart/files)
-local OPAQUE_CLASS = {
-    ["request.cookie.name"]              = "cookie",
-    ["request.body.xml.value"]           = "body",
-    ["request.body.xml.attr.value"]      = "body",
-    ["request.file"]                     = "body",
-    ["request.body.multipart.filename"]  = "body",
-    ["request.body.multipart.name"]      = "body",
+-- Coarse gate resolvers for request-value namespaces that
+-- ka_compile.compile_variable_resolver doesn't cover (cookie names, XML, files,
+-- multipart). Each returns the FULL value set of its broader namespace — a
+-- SUPERSET of the specific variable's values, which is sound for gating
+-- (scanning extra values can only cause an extra rule-run, never a missed
+-- match). This makes those rules UNCONDITIONALLY gateable: on a bodyless/
+-- cookieless request the helper returns empty (≈ free); on a body/cookie
+-- request the values ARE scanned, so the rule gates on benign body traffic too
+-- (fixes the scn09 regression where the earlier "disable on body" approach paid
+-- the scan cost without skipping). Helpers take no self -> dot-call; both cache
+-- on kong.ctx.plugin so repeated calls are cheap.
+local GATE_EXTRA_RESOLVERS = {
+    ["request.cookie.name"]             = function(engine) return engine.__get_values_request_cookie(false) end,
+    ["request.body.xml.value"]          = function(engine) return engine.__get_values_request_body(false) end,
+    ["request.body.xml.attr.value"]     = function(engine) return engine.__get_values_request_body(false) end,
+    ["request.file"]                    = function(engine) return engine.__get_values_request_body(false) end,
+    ["request.body.multipart.filename"] = function(engine) return engine.__get_values_request_body(false) end,
+    ["request.body.multipart.name"]     = function(engine) return engine.__get_values_request_body(false) end,
 }
 
 -- Build the gate over a rule list. Returns a gate table, or nil if RE2 is
@@ -58,7 +60,6 @@ function _M.build(rules)
 
     local patterns   = {}   -- ordered pattern strings handed to RE2::Set::Add
     local rule_at    = {}   -- patterns[i] belongs to rule_at[i] (rule_id string)
-    local gate_cond  = {}   -- patterns[i] -> { nc=need_cookie_empty, nb=need_body_empty }
     local specs      = {}   -- distinct {variable, transform, resolver}
     local spec_seen  = {}
 
@@ -89,7 +90,8 @@ function _M.build(rules)
             --  * a %{...} macro in the pattern makes the effective regex
             --    dynamic per request, but the RE2::Set is built from the static
             --    string — would gate against the wrong pattern.
-            --  * any cond1 variable not resolvable => the scan can't cover it
+            --  * any cond1 variable with no resolver (compile_variable_resolver
+            --    nor a coarse GATE_EXTRA_RESOLVER) => the scan can't cover it
             --    => gating would be unsound (might miss a match on that var).
             local has_macro = string.find(c1.value or "", "%{", 1, true) ~= nil
             if base ~= "rx" or type(c1.value) ~= "string" or c1.value == ""
@@ -102,12 +104,11 @@ function _M.build(rules)
             elseif has_macro then
                 stats.macro = stats.macro + 1
             else
-                local var_specs       = {}
-                local gateable        = true
-                local need_cookie_empty = false
-                local need_body_empty   = false
+                local var_specs  = {}
+                local gateable   = true
                 for _, v in pairs(c1.variables) do
                     local resolver = ka_compile.compile_variable_resolver(v)
+                                     or GATE_EXTRA_RESOLVERS[v]
                     if resolver ~= nil then
                         var_specs[#var_specs + 1] = {
                             variable  = v,
@@ -115,25 +116,14 @@ function _M.build(rules)
                             resolver  = resolver,
                         }
                     else
-                        local cls = OPAQUE_CLASS[v]
-                        if cls == "cookie" then
-                            need_cookie_empty = true
-                        elseif cls == "body" then
-                            need_body_empty = true
-                        else
-                            -- unknown opaque namespace: can't reason about its
-                            -- emptiness => cannot gate this rule soundly.
-                            gateable = false
-                            unres[v] = (unres[v] or 0) + 1
-                        end
+                        gateable = false
+                        unres[v] = (unres[v] or 0) + 1
                     end
                 end
 
                 if gateable then
-                    patterns[#patterns + 1]  = c1.value
-                    rule_at[#patterns]       = tostring(rule.id)
-                    gate_cond[#patterns]     = { nc = need_cookie_empty,
-                                                 nb = need_body_empty }
+                    patterns[#patterns + 1] = c1.value
+                    rule_at[#patterns]      = tostring(rule.id)
                     for _, sp in ipairs(var_specs) do
                         local key = sp.variable .. "\1"
                                     .. table.concat(sp.transform, ",")
@@ -161,19 +151,15 @@ function _M.build(rules)
         return nil
     end
 
-    -- Map rule-id -> { sid, nc, nb }; patterns RE2 rejected (id_map[i] == false)
+    -- Map rule-id -> RE2 set-id; patterns RE2 rejected (id_map[i] == false)
     -- leave their rule UNGATED (no entry) -> it stays on the Lua @rx path.
-    --   sid = RE2 set-id; nc/nb = require cookie/body namespace empty this request.
     local gate = {}
     local gateable = 0
-    local conditional = 0
     for i = 1, #patterns do
         local set_id = id_map[i]
         if set_id ~= false then
-            local gc = gate_cond[i]
-            gate[rule_at[i]] = { sid = set_id, nc = gc.nc, nb = gc.nb }
+            gate[rule_at[i]] = set_id
             gateable = gateable + 1
-            if gc.nc or gc.nb then conditional = conditional + 1 end
         end
     end
 
@@ -188,7 +174,6 @@ function _M.build(rules)
         specs      = specs,
         n_patterns = handle.n_patterns,
         gateable   = gateable,
-        conditional = conditional,
         rejected   = rejected and #rejected or 0,
         stats      = stats,
         unres      = table.concat(unres_list, " "),
@@ -209,6 +194,7 @@ function _M.scan(gate, engine)
     local handle = gate.handle
     local matched = {}
     local resolved = {}          -- variable string -> values table (resolve once)
+    local scanned = {}           -- post-transform value string -> true (scan once)
     local dummy_rule = {}        -- resolvers take (engine, rule); no rule_control
                                  -- => full namespace = a superset (sound)
 
@@ -231,7 +217,14 @@ function _M.scan(gate, engine)
                             v = engine:__apply_transformation(chain[ci], v)
                         end
                     end
-                    if type(v) == "string" then
+                    -- Scan each DISTINCT post-transform value once. RE2 match is
+                    -- a pure function of the string, so the same value produced
+                    -- by different (variable, chain) specs need not re-scan —
+                    -- this collapses the cross-spec redundancy that would
+                    -- otherwise blow up on body-bearing requests (many body
+                    -- vars share __get_values_request_body + the same chain).
+                    if type(v) == "string" and not scanned[v] then
+                        scanned[v] = true
                         local n = ka_re2.scan(handle, v)
                         if n > 0 then
                             local lim = n < handle.max_ids and n or handle.max_ids

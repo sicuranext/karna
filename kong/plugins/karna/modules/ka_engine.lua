@@ -986,14 +986,6 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                 local ok, m = pcall(self._re2_gate.run, self)
                 kong.ctx.plugin._re2_matched = (ok and type(m) == "table") and m or false
                 kong.ctx.plugin._re2_done = true
-                -- Cheap per-request emptiness flags for conditionally-gateable
-                -- rules (cond1 mixes a resolvable var with an opaque cookie/body
-                -- namespace): such a rule is skippable only when its opaque
-                -- namespace is empty this request. See ka_re2_gate OPAQUE_CLASS.
-                local cl = tonumber(request_get_header("content-length"))
-                kong.ctx.plugin._re2_has_body = (cl ~= nil and cl > 0)
-                    or (request_get_header("transfer-encoding") ~= nil)
-                kong.ctx.plugin._re2_has_cookie = (request_get_header("cookie") ~= nil)
                 if not ok and private_debug_enabled then
                     kong.log.debug("[re2] scan failed, falling back to Lua: " .. tostring(m))
                 end
@@ -1052,16 +1044,9 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                 -- vars resolvable, RE2-accepted pattern); all others fall
                 -- through to the full Lua evaluation. SOUND: see ka_re2_gate.
                 if re2_gate then
-                    local g = re2_gate.gate[tostring(rule.id)]
-                    if g then
-                        -- active-gateable iff every opaque namespace this rule
-                        -- needs-empty IS empty this request; then a clear bit
-                        -- proves cond1's @rx matched nothing it could see.
-                        local active = (not g.nc or not kong.ctx.plugin._re2_has_cookie)
-                                   and (not g.nb or not kong.ctx.plugin._re2_has_body)
-                        if active and not kong.ctx.plugin._re2_matched[g.sid] then
-                            goto continue
-                        end
+                    local sid = re2_gate.gate[tostring(rule.id)]
+                    if sid ~= nil and not kong.ctx.plugin._re2_matched[sid] then
+                        goto continue
                     end
                 end
 
