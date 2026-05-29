@@ -13,6 +13,7 @@ local body_parser       = require "kong.plugins.karna.ka_body_parser"
 local utils             = require "kong.plugins.karna.ka_utils"
 local seclang           = require "kong.plugins.karna.ka_seclang"
 local ka_mcp            = require "kong.plugins.karna.ka_mcp"
+local ka_compile        = require "kong.plugins.karna.ka_compile"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
 local ipmatcher         = require "resty.ipmatcher"
@@ -72,8 +73,53 @@ local get_plugin_dynamic_rules = function(plugin_conf)
   local cached = ka_rules:get(key)
   if cached then return cached end
   local parsed = load_plugin_dynamic_rules(plugin_conf)
+  -- Compile dynamic rules into closures before caching. plugin_conf is
+  -- passed so private_debug source dumps respect the per-service flag.
+  -- See ka_compile.compile_rule for the contract.
+  ka_compile.compile_rules(parsed, plugin_conf)
   ka_rules:set(key, parsed)
   return parsed
+end
+
+-- Parse + compile the rules carried inline by `plugin_conf.rules_request`
+-- (JSON strings authored by service operators). Keyed on plugin_conf
+-- table identity — Kong creates a new plugin_conf table on every Admin
+-- API update, which invalidates the cache automatically. Previously
+-- cjson.decode ran twice per rule per request (pcall validate + actual
+-- decode); now it runs once per (worker, plugin_conf) lifetime.
+-- The returned table carries two views:
+--   .all    : every parsed rule, used as the cross-phase
+--             kong.ctx.plugin.local_rules (header_filter / body_filter
+--             / mcp_event filter by .phase).
+--   .access : the subset whose .phase == "access", consumed directly
+--             by the access-phase rule loop.
+local get_local_request_rules = function(plugin_conf)
+  if not plugin_conf.rules_request or #plugin_conf.rules_request == 0 then
+    return { all = {}, access = {} }
+  end
+  local key = "local_request_rules:" .. tostring(plugin_conf)
+  local cached = ka_rules:get(key)
+  if cached then return cached end
+
+  local all = {}
+  local access = {}
+  for _, req_rule_raw in pairs(plugin_conf.rules_request) do
+    local ok, req_rule_or_err = pcall(cjson.decode, req_rule_raw)
+    if ok then
+      table.insert(all, req_rule_or_err)
+      if req_rule_or_err.phase == "access" then
+        table.insert(access, req_rule_or_err)
+      end
+    else
+      kong.log.err("Error parsing JSON rule: " .. tostring(req_rule_or_err))
+    end
+  end
+
+  ka_compile.compile_rules(all, plugin_conf)
+
+  local result = { all = all, access = access }
+  ka_rules:set(key, result)
+  return result
 end
 
 -- Lightweight `%{var}` resolver for access-phase callers that need to
@@ -738,28 +784,13 @@ function plugin:access(plugin_conf)
   -- get dfiles
   local dfiles = ka_rules:get("ka_dfiles")
 
-  -- get service local request rules
-  local local_rules_request = {}
-  -- Initialize the cross-phase cache so header_filter / body_filter (and
-  -- MCP's mcp_event phase) can reach for the parsed local rules without
-  -- re-parsing the plugin_conf JSON strings.
-  kong.ctx.plugin.local_rules = {}
-
-  if plugin_conf.rules_request and #plugin_conf.rules_request > 0 then
-    for _,req_rule_raw in pairs(plugin_conf.rules_request) do
-      local rule_is_valid, rule_parser_error = pcall(cjson.decode, req_rule_raw)
-      if rule_is_valid then
-        local req_rule = cjson.decode(req_rule_raw)
-        table.insert(kong.ctx.plugin.local_rules, req_rule)
-        if req_rule.phase == "access" then
-          kong.log.debug("Adding local request rule ID: "..req_rule.id.." to access phase")
-          table.insert(local_rules_request, req_rule)
-        end
-      else
-        kong.log.err("Error parsing JSON rule: "..rule_parser_error)
-      end
-    end
-  end
+  -- get service local request rules from the per-plugin_conf cache.
+  -- The cache carries both the full list (for cross-phase consumption
+  -- via kong.ctx.plugin.local_rules) and the access-phase subset.
+  -- See get_local_request_rules for the cache key + parse contract.
+  local local_request_rules_cache = get_local_request_rules(plugin_conf)
+  kong.ctx.plugin.local_rules = local_request_rules_cache.all
+  local local_rules_request = local_request_rules_cache.access
 
   -- Over the argument-count limit (detection mode): the body parsed clean
   -- but carries more args than limit_arg_num. Skip all rule evaluation —

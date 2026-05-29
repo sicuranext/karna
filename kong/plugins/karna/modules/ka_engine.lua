@@ -94,6 +94,7 @@ local seclang                           = require "kong.plugins.karna.ka_seclang
 local libinjection                      = require "kong.plugins.karna.libinjection"
 
 local ka_rules_crs_fix                  = require "kong.plugins.karna.ka_rules_crs_fix"
+local ka_compile                        = require "kong.plugins.karna.ka_compile"
 
 -- module-level debug flag for hot-path gating (set in loop_rules from plugin_conf.private_debug)
 local private_debug_enabled = false
@@ -345,6 +346,15 @@ _M.load_rules = function(self)
     -- Invalidate the lowercased-dfile memo so it's rebuilt against the
     -- freshly-loaded data files on the next pmFromFile match.
     _M._ka_dfiles_lower = {}
+
+    -- Compile rules into closures (workstream #2). Stage 1 emits a thin
+    -- wrapper that delegates back to __match_rule_conditions_impl, so
+    -- behaviour is identical to the table-walk; subsequent stages
+    -- specialise the wrapper body in place. compile_rule may return nil
+    -- for shapes the compiler can't handle — those rules keep
+    -- rule._compiled unset and the engine's table-walk fallback fires.
+    local compiled, total = ka_compile.compile_rules(rules, nil)
+    debug("+++++++++> Compiled " .. tostring(compiled) .. "/" .. tostring(total) .. " rules into closures")
 
     debug("+++++++++> Sending " .. tostring(#rules) .. " rules")
 
@@ -1753,23 +1763,34 @@ local function pf_extract_literals(pattern)
     return set
 end
 
+-- Public match entry point. Three responsibilities:
+--   1) Honour the rule_control "rule removed" directive set earlier in
+--      this request (CRS exclusion plugins, ctl:ruleRemoveById, the
+--      `coreruleset_fix` overrides). Hits before any matching work.
+--   2) Prefer the per-rule compiled closure when ka_compile has attached
+--      one at init_worker / dynamic-rule load time (workstream #2).
+--   3) Fall through to the table-walk in `__match_rule_conditions_impl`
+--      for rules whose shape the compiler can't yet handle. The two
+--      paths coexist permanently; the compiler is allowed to refuse.
 _M.__match_rule_conditions = function(self, rule, plugin_conf)
-    -- check if rule has been removed by a rule_control
     if self:__rule_control_rule_removed(rule) then
         return false, nil
     end
-
-    -- Rule-to-closure JIT path (workstream #2). When `compile_rule`
-    -- has attached a closure to `rule._compiled` at init_worker (or
-    -- lazily at dynamic-rule load time), prefer it over the table-walk
-    -- below. Stage 0 is no-op (compile_rule returns nil for every rule);
-    -- stages 1-5 progressively replace the table-walk for rules whose
-    -- shape the compiler can handle. Unhandled shapes leave _compiled
-    -- nil and fall through here. Both paths coexist permanently.
     if rule._compiled then
         return rule._compiled(self, plugin_conf)
     end
+    return self:__match_rule_conditions_impl(rule, plugin_conf)
+end
 
+-- The original table-walk match path. Kept verbatim — every variable,
+-- transform, operator, capture, and chain semantic invariant lives
+-- here. Stages 2-5 of the closure compiler progressively specialise
+-- subsets of this dispatch by emitting inline source per rule that
+-- bypasses the runtime dispatch tables but still calls the same
+-- per-step helpers via upvalues. This function therefore stays the
+-- canonical reference: when behaviour diverges between a compiled
+-- closure and this body, the closure is wrong.
+_M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
     --kong.log.debug("\n\n")
     --kong.log.debug("Matching rule " .. tostring(rule.id) .. " for phase " .. rule.phase)
 
