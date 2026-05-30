@@ -1,4 +1,5 @@
 local re_match  = ngx.re.match
+local re_find   = ngx.re.find
 local _M = {}
 
 -- Escape Lua pattern metacharacters in an arbitrary string so it can be
@@ -124,11 +125,17 @@ function _M.parse(self, body, content_type)
     -- accept bare `\n` and split the body differently from a strict
     -- WAF — a documented bypass class. Pre-scan once; if clean, the
     -- `\r?\n` gmatch below is safe.
+    -- The two body-wide scans use ngx.re (PCRE, JIT-compiled + cached via the
+    -- 'jo' flags) instead of Lua `string.find` patterns: on a multi-KB body the
+    -- interpreted Lua-pattern char-class scan was ~12% of multipart request CPU
+    -- (jit.p, scn05 3x10KB); PCRE-JIT scans the same bytes ~10x faster. Same
+    -- semantics ([^\r]\n = bare LF mid-body, \r[^\n] = bare CR mid-body); the
+    -- start/end-byte edge cases stay as cheap sub() checks. CRS-regression-gated.
     if self.strict_crlf then
-        if body:sub(1, 1) == "\n" or body:find("[^\r]\n") then
+        if body:sub(1, 1) == "\n" or re_find(body, "[^\\r]\\n", "jo") then
             return nil, "bare LF found in body (strict CRLF required)"
         end
-        if body:find("\r[^\n]") or body:sub(-1) == "\r" then
+        if re_find(body, "\\r[^\\n]", "jo") or body:sub(-1) == "\r" then
             return nil, "bare CR found in body (strict CRLF required)"
         end
     end
