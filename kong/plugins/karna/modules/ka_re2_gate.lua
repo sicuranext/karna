@@ -36,13 +36,33 @@ local _M = {}
 -- (fixes the scn09 regression where the earlier "disable on body" approach paid
 -- the scan cost without skipping). Helpers take no self -> dot-call; both cache
 -- on kong.ctx.plugin so repeated calls are cheap.
+-- Body values EXCLUDING uploaded file content (.file_content: keys). The
+-- broader namespace these resolvers cover (XML nodes, multipart field/file
+-- NAMES, extensions) lives under other keys; the multi-KB file bytes do NOT
+-- gate any PL1 @rx (CRS doesn't inspect file content by default — same scope
+-- decision as f795a49 keeping file bytes out of ARGS). Scanning them in the
+-- pre-pass was pure cost (measured: ~-6% on the 3x10KB multipart scenario).
+-- Filtering them keeps gating sound (validated by the CRS regression empty-diff)
+-- while removing the file-byte transform+scan tax.
+local function body_values_no_file(engine)
+    local v = engine.__get_values_request_body(false)
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, val in pairs(v) do
+        if not string.find(k, ".file_content:", 1, true) then
+            out[k] = val
+        end
+    end
+    return out
+end
+
 local GATE_EXTRA_RESOLVERS = {
     ["request.cookie.name"]             = function(engine) return engine.__get_values_request_cookie(false) end,
-    ["request.body.xml.value"]          = function(engine) return engine.__get_values_request_body(false) end,
-    ["request.body.xml.attr.value"]     = function(engine) return engine.__get_values_request_body(false) end,
-    ["request.file"]                    = function(engine) return engine.__get_values_request_body(false) end,
-    ["request.body.multipart.filename"] = function(engine) return engine.__get_values_request_body(false) end,
-    ["request.body.multipart.name"]     = function(engine) return engine.__get_values_request_body(false) end,
+    ["request.body.xml.value"]          = body_values_no_file,
+    ["request.body.xml.attr.value"]     = body_values_no_file,
+    ["request.file"]                    = body_values_no_file,
+    ["request.body.multipart.filename"] = body_values_no_file,
+    ["request.body.multipart.name"]     = body_values_no_file,
 }
 
 -- Build the gate over a rule list. Returns a gate table, or nil if RE2 is
