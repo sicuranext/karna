@@ -95,9 +95,46 @@ local libinjection                      = require "kong.plugins.karna.libinjecti
 
 local ka_rules_crs_fix                  = require "kong.plugins.karna.ka_rules_crs_fix"
 local ka_compile                        = require "kong.plugins.karna.ka_compile"
+local ka_ac                             = require "kong.plugins.karna.ka_ac"
 
 -- module-level debug flag for hot-path gating (set in loop_rules from plugin_conf.private_debug)
 local private_debug_enabled = false
+
+-- module-level flag: replace Lua @pm/@pmFromFile loops with libka_ac (set in
+-- loop_rules from plugin_conf.engine_ac_pm). Aho-Corasick automata are built
+-- lazily and cached per keyword-set (race-safe: pure function of a static key,
+-- same idempotent-write policy as _ka_dfiles_lower).
+local ac_pm_enabled = false
+local _ka_ac_available = ka_ac and ka_ac.available()
+_M._ka_ac_cache = {}
+
+-- Get-or-build a cached AC automaton for a keyword list. `key` namespaces the
+-- cache (F: @pmFromFile / P: @pm); `keywords_fn` produces the list on a miss.
+-- Empty/oversized inputs => false (caller falls back to the Lua loop). The
+-- cache is bounded so a macro-varying @pm value can't grow it unbounded.
+local _ka_ac_cache_count = 0
+local function ac_get(key, keywords_fn)
+    local cached = _M._ka_ac_cache[key]
+    if cached ~= nil then return cached end
+    local h = false
+    if _ka_ac_cache_count < 1024 then
+        local raw = keywords_fn()
+        if type(raw) == "table" and #raw > 0 then
+            local kws = {}
+            for i = 1, #raw do
+                local w = raw[i]
+                if type(w) == "string" and #w > 0 then kws[#kws + 1] = w end
+            end
+            if #kws > 0 then
+                local built = ka_ac.build(kws)
+                if built then h = built end
+            end
+        end
+    end
+    _M._ka_ac_cache[key] = h
+    _ka_ac_cache_count = _ka_ac_cache_count + 1
+    return h
+end
 
 local cjson                             = require "cjson"
 local cjson_safe                        = require "cjson.safe"
@@ -924,6 +961,7 @@ end
 -- terminal response handling for this path.
 _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
     private_debug_enabled = plugin_conf.private_debug or false
+    ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
 
     local matched = {}
     if not raw_rules or #raw_rules == 0 then return matched end
@@ -956,6 +994,7 @@ end
 _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
     -- update module-level debug flag from plugin_conf for hot-path gating
     private_debug_enabled = plugin_conf.private_debug or false
+    ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
 
     -- ctl:ruleEngine=Off short-circuit. A previously-evaluated rule
     -- (typically from a CRS exclusion plugin like wordpress-rule-exclusions)
@@ -1206,6 +1245,23 @@ _M.__match_op_libinjection_sqli = function(variable_name, value_to_match_on)
     return false, nil
 end
 _M.__match_op_pm = function(variable_name, valute_to_match_on, condition_value)
+    -- AC fast path: one linear pass instead of N escaped-substring matches.
+    -- @pm is plain phrase match (the escaping makes each keyword literal), so
+    -- the AC's case-insensitive substring membership is semantically identical.
+    if ac_pm_enabled then
+        local h = ac_get("P:" .. condition_value, function()
+            local kws = {}
+            for w in string_gmatch(condition_value, "%S+") do kws[#kws + 1] = w end
+            return kws
+        end)
+        if h then
+            if ka_ac.match_any(h, valute_to_match_on) then
+                return true, { ["matched_on"] = variable_name,
+                               ["matched_value"] = string.sub(valute_to_match_on, 1, 100) }
+            end
+            return false, nil
+        end
+    end
     -- split condition_value_resolved by whitespace
     local condition_values = {}
     for w in string_gmatch(condition_value, "%S+") do
@@ -1234,6 +1290,19 @@ _M._ka_dfiles_lower = {}
 _M.__match_op_pmFromFile = function(variable_name, value_to_match_on, condition_value)
     local ka_dfiles = _M._ka_dfiles
     if ka_dfiles and ka_dfiles[condition_value] then
+        -- AC fast path: one linear pass over the value instead of looping the
+        -- whole keyword file with string.find per entry. Same case-insensitive
+        -- plain-substring semantics (ka_ac lowercases ASCII, like :lower()).
+        if ac_pm_enabled then
+            local h = ac_get("F:" .. condition_value, function() return ka_dfiles[condition_value] end)
+            if h then
+                if ka_ac.match_any(h, value_to_match_on) then
+                    return true, { ["matched_on"] = variable_name,
+                                   ["matched_value"] = string.sub(value_to_match_on, 1, 100) }
+                end
+                return false, nil
+            end
+        end
         local lowered = _M._ka_dfiles_lower[condition_value]
         if not lowered then
             lowered = {}

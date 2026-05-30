@@ -22,6 +22,12 @@ local schema = {
           -- A/B via Admin-API PATCH on a warm container. Falls back to the
           -- pure-Lua @rx path when the lib is missing or a pattern is rejected.
           { engine_re2_scan = { type = "boolean", default = false } },
+          -- engine_ac_pm: replace the Lua @pm / @pmFromFile keyword loops with
+          -- a C Aho-Corasick (libka_ac.so) one-pass match. ~16% of benign CPU
+          -- post-RE2 was @pm/@pmFromFile looping ~17 keyword files (157KB) per
+          -- value. Default off; A/B via Admin-API PATCH. Falls back to the Lua
+          -- loop when the lib is missing.
+          { engine_ac_pm = { type = "boolean", default = false } },
           { local_rules_enabled = { type = "boolean", default = true } },
 
           -- MCP (Model Context Protocol) — see modules/ka_mcp.lua.

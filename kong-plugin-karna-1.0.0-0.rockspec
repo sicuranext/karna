@@ -38,6 +38,7 @@ build = {
     ["kong.plugins."..pluginName..".ka_compile"]      = "kong/plugins/"..pluginName.."/modules/ka_compile.lua",
     ["kong.plugins."..pluginName..".ka_re2"]          = "kong/plugins/"..pluginName.."/modules/ka_re2.lua",
     ["kong.plugins."..pluginName..".ka_re2_gate"]     = "kong/plugins/"..pluginName.."/modules/ka_re2_gate.lua",
+    ["kong.plugins."..pluginName..".ka_ac"]           = "kong/plugins/"..pluginName.."/modules/ka_ac.lua",
 
     ["kong.plugins."..pluginName..".libinjection"]    = "kong/plugins/"..pluginName.."/modules/libinjection.lua",
     ["kong.plugins."..pluginName..".slaxml"]          = "kong/plugins/"..pluginName.."/modules/slaxml.lua",

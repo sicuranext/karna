@@ -115,6 +115,7 @@ services:
       cd /usr/local/kong/custom-plugins/karna/ &&
       luarocks make &&
       ( g++ -shared -fPIC -O2 -std=c++17 -o /usr/local/lib/libka_re2.so src/libka_re2/ka_re2.cc -lre2 && ldconfig || echo 'libka_re2 build failed (engine_re2_scan falls back to Lua)' ) &&
+      ( gcc -shared -fPIC -O2 -o /usr/local/lib/libka_ac.so src/libka_ac/ka_ac.c && ldconfig || echo 'libka_ac build failed (engine_ac_pm falls back to Lua)' ) &&
       kong migrations bootstrap &&
       kong migrations up &&
       kong migrations finish &&
