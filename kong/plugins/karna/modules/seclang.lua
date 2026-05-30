@@ -426,31 +426,15 @@ function seclang.__variables_to_conditions(variables)
         end
     end
 
-    -- Compact the (possibly sparse) ordered_variable_list into a dense
-    -- 1..N array. Slots 1-3 hold arg.value / arg.name / path_with_query
-    -- when present; every other variable occupies 4..(order_start_with-1).
-    -- The previous `while i <= #ordered_variable_list` compaction was a
-    -- no-op whenever slot 1 was empty: `#` of a table with only e.g.
-    -- key [4] set is 0 in LuaJIT, so `1 <= 0` is false and the loop never
-    -- ran — leaving single-variable rules (request.method,
-    -- request.header.value:host, request.raw_path, request.arg.name, …)
-    -- stranded at key 4 with `#variables == 0`. The engine matches them
-    -- fine (it iterates with `pairs`), but `#`-based consumers silently
-    -- mis-handled them: (a) the RE2 @rx gate excluded them
-    -- (ka_re2_gate build() tests `#c1.variables == 0`), (b) the stage-3
-    -- precompiled resolver was skipped (ka_compile tests `#variables > 0`
-    -- + ipairs), so they fell to the slow dispatcher even when they ran,
-    -- and (c) `matched_on` came out empty (table.concat stops at the
-    -- first nil). Rebuild explicitly across the full key range so the
-    -- result is a proper dense array regardless of which leading slots
-    -- are empty.
-    local compacted = {}
-    for k = 1, order_start_with - 1 do
-        if ordered_variable_list[k] ~= nil then
-            compacted[#compacted + 1] = ordered_variable_list[k]
+    -- remove nil values from ordered_variable_list
+    local i = 1
+    while i <= #ordered_variable_list do
+        if ordered_variable_list[i] == nil then
+            table.remove(ordered_variable_list, i)
+        else
+            i = i + 1
         end
     end
-    ordered_variable_list = compacted
 
     return ordered_variable_list,rule_control
     --return variable_list,rule_control
