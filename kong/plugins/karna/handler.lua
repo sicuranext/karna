@@ -838,7 +838,13 @@ function plugin:access(plugin_conf)
   local plugin_dyn_rules = get_plugin_dynamic_rules(plugin_conf)
   apply_pass_rule_controls(plugin_conf, plugin_dyn_rules, "access")
 
-  kong.log.inspect(kong.ctx.plugin.rule_controls)
+  -- Diagnostic dump of the resolved rule_controls. This used to run
+  -- unconditionally on every access request (a full inspect-library
+  -- table serialization in the hot path); gate it behind private_debug
+  -- like every other diagnostic so production traffic doesn't pay it.
+  if plugin_conf.private_debug then
+    kong.log.inspect(kong.ctx.plugin.rule_controls)
+  end
 
   -- loop local rules
   if plugin_conf.local_rules_enabled then
