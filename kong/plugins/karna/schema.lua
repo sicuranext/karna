@@ -13,21 +13,22 @@ local schema = {
           { set_karna_headers = { type = "boolean", default = false } },
           { engine_blocking_mode = { type = "boolean", default = false } },
           { coreruleset_enabled = { type = "boolean", default = true } },
-          { engine_fast_path = { type = "boolean", default = false } },
-          -- engine_re2_scan: Direction B spike (memory karna-re2-spike).
-          -- When true (and libka_re2.so is loadable), gate per-rule @rx
-          -- evaluation with a single RE2::Set scan per request value — rules
-          -- whose @rx matched nothing are skipped; matched ones still run the
-          -- full Lua path (captures/chain/setvar stay in Lua). Default off;
-          -- A/B via Admin-API PATCH on a warm container. Falls back to the
-          -- pure-Lua @rx path when the lib is missing or a pattern is rejected.
-          { engine_re2_scan = { type = "boolean", default = false } },
+          -- engine_fast_path: skip the per-rule ARGS deep-copy when no
+          -- rule_control mutation is pending. Sound, +5-7%. Default ON.
+          { engine_fast_path = { type = "boolean", default = true } },
+          -- engine_re2_scan: gate per-rule @rx evaluation with a single
+          -- RE2::Set scan per request value — rules whose @rx matched nothing
+          -- are skipped; matched ones still run the full Lua path
+          -- (captures/chain/setvar stay in Lua). ~2x benign throughput, sound
+          -- (CRS regression empty-diff). Default ON; falls back to the pure-Lua
+          -- @rx path when libka_re2.so is missing or a pattern is RE2-rejected.
+          { engine_re2_scan = { type = "boolean", default = true } },
           -- engine_ac_pm: replace the Lua @pm / @pmFromFile keyword loops with
-          -- a C Aho-Corasick (libka_ac.so) one-pass match. ~16% of benign CPU
-          -- post-RE2 was @pm/@pmFromFile looping ~17 keyword files (157KB) per
-          -- value. Default off; A/B via Admin-API PATCH. Falls back to the Lua
-          -- loop when the lib is missing.
-          { engine_ac_pm = { type = "boolean", default = false } },
+          -- a C Aho-Corasick (libka_ac.so) one-pass match (~16% of benign CPU
+          -- was looping ~17 keyword files/157KB per value). +18% on top of RE2,
+          -- sound. Default ON; falls back to the Lua loop when libka_ac.so is
+          -- missing.
+          { engine_ac_pm = { type = "boolean", default = true } },
           { local_rules_enabled = { type = "boolean", default = true } },
 
           -- MCP (Model Context Protocol) — see modules/ka_mcp.lua.

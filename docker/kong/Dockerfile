@@ -69,4 +69,16 @@ RUN set -eux; \
     apt-get purge -y --auto-remove git curl; \
     rm -rf /var/lib/apt/lists/*
 
+# Karna native libs baked into the image so the default-on engine flags work
+# out of the box (engine_re2_scan -> libka_re2.so, engine_ac_pm -> libka_ac.so).
+# The dev compose ALSO recompiles these from the bind-mounted source at startup
+# (for C iteration without an image rebuild); that just overwrites these.
+COPY src/libka_re2 /tmp/libka_re2
+COPY src/libka_ac  /tmp/libka_ac
+RUN set -eux; \
+    g++ -shared -fPIC -O2 -std=c++17 -o /usr/local/lib/libka_re2.so /tmp/libka_re2/ka_re2.cc -lre2; \
+    gcc -shared -fPIC -O2 -o /usr/local/lib/libka_ac.so /tmp/libka_ac/ka_ac.c; \
+    ldconfig; \
+    rm -rf /tmp/libka_re2 /tmp/libka_ac
+
 # compose overrides USER to root so luarocks can install plugin to /usr/local
