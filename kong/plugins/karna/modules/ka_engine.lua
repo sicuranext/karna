@@ -4759,18 +4759,21 @@ end
 
 _M.__apply_transformation = function(self, tfunc, value)
     -- Cache key: `tfunc \1 value` used directly as a Lua table key.
-    -- The previous implementation md5'd this — pointless: LuaJIT
-    -- hashes string keys natively, and the md5 itself was ~7% of
-    -- total request CPU on benign traffic (jit.p, 2026-05-26) because
-    -- it ran on every transform of every value. The `\1` separator
-    -- can't appear in a transform-function name, so there's no
-    -- collision between e.g. (tfunc="ab",value="c") and
-    -- (tfunc="a",value="bc"). The transform cache still earns its
-    -- keep within a request (the same arg value is lowercased /
-    -- urldecoded by dozens of rules that share the transform).
-    local cache_key = tfunc .. "\1" .. value
-
-    local cached = kong.ctx.plugin.ka_value_cache[cache_key]
+    -- Per-(tfunc, value) memo in a NESTED table: ka_tx_cache[tfunc][value].
+    -- The previous flat key `tfunc.."\1"..value` rebuilt an O(len) string on
+    -- EVERY call (cache hits included). jit.p (2026-05-31) put that single
+    -- concat at ~40% of request CPU on big-arg traffic (scn03 big-urlencoded)
+    -- and ~20% on scn02 — the #1 hotspot. Nesting lets LuaJIT hash the existing
+    -- `value` string directly (no new key string), and tfunc-as-outer-key
+    -- removes the separator-collision concern entirely. Kept separate from
+    -- ka_value_cache (which memoises @pm matchers under flat keys) so the two
+    -- never alias. kong.ctx.plugin is per-request, so lazy-init yields a fresh
+    -- cache each request.
+    local txc = kong.ctx.plugin.ka_tx_cache
+    if txc == nil then txc = {}; kong.ctx.plugin.ka_tx_cache = txc end
+    local sub = txc[tfunc]
+    if sub == nil then sub = {}; txc[tfunc] = sub end
+    local cached = sub[value]
     if cached ~= nil then
         return cached
     end
@@ -5185,8 +5188,8 @@ _M.__apply_transformation = function(self, tfunc, value)
     end
 
 
-    -- save to cache
-    kong.ctx.plugin.ka_value_cache[cache_key] = result_string
+    -- save to cache (nested: ka_tx_cache[tfunc][value])
+    sub[value] = result_string
 
     return result_string
 end
