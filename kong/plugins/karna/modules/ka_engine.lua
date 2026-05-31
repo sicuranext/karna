@@ -111,6 +111,14 @@ local ka_re2 = require "kong.plugins.karna.ka_re2"
 -- at init on condition._re2_re; RE2-rejected patterns (lookaround/backref) fall
 -- back to ngx.re.match. Set per-request in loop_rules from plugin_conf.
 local re2_match_enabled = false
+-- engine_skip_body_rules: skip rules that provably cannot fire without a
+-- request body (cond1+ is a positive per-value op over body-only variables —
+-- multipart / json / xml / urlencoded body, uploaded files). `_needs_body` is
+-- precomputed at init (ka_compile); `has_body` is computed once per request
+-- from Content-Length (matching the body parser's own gate, so behaviour is
+-- identical to letting those rules resolve-empty-and-bail). Set per-request in
+-- loop_rules from plugin_conf.
+local skip_body_rules_enabled = false
 local _ka_ac_available = ka_ac and ka_ac.available()
 _M._ka_ac_cache = {}
 
@@ -969,9 +977,17 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
     private_debug_enabled = plugin_conf.private_debug or false
     ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
     re2_match_enabled = (plugin_conf.engine_re2_match == true) and ka_re2.available()
+    skip_body_rules_enabled = (plugin_conf.engine_skip_body_rules == true)
 
     local matched = {}
     if not raw_rules or #raw_rules == 0 then return matched end
+
+    -- engine_skip_body_rules: see loop_rules for the rationale. Body presence
+    -- is resolved once and gates body-only rules out of the pass.
+    local has_body = true
+    if skip_body_rules_enabled then
+        has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
+    end
 
     -- ctl:ruleEngine=Off short-circuit: a previously-applied control
     -- in this same evaluator pass could have flipped this on. Respect
@@ -983,7 +999,8 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
 
     for _, rule in pairs(raw_rules) do
         if kong.ctx.plugin.rule_controls.engine_off then break end
-        if rule.phase == phase then
+        if not (skip_body_rules_enabled and rule._needs_body and not has_body)
+           and rule.phase == phase then
             local rule_pl = tonumber(rule.paranoia_level) or 1
             local cfg_pl = tonumber(plugin_conf.paranoia_level) or 1
             if rule_pl <= cfg_pl then
@@ -1003,6 +1020,7 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
     private_debug_enabled = plugin_conf.private_debug or false
     ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
     re2_match_enabled = (plugin_conf.engine_re2_match == true) and ka_re2.available()
+    skip_body_rules_enabled = (plugin_conf.engine_skip_body_rules == true)
 
     -- ctl:ruleEngine=Off short-circuit. A previously-evaluated rule
     -- (typically from a CRS exclusion plugin like wordpress-rule-exclusions)
@@ -1042,7 +1060,23 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
             end
         end
 
+        -- engine_skip_body_rules: a rule whose gating condition is a positive
+        -- per-value op over body-only variables (multipart / json / xml /
+        -- urlencoded body, uploaded files) cannot match when the request
+        -- carries no body. Resolve body presence once: Content-Length > 0
+        -- mirrors the body parser's own gate (`__get_values_request_body`),
+        -- so skipping here is behaviour-identical to letting each such rule
+        -- resolve an empty values-table and bail. Default-off; has_body stays
+        -- true when the flag is off, so the per-rule guard is a no-op.
+        local has_body = true
+        if skip_body_rules_enabled then
+            has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
+        end
+
         for _,rule in pairs(raw_rules) do
+            if skip_body_rules_enabled and rule._needs_body and not has_body then
+                goto continue
+            end
             -- if plugin_conf.private_debug and request header x-karna-test-rule-id is set, filter rule.id for the header value
             -- Helper rules (no `fixed_response` action — i.e. `pass`-action
             -- ctl:/setvar: rules) are ALWAYS allowed through, even when a

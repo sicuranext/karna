@@ -87,6 +87,7 @@ local ka_re2 = require "kong.plugins.karna.ka_re2"
 local _RULE_INTERNAL_FIELDS = {
     _compiled        = true,
     _compiled_logged = true,
+    _needs_body      = true,  -- precomputed "rule cannot fire without a request body" flag
 }
 
 local _CONDITION_INTERNAL_FIELDS = {
@@ -435,10 +436,72 @@ end
 --                          or nil (engine falls back to dispatcher).
 -- Init-worker / dynamic-rule-load mutation only — same policy as
 -- `condition._ka_pf_lits` (see comment block at ka_engine.lua:1782).
+-- A variable is "body-only" when it resolves to an EMPTY values-table
+-- whenever the request carries no body. Such a variable is produced solely
+-- by the request-body parser (multipart / json / xml / urlencoded body, or
+-- uploaded files). Query args, headers, cookies, URI etc. are explicitly NOT
+-- body-only (ARGS in particular mixes query + body, so it can match on the
+-- query alone). Count / size / processor variables are excluded because they
+-- CAN match on an absent body (e.g. `&FILES @eq 0`, `REQBODY_PROCESSOR`
+-- derived from Content-Type) — treating them as body-only would wrongly skip
+-- a rule that fires precisely on "no body present".
+local function is_body_only_var(v)
+    if type(v) ~= "string" then return false end
+    if v == "request.body.processor"
+       or v:find("%.count$")
+       or v:find("%.combined_size$")
+       or v:find("%.length$") then
+        return false
+    end
+    if v == "request.body" or v == "request.body.value" then return true end
+    return v:find("^request%.body%.json")      == 1
+        or v:find("^request%.body%.xml")       == 1
+        or v:find("^request%.body%.urlencode") == 1
+        or v:find("^request%.body%.multipart") == 1
+        or v:find("^request%.file")            == 1
+end
+
+-- Ops that DON'T fail-closed on an empty values-table: `unconditionalMatch`
+-- always fires; `isSet` is a presence test (and its negation fires on
+-- absence). A condition using one of these — even on a body-only variable —
+-- could still fire without a body, so it must NOT contribute to `_needs_body`.
+local _NON_BODY_GATING_OPS = {
+    unconditionalMatch = true,
+    isSet              = true,
+}
+
+-- A condition is "body-requiring" when, with no request body present, it
+-- provably CANNOT match: it must be a positive (non-negated) per-value op,
+-- and EVERY one of its variables must be body-only. A positive per-value op
+-- iterates the variable's values; on an empty values-table it runs zero
+-- iterations -> no match. A negated condition is the opposite — it fires on
+-- the empty set — so it never counts. Conservative by construction: when in
+-- doubt the answer is `false` (rule keeps running), so the optimisation can
+-- only ever skip rules that were guaranteed not to fire.
+local function condition_requires_body(condition)
+    local op = condition.op
+    if type(op) ~= "string" then return false end
+    if condition.negated == true or op:sub(1, 1) == "!" then return false end
+    local base = op:sub(1, 1) == "!" and op:sub(2) or op
+    if _NON_BODY_GATING_OPS[base] then return false end
+    local vars = condition.variables
+    if type(vars) ~= "table" then return false end
+    local nvars = 0
+    for _, v in pairs(vars) do
+        nvars = nvars + 1
+        if not is_body_only_var(v) then return false end
+    end
+    return nvars > 0
+end
+
 local function compile_rule_conditions(rule)
     if not rule.conditions then return end
+    local needs_body = false
     for _, condition in ipairs(rule.conditions) do
         if type(condition) == "table" then
+            if not needs_body and condition_requires_body(condition) then
+                needs_body = true
+            end
             if condition.transform then
                 condition._tchain = _M.compile_transform_chain(condition.transform)
             end
@@ -467,6 +530,7 @@ local function compile_rule_conditions(rule)
             end
         end
     end
+    rule._needs_body = needs_body
 end
 
 -- Convenience: compile a list of rules in-place, attaching the closure
