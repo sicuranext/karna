@@ -29,6 +29,19 @@ local schema = {
           -- sound. Default ON; falls back to the Lua loop when libka_ac.so is
           -- missing.
           { engine_ac_pm = { type = "boolean", default = true } },
+          -- engine_re2_match: run the @rx operator's actual match via RE2
+          -- (linear-time, ReDoS-safe BY CONSTRUCTION) instead of ngx.re/PCRE —
+          -- removes the catastrophic-backtracking failure mode on attacker-
+          -- controlled input (the cap that PCRE WAFs rely on aborts an
+          -- *incomplete* match; RE2 needs no cap and matches fully). Covers CRS,
+          -- custom_secrules and rules_request: per-pattern RE2 handles are
+          -- precompiled at init (condition._re2_re); patterns RE2 rejects
+          -- (lookaround/backref) fall back to ngx.re.match — never a silent
+          -- drop. Detection-equivalent: RE2==PCRE captures verified across the
+          -- CRS @rx corpus (5258 comparisons, 0 mismatch) + CRS regression
+          -- empty-diff (flag OFF vs ON). Perf-neutral. Default ON; degrades to
+          -- ngx.re when libka_re2.so is absent (ka_re2.available()).
+          { engine_re2_match = { type = "boolean", default = true } },
           { local_rules_enabled = { type = "boolean", default = true } },
 
           -- MCP (Model Context Protocol) — see modules/ka_mcp.lua.

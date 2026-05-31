@@ -82,6 +82,8 @@ end
 -- code path that JSON-encodes a rule (private_debug response body,
 -- audit log enrichment, …) must skip these — `_compiled` is a Lua
 -- function and `cjson.encode` rejects functions outright.
+local ka_re2 = require "kong.plugins.karna.ka_re2"
+
 local _RULE_INTERNAL_FIELDS = {
     _compiled        = true,
     _compiled_logged = true,
@@ -91,6 +93,7 @@ local _CONDITION_INTERNAL_FIELDS = {
     _ka_pf_lits = true,  -- @rx literal prefilter memo (engine-managed)
     _tchain     = true,  -- precompiled transform chain closure (stage 2)
     _resolvers  = true,  -- precompiled variable resolver array (stage 3)
+    _re2_re     = true,  -- precompiled RE2 single-pattern @rx handle (FFI cdata)
 }
 
 -- Return a 2-level filtered copy of a rule table with engine-internal
@@ -438,6 +441,19 @@ local function compile_rule_conditions(rule)
         if type(condition) == "table" then
             if condition.transform then
                 condition._tchain = _M.compile_transform_chain(condition.transform)
+            end
+            -- Precompile the @rx pattern into a single-pattern RE2 matcher used
+            -- when engine_re2_match is on (linear-time / ReDoS-safe). re_compile
+            -- returns nil for patterns RE2 rejects (lookaround / backref) -> the
+            -- engine keeps that condition on ngx.re.match (fallback, never a
+            -- silent drop). Covers both positive and negated @rx.
+            local cop = condition.op
+            if type(cop) == "string" then
+                local cbase = cop:sub(1, 1) == "!" and cop:sub(2) or cop
+                if cbase == "rx" and type(condition.value) == "string"
+                   and condition.value ~= "" then
+                    condition._re2_re = ka_re2.re_compile(condition.value, true)
+                end
             end
             if type(condition.variables) == "table" and #condition.variables > 0 then
                 local resolvers = {}

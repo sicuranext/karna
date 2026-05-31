@@ -33,6 +33,12 @@ int       ka_re2_compile(ka_re2_t*);
 int       ka_re2_match(ka_re2_t*, const char* text, size_t text_len, int* out_ids, int max_ids);
 size_t    ka_re2_size(const ka_re2_t*);
 void      ka_re2_free(ka_re2_t*);
+
+typedef struct ka_re2_re_t ka_re2_re_t;
+ka_re2_re_t* ka_re2_re_new(const char* pattern, size_t pattern_len, int dot_nl);
+int          ka_re2_re_ngroups(const ka_re2_re_t*);
+int          ka_re2_re_match(ka_re2_re_t*, const char* text, size_t text_len, int* out_start, int* out_len, int ngroups);
+void         ka_re2_re_free(ka_re2_re_t*);
 ]]
 
 local _M = {}
@@ -140,6 +146,49 @@ function _M.matched_set(h, text)
         out[h._out[k]] = true
     end
     return out
+end
+
+-- ---------------------------------------------------------------------------
+-- Single-pattern @rx matcher WITH captures — the RE2 drop-in for ngx.re.match
+-- on the @rx operator path. Returns the SAME shape ngx.re.match gave:
+-- m[0] = whole match, m[1..n] = capture groups (false for an unmatched optional
+-- group), or nil on no match — so __match_op_rx can swap engines unchanged and
+-- gain RE2's linear-time / ReDoS-safe-by-construction guarantee on
+-- attacker-controlled input.
+-- ---------------------------------------------------------------------------
+local sub = string.sub
+
+-- re_compile(pattern, dot_nl) -> handle, or nil if RE2 rejects the pattern
+-- (unsupported syntax: lookaround / backreference — the caller MUST keep that
+-- rule on the ngx.re.match path, NEVER silent-drop). dot_nl default true ('s').
+function _M.re_compile(pattern, dot_nl)
+    if not _loadlib() then return nil end
+    if type(pattern) ~= "string" or pattern == "" then return nil end
+    local raw = lib.ka_re2_re_new(pattern, #pattern, dot_nl == false and 0 or 1)
+    if raw == nil then return nil end          -- RE2 refused the pattern
+    local re = ffi.gc(raw, lib.ka_re2_re_free)
+    local ng = tonumber(lib.ka_re2_re_ngroups(re))
+    if not ng or ng < 0 then ng = 0 end
+    return {
+        _re    = re,
+        ng     = ng,
+        _start = ffi_new("int[?]", ng + 1),    -- reused per worker (single-threaded)
+        _len   = ffi_new("int[?]", ng + 1),
+    }
+end
+
+-- re_match(handle, text) -> m (ngx.re.match-shaped) or nil on no match.
+function _M.re_match(h, text)
+    if h == nil then return nil end
+    local r = lib.ka_re2_re_match(h._re, text, #text, h._start, h._len, h.ng)
+    if r ~= 1 then return nil end
+    local m = {}
+    local st, ln = h._start, h._len
+    for i = 0, h.ng do
+        local s = st[i]
+        if s < 0 then m[i] = false else m[i] = sub(text, s + 1, s + ln[i]) end
+    end
+    return m
 end
 
 return _M

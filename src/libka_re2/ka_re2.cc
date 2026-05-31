@@ -112,4 +112,85 @@ void ka_re2_free(ka_re2_t *h)
     delete h;
 }
 
+/* ----------------------------------------------------------------------------
+ * Single-pattern matcher WITH captures (the @rx operator path). See ka_re2.h.
+ * ------------------------------------------------------------------------- */
+
+struct ka_re2_re_t {
+    RE2 *re;
+    int  ngroups;   /* capturing groups 1..n (clamped to 63), excludes group 0 */
+};
+
+ka_re2_re_t *ka_re2_re_new(const char *pattern, size_t pattern_len, int dot_nl)
+{
+    RE2::Options opt;
+    opt.set_log_errors(false);
+    opt.set_dot_nl(dot_nl != 0);
+    /* Byte-mode parity with ngx.re (no 'u' flag) — same rationale as the Set
+     * above: Latin1 treats each byte as its own char, matching PCRE byte
+     * semantics (CRS 941310's malformed-byte evasion etc.). */
+    opt.set_encoding(RE2::Options::EncodingLatin1);
+    opt.set_max_mem(static_cast<int64_t>(64) << 20);  /* generous for one pattern */
+
+    ka_re2_re_t *h = nullptr;
+    try {
+        re2::StringPiece sp(pattern, pattern_len);
+        RE2 *re = new RE2(sp, opt);
+        if (!re->ok()) {            /* unsupported syntax (lookaround/backref) => reject */
+            delete re;
+            return nullptr;
+        }
+        int ng = re->NumberOfCapturingGroups();
+        if (ng < 0)  ng = 0;
+        if (ng > 63) ng = 63;       /* clamp so a fixed 64-int caller buffer fits */
+        h = new ka_re2_re_t();
+        h->re      = re;
+        h->ngroups = ng;
+    } catch (...) {
+        return nullptr;
+    }
+    return h;
+}
+
+int ka_re2_re_ngroups(const ka_re2_re_t *h)
+{
+    return h ? h->ngroups : -1;
+}
+
+int ka_re2_re_match(ka_re2_re_t *h, const char *text, size_t text_len,
+                    int *out_start, int *out_len, int ngroups)
+{
+    if (h == nullptr || h->re == nullptr || text == nullptr ||
+        out_start == nullptr || out_len == nullptr) {
+        return -1;
+    }
+    if (ngroups < 0)  ngroups = 0;
+    if (ngroups > 63) ngroups = 63;
+    const int nsub = ngroups + 1;             /* group 0 (whole) + ngroups */
+    re2::StringPiece sub[64];                 /* nsub <= 64 by the clamp above */
+    re2::StringPiece sp(text, text_len);
+    if (!h->re->Match(sp, 0, text_len, RE2::UNANCHORED, sub, nsub)) {
+        return 0;                             /* no match */
+    }
+    for (int i = 0; i < nsub; i++) {
+        if (sub[i].data() == nullptr) {       /* unmatched optional group */
+            out_start[i] = -1;
+            out_len[i]   = 0;
+        } else {
+            out_start[i] = static_cast<int>(sub[i].data() - text);
+            out_len[i]   = static_cast<int>(sub[i].size());
+        }
+    }
+    return 1;
+}
+
+void ka_re2_re_free(ka_re2_re_t *h)
+{
+    if (h == nullptr) {
+        return;
+    }
+    delete h->re;
+    delete h;
+}
+
 } /* extern "C" */

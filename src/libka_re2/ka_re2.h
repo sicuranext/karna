@@ -78,6 +78,48 @@ size_t ka_re2_size(const ka_re2_t *);
 /* Free everything. NULL-safe. */
 void ka_re2_free(ka_re2_t *);
 
+
+/* ----------------------------------------------------------------------------
+ * Single-pattern matcher WITH capture extraction (the @rx operator path).
+ *
+ * RE2::Set above answers "which patterns match" with NO captures; this answers
+ * "did THIS pattern match THIS value, and what are the capture groups?" — the
+ * exact contract ngx.re.match gave the engine (m[0] = whole match, m[1..n] =
+ * groups). It lets Karna drop ngx.re (PCRE) for the @rx operator and get RE2's
+ * linear-time, ReDoS-safe-by-construction guarantee on attacker-controlled
+ * input — the failure mode a benign benchmark never exercises but real traffic
+ * does. Same byte-mode (Latin1) + dot_nl options as the Set, for detection
+ * parity (validated by the CRS regression empty-diff).
+ * ------------------------------------------------------------------------- */
+typedef struct ka_re2_re_t ka_re2_re_t;
+
+/*
+ * Compile ONE pattern with captures. Returns NULL if RE2 rejects the pattern
+ * (unsupported syntax: backreferences / lookaround). The caller MUST fall that
+ * rule back to ngx.re.match on NULL — NEVER silent-drop (that is a detection
+ * hole). dot_nl as in ka_re2_new (Karna uses "sjo" => pass 1).
+ */
+ka_re2_re_t *ka_re2_re_new(const char *pattern, size_t pattern_len, int dot_nl);
+
+/* Number of capturing groups (1..n; excludes the whole-match group 0). Clamped
+ * to 63 so a fixed (ngroups+1)-int caller buffer of 64 always suffices. */
+int ka_re2_re_ngroups(const ka_re2_re_t *);
+
+/*
+ * Match `text`. On match (returns 1) fills out_start[i] / out_len[i] for
+ * i = 0..ngroups (0 = whole match, 1..ngroups = capture groups) with the BYTE
+ * offset and length of each group's substring inside `text`; an unmatched
+ * optional group gets out_start[i] = -1 (the Lua side maps that to `false`,
+ * exactly like ngx.re.match). Caller buffers must hold (ngroups+1) ints and
+ * `ngroups` should equal ka_re2_re_ngroups(). Returns 1 matched, 0 no match,
+ * -1 on bad input.
+ */
+int ka_re2_re_match(ka_re2_re_t *, const char *text, size_t text_len,
+                    int *out_start, int *out_len, int ngroups);
+
+/* Free. NULL-safe. */
+void ka_re2_re_free(ka_re2_re_t *);
+
 #ifdef __cplusplus
 }
 #endif

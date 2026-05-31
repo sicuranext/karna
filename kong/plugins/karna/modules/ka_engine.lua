@@ -105,6 +105,12 @@ local private_debug_enabled = false
 -- lazily and cached per keyword-set (race-safe: pure function of a static key,
 -- same idempotent-write policy as _ka_dfiles_lower).
 local ac_pm_enabled = false
+local ka_re2 = require "kong.plugins.karna.ka_re2"
+-- engine_re2_match: run the @rx operator's match via RE2 (linear-time, ReDoS-safe
+-- by construction) instead of ngx.re/PCRE. Per-pattern RE2 handles are precompiled
+-- at init on condition._re2_re; RE2-rejected patterns (lookaround/backref) fall
+-- back to ngx.re.match. Set per-request in loop_rules from plugin_conf.
+local re2_match_enabled = false
 local _ka_ac_available = ka_ac and ka_ac.available()
 _M._ka_ac_cache = {}
 
@@ -962,6 +968,7 @@ end
 _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
     private_debug_enabled = plugin_conf.private_debug or false
     ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
+    re2_match_enabled = (plugin_conf.engine_re2_match == true) and ka_re2.available()
 
     local matched = {}
     if not raw_rules or #raw_rules == 0 then return matched end
@@ -995,6 +1002,7 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
     -- update module-level debug flag from plugin_conf for hot-path gating
     private_debug_enabled = plugin_conf.private_debug or false
     ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
+    re2_match_enabled = (plugin_conf.engine_re2_match == true) and ka_re2.available()
 
     -- ctl:ruleEngine=Off short-circuit. A previously-evaluated rule
     -- (typically from a CRS exclusion plugin like wordpress-rule-exclusions)
@@ -1140,10 +1148,15 @@ end
 
 
 
-_M.__match_op_rx = function(variable_name, value_to_match_on, regex)
+_M.__match_op_rx = function(variable_name, value_to_match_on, regex, re2_re)
     if variable_name and value_to_match_on then
         local matched_table = {}
-        local m, _ = safe_re_match(value_to_match_on, regex, "sjo")
+        local m
+        if re2_match_enabled and re2_re then
+            m = ka_re2.re_match(re2_re, value_to_match_on)
+        else
+            m = safe_re_match(value_to_match_on, regex, "sjo")
+        end
         if m then
             matched_table["matched_on"] = variable_name
             -- `matched_value` is the operator-detail field exposed in
@@ -1169,10 +1182,17 @@ _M.__match_op_rx = function(variable_name, value_to_match_on, regex)
     end
     return false, nil
 end
-_M.__match_op_rx_negative = function(variable_name, value_to_match_on, regex)
+_M.__match_op_rx_negative = function(variable_name, value_to_match_on, regex, re2_re)
     if variable_name and value_to_match_on then
         local matched_table = {}
-        local m, engine_error = safe_re_match(value_to_match_on, regex, "sjo")
+        local m, engine_error
+        if re2_match_enabled and re2_re then
+            -- RE2 is linear/total: no backtracking-abort, so engine_error stays
+            -- nil — the fail-closed branch below is simply never taken for RE2.
+            m = ka_re2.re_match(re2_re, value_to_match_on)
+        else
+            m, engine_error = safe_re_match(value_to_match_on, regex, "sjo")
+        end
         -- Fail closed on engine error: a pathological regex must not flip
         -- the negation into a spurious match. See safe_re_match docstring.
         if not m and not engine_error then
@@ -2732,7 +2752,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                             end
                             if run_rx then
                                 local fn = negated and self.__match_op_rx_negative or self.__match_op_rx
-                                rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
+                                rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved, condition._re2_re)
                                 if not negated and rule_condition_has_matched and matched_table then
                                     for krx,vrx in pairs(matched_table) do
                                         local m = string.match(krx, "^matched%_group%_([0-9]+)$")
