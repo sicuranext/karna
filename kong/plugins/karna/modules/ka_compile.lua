@@ -161,15 +161,19 @@ function _M.compile_transform_chain(transforms)
         return nil
     end
 
+    -- `txc` (engine_tx_cache_hoist): the caller passes the already-resolved
+    -- per-request transform cache so __apply_transformation skips its
+    -- kong.ctx.plugin ctx-__index lookup on every step. Threaded straight
+    -- through; nil when the flag is off (engine resolves it per-call).
     local lines = {
-        "return function(engine, value, want_multi)",
+        "return function(engine, value, want_multi, txc)",
         "    local mt = want_multi and {} or nil",
     }
     for _, tfunc in ipairs(transforms) do
         local quoted = string.format("%q", tostring(tfunc))
         lines[#lines + 1] = "    if type(value) == \"string\" then"
         lines[#lines + 1] = "        value = engine:__apply_transformation("
-                            .. quoted .. ", value)"
+                            .. quoted .. ", value, txc)"
         lines[#lines + 1] = "        if mt then mt[#mt + 1] = value end"
         lines[#lines + 1] = "    end"
     end

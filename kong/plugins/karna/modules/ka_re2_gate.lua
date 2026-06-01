@@ -218,6 +218,13 @@ function _M.scan(gate, engine)
     local dummy_rule = {}        -- resolvers take (engine, rule); no rule_control
                                  -- => full namespace = a superset (sound)
 
+    -- Transform-cache hoist: resolve the per-request transform cache ONCE for
+    -- the whole pre-pass and thread it into __apply_transformation, instead of
+    -- a kong.ctx.plugin ctx-__index hit on every (spec × value × chain-step)
+    -- call. Same table the engine would lazily create otherwise.
+    local txc = kong.ctx.plugin.ka_tx_cache
+    if txc == nil then txc = {}; kong.ctx.plugin.ka_tx_cache = txc end
+
     for _, sp in ipairs(gate.specs) do
         local values = resolved[sp.variable]
         if values == nil then
@@ -234,7 +241,7 @@ function _M.scan(gate, engine)
                     local v = raw
                     for ci = 1, nchain do
                         if type(v) == "string" then
-                            v = engine:__apply_transformation(chain[ci], v)
+                            v = engine:__apply_transformation(chain[ci], v, txc)
                         end
                     end
                     -- Scan each DISTINCT post-transform value once. RE2 match is

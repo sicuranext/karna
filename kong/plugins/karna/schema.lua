@@ -42,24 +42,13 @@ local schema = {
           -- empty-diff (flag OFF vs ON). Perf-neutral. Default ON; degrades to
           -- ngx.re when libka_re2.so is absent (ka_re2.available()).
           { engine_re2_match = { type = "boolean", default = true } },
-          -- engine_skip_body_rules: skip rules that provably cannot fire on a
-          -- bodyless request. At init each rule is flagged `_needs_body` when a
-          -- gating condition is a positive per-value op over body-only variables
-          -- (multipart / json / xml / urlencoded body, uploaded files); such a
-          -- rule iterates an empty values-table when no body is present and so
-          -- can never match. Body presence is read once per request from
-          -- Content-Length, matching the body parser's own gate — so the skip is
-          -- behaviour-identical to letting those rules resolve empty and bail
-          -- (no detection change; CRS regression empty-diff gates it). Classifier
-          -- is conservative: count/size/processor vars and negated conditions
-          -- never set `_needs_body`, so it can only skip guaranteed-no-match
-          -- rules. Validated: CRS regression empty-diff (OFF vs ON, baseline
-          -- 2755/2757) + perf-neutral (scn02 pure-GET interleaved A/B = 99.9%;
-          -- the 5/289 body-only CRS rules are all @rx, already gated by the
-          -- RE2::Set pre-pass on GET). Kept as a correctness primitive — also
-          -- covers body rules the RE2 gate misses (engine_re2_scan off, or
-          -- RE2-rejected patterns). Default ON.
-          { engine_skip_body_rules = { type = "boolean", default = true } },
+          -- NOTE: three further engine optimizations are UNCONDITIONAL (no flag)
+          -- because each is detection-neutral, proven by a CRS regression
+          -- empty-diff (baseline 2755/2757): (1) skip body-requiring rules on a
+          -- bodyless request, (2) per-request transform-cache hoist, (3) skip
+          -- multipart-namespace scans on non-multipart bodies. Per project
+          -- policy a sound (no-regression) optimization is not exposed as an
+          -- optional toggle. See modules/ka_engine.lua for the implementations.
           { local_rules_enabled = { type = "boolean", default = true } },
 
           -- MCP (Model Context Protocol) — see modules/ka_mcp.lua.

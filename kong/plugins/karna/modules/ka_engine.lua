@@ -111,16 +111,47 @@ local ka_re2 = require "kong.plugins.karna.ka_re2"
 -- at init on condition._re2_re; RE2-rejected patterns (lookaround/backref) fall
 -- back to ngx.re.match. Set per-request in loop_rules from plugin_conf.
 local re2_match_enabled = false
--- engine_skip_body_rules: skip rules that provably cannot fire without a
--- request body (cond1+ is a positive per-value op over body-only variables —
--- multipart / json / xml / urlencoded body, uploaded files). `_needs_body` is
--- precomputed at init (ka_compile); `has_body` is computed once per request
--- from Content-Length (matching the body parser's own gate, so behaviour is
--- identical to letting those rules resolve-empty-and-bail). Set per-request in
--- loop_rules from plugin_conf.
-local skip_body_rules_enabled = false
+-- The following three engine optimizations are UNCONDITIONAL (no config flag):
+-- each is behaviour-identical / detection-neutral, proven by a CRS regression
+-- empty-diff (off-vs-on, baseline 2755/2757). Per project policy a sound
+-- optimization is not made optional. They were flag-gated only during their
+-- A/B validation; the flags were removed once empty-diff passed.
+--   * skip body-requiring rules on a bodyless request — a rule whose gating
+--     condition is a positive per-value op over body-only variables (multipart
+--     / json / xml / urlencoded body, uploaded files) iterates an empty
+--     values-table with no body, so it can never match. `_needs_body` is
+--     precomputed at init (ka_compile); `has_body` is read once per request
+--     from Content-Length (matches the body parser's own gate).
+--   * transform-cache hoist — resolve kong.ctx.plugin.ka_tx_cache ONCE per RE2
+--     pre-pass / per __match_rule_conditions call and thread it into
+--     __apply_transformation, instead of a ctx-__index metamethod per value.
+--   * skip multipart-namespace scans on non-multipart bodies — the three
+--     full-body pairs() scans only match request.body.multipart.* keys, which
+--     the parser emits solely when request_has_multipart(); otherwise they
+--     iterate every arg and find nothing.
 local _ka_ac_available = ka_ac and ka_ac.available()
 _M._ka_ac_cache = {}
+
+-- Once-per-request "did the body parser route this body as multipart?" memo.
+-- This MUST be the exact predicate the parser dispatches on, otherwise the
+-- skip below could drop a scan that would have matched. The parser routes to
+-- multipart for ANY `multipart` subtype (multipart/form-data, multipart/mixed,
+-- multipart/related, …) via utils:request_body_parser_type() == "multipart"
+-- (string.match(content_type, "multipart")), and only those produce the
+-- request.body.multipart.* keys the gated scans look for. Delegating to that
+-- single source of truth makes the gate identical to the dispatch condition,
+-- so it can never drift (a hand-rolled "multipart/form-data" substring was the
+-- original bug — too narrow on the subtype axis). Memoised on kong.ctx.plugin
+-- (false is cached; nil = unset).
+local function request_has_multipart()
+    local c = kong.ctx.plugin
+    local m = c._ka_has_multipart
+    if m == nil then
+        m = (utils:request_body_parser_type() == "multipart")
+        c._ka_has_multipart = m
+    end
+    return m
+end
 
 -- Get-or-build a cached AC automaton for a keyword list. `key` namespaces the
 -- cache (F: @pmFromFile / P: @pm); `keywords_fn` produces the list on a miss.
@@ -977,17 +1008,14 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
     private_debug_enabled = plugin_conf.private_debug or false
     ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
     re2_match_enabled = (plugin_conf.engine_re2_match == true) and ka_re2.available()
-    skip_body_rules_enabled = (plugin_conf.engine_skip_body_rules == true)
 
     local matched = {}
     if not raw_rules or #raw_rules == 0 then return matched end
 
-    -- engine_skip_body_rules: see loop_rules for the rationale. Body presence
-    -- is resolved once and gates body-only rules out of the pass.
-    local has_body = true
-    if skip_body_rules_enabled then
-        has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
-    end
+    -- Body presence, resolved once: Content-Length > 0 mirrors the body
+    -- parser's gate, so a _needs_body rule skipped here is behaviour-identical
+    -- to letting it resolve an empty values-table and bail.
+    local has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
 
     -- ctl:ruleEngine=Off short-circuit: a previously-applied control
     -- in this same evaluator pass could have flipped this on. Respect
@@ -999,7 +1027,7 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
 
     for _, rule in pairs(raw_rules) do
         if kong.ctx.plugin.rule_controls.engine_off then break end
-        if not (skip_body_rules_enabled and rule._needs_body and not has_body)
+        if not (rule._needs_body and not has_body)
            and rule.phase == phase then
             local rule_pl = tonumber(rule.paranoia_level) or 1
             local cfg_pl = tonumber(plugin_conf.paranoia_level) or 1
@@ -1020,7 +1048,6 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
     private_debug_enabled = plugin_conf.private_debug or false
     ac_pm_enabled = (plugin_conf.engine_ac_pm == true) and _ka_ac_available
     re2_match_enabled = (plugin_conf.engine_re2_match == true) and ka_re2.available()
-    skip_body_rules_enabled = (plugin_conf.engine_skip_body_rules == true)
 
     -- ctl:ruleEngine=Off short-circuit. A previously-evaluated rule
     -- (typically from a CRS exclusion plugin like wordpress-rule-exclusions)
@@ -1060,21 +1087,17 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
             end
         end
 
-        -- engine_skip_body_rules: a rule whose gating condition is a positive
-        -- per-value op over body-only variables (multipart / json / xml /
-        -- urlencoded body, uploaded files) cannot match when the request
-        -- carries no body. Resolve body presence once: Content-Length > 0
-        -- mirrors the body parser's own gate (`__get_values_request_body`),
-        -- so skipping here is behaviour-identical to letting each such rule
-        -- resolve an empty values-table and bail. Default-off; has_body stays
-        -- true when the flag is off, so the per-rule guard is a no-op.
-        local has_body = true
-        if skip_body_rules_enabled then
-            has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
-        end
+        -- A rule whose gating condition is a positive per-value op over
+        -- body-only variables (multipart / json / xml / urlencoded body,
+        -- uploaded files) cannot match when the request carries no body.
+        -- Resolve body presence once: Content-Length > 0 mirrors the body
+        -- parser's own gate (`__get_values_request_body`), so skipping such a
+        -- rule here is behaviour-identical to letting it resolve an empty
+        -- values-table and bail (CRS regression empty-diff confirmed).
+        local has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
 
         for _,rule in pairs(raw_rules) do
-            if skip_body_rules_enabled and rule._needs_body and not has_body then
+            if rule._needs_body and not has_body then
                 goto continue
             end
             -- if plugin_conf.private_debug and request header x-karna-test-rule-id is set, filter rule.id for the header value
@@ -2270,7 +2293,11 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 if variable == "request.body.multipart.name"
                    or variable == "request.body.multipart.filename" then
                     local body_values = self.__get_values_request_body(false)
-                    if body_values then
+                    -- A non-multipart body carries no multipart.* keys, so this
+                    -- full-body pairs() scan would find nothing — skip it
+                    -- (behaviour-identical to the empty result) unless the body
+                    -- was actually routed as multipart. See request_has_multipart.
+                    if body_values and request_has_multipart() then
                         local key_marker = (variable == "request.body.multipart.name")
                             and "%.name:" or "%.filename:"
                         local collected = {}
@@ -2283,6 +2310,10 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     end
                 end
 
+                -- Intentionally NOT multipart-gated: this is an O(1) direct
+                -- lookup (body_values[variable]), not a full-body pairs() scan,
+                -- so there is no per-arg cost to skip — and the memoised body
+                -- getter is already resolved. Leave it open.
                 if string_find(variable, "^request%.body%.multipart%.") then
                     local body_values = self.__get_values_request_body()
                     if body_values and body_values[variable] then
@@ -2301,7 +2332,9 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 --     common Content-Type case)
                 if string_find(variable, "^request%.body%.multipart%.part%.") then
                     local body_values = self.__get_values_request_body(false)
-                    if body_values then
+                    -- Skip the full-body pairs() scan when no multipart body is
+                    -- present (no part.* keys exist otherwise).
+                    if body_values and request_has_multipart() then
                         local escaped = variable:gsub(
                             "([%-%.%%%+%*%?%[%]%(%)%^%$])", "%%%1"
                         )
@@ -2325,6 +2358,14 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- extensions in upload filenames) sees every filename at once.
                 if variable == "request.file" then
                     local body_values = self.__get_values_request_body(false)
+                    -- NOT multipart-gated: unlike the two branches above
+                    -- (anchored to ^request.body.multipart, whose keys exist
+                    -- ONLY for a multipart body), this scan matches an UNANCHORED
+                    -- `%.filename:` / `%.filename%.`, which also picks up
+                    -- JSON/urlencoded keys like request.body.json.value:a.filename.b.
+                    -- Those exist on non-multipart bodies, so gating on
+                    -- request_has_multipart() would skip a scan that can match —
+                    -- and it wasn't a profiled hotspot anyway. Left ungated.
                     if body_values then
                         local picked = {}
                         for k, v in pairs(body_values) do
@@ -2559,18 +2600,24 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     -- apply transformation_functions
                     local value_to_match_on = orig_value
                     local multi_match_values = {}
+                    -- Transform-cache hoist: resolve the per-request transform
+                    -- cache once for this condition's whole value loop and
+                    -- thread it down, instead of a kong.ctx.plugin ctx-__index
+                    -- hit per transform step.
+                    local txc = kong.ctx.plugin.ka_tx_cache
+                    if txc == nil then txc = {}; kong.ctx.plugin.ka_tx_cache = txc end
                     if condition._tchain then
                         -- Stage 2 fast path: precompiled chain function
                         -- (ka_compile.compile_transform_chain) with each
                         -- transform step unrolled. Semantics verbatim
                         -- from the fallback loop below.
                         local mt
-                        value_to_match_on, mt = condition._tchain(self, orig_value, condition.multi_match)
+                        value_to_match_on, mt = condition._tchain(self, orig_value, condition.multi_match, txc)
                         if mt then multi_match_values = mt end
                     else
                         for _,tfunc in pairs(condition.transform) do
                             if type(value_to_match_on) == "string" then
-                                value_to_match_on = self:__apply_transformation(tfunc, value_to_match_on)
+                                value_to_match_on = self:__apply_transformation(tfunc, value_to_match_on, txc)
                                 if condition.multi_match then
                                     table_insert(multi_match_values, value_to_match_on)
                                 end
@@ -4791,7 +4838,7 @@ _M.__qs_parser = function (self, raw_query_string, try_base64decode_if_possible)
     return values
 end
 
-_M.__apply_transformation = function(self, tfunc, value)
+_M.__apply_transformation = function(self, tfunc, value, txc)
     -- Cache key: `tfunc \1 value` used directly as a Lua table key.
     -- Per-(tfunc, value) memo in a NESTED table: ka_tx_cache[tfunc][value].
     -- The previous flat key `tfunc.."\1"..value` rebuilt an O(len) string on
@@ -4803,8 +4850,14 @@ _M.__apply_transformation = function(self, tfunc, value)
     -- ka_value_cache (which memoises @pm matchers under flat keys) so the two
     -- never alias. kong.ctx.plugin is per-request, so lazy-init yields a fresh
     -- cache each request.
-    local txc = kong.ctx.plugin.ka_tx_cache
-    if txc == nil then txc = {}; kong.ctx.plugin.ka_tx_cache = txc end
+    -- `txc` (transform-cache hoist): callers in a tight per-value loop (the RE2
+    -- pre-pass, the precompiled transform chain) pass the already-resolved
+    -- ka_tx_cache table so this function skips the per-call kong.ctx.plugin
+    -- ctx-__index lookup. Same table either way — when nil we resolve it here.
+    if txc == nil then
+        txc = kong.ctx.plugin.ka_tx_cache
+        if txc == nil then txc = {}; kong.ctx.plugin.ka_tx_cache = txc end
+    end
     local sub = txc[tfunc]
     if sub == nil then sub = {}; txc[tfunc] = sub end
     local cached = sub[value]
