@@ -27,7 +27,12 @@ local schema = {
               fields = {
                 { method_enforcement = { type = "boolean", default = true } }, -- 911
                 { scanner_detection  = { type = "boolean", default = true } }, -- 913
-                { protocol_enforcement = { type = "boolean", default = true } }, -- 920
+                -- 920 default OFF: HTTP protocol enforcement (method/version/
+                -- header/encoding well-formedness) is already handled by
+                -- nginx/OpenResty before the request reaches the rule engine,
+                -- so the 920 pack is largely redundant in a Kong deployment.
+                { protocol_enforcement = { type = "boolean", default = false } }, -- 920
+
                 { protocol_attack    = { type = "boolean", default = true } }, -- 921
                 { multipart_attack   = { type = "boolean", default = true } }, -- 922
                 { lfi                = { type = "boolean", default = true } }, -- 930
