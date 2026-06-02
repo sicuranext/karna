@@ -132,6 +132,48 @@ local re2_match_enabled = false
 local _ka_ac_available = ka_ac and ka_ac.available()
 _M._ka_ac_cache = {}
 
+local math_floor = math.floor
+
+-- CRS ruleset category code (= file number = floor(rule.id/1000)) -> the
+-- coreruleset_rulesets schema switch that enables/disables it per service.
+-- Used in loop_rules to skip a whole attack category for a given service.
+-- Only request-side attack categories are listed; common-exception files
+-- (905/999) and anything we don't load (anomaly/response/init) are absent and
+-- therefore never gated.
+local CRS_CAT_KEYS = {
+    [911] = "method_enforcement",
+    [913] = "scanner_detection",
+    [920] = "protocol_enforcement",
+    [921] = "protocol_attack",
+    [922] = "multipart_attack",
+    [930] = "lfi",
+    [931] = "rfi",
+    [932] = "rce",
+    [933] = "php",
+    [934] = "generic",
+    [941] = "xss",
+    [942] = "sqli",
+    [943] = "session_fixation",
+    [944] = "java",
+}
+
+-- Build the set of DISABLED category codes for a service from its plugin_conf
+-- (coreruleset_rulesets). Returns nil when everything is enabled (the common
+-- case) so the per-rule check is a cheap short-circuit. A missing record or a
+-- nil sub-field means enabled (fail-open).
+local function crs_disabled_categories(plugin_conf)
+    local rsets = plugin_conf.coreruleset_rulesets
+    if rsets == nil then return nil end
+    local disabled
+    for cat, key in pairs(CRS_CAT_KEYS) do
+        if rsets[key] == false then
+            disabled = disabled or {}
+            disabled[cat] = true
+        end
+    end
+    return disabled
+end
+
 -- Once-per-request "did the body parser route this body as multipart?" memo.
 -- This MUST be the exact predicate the parser dispatches on, otherwise the
 -- skip below could drop a scan that would have matched. The parser routes to
@@ -385,6 +427,14 @@ _M.load_rules = function(self)
         local rule = parsed_rules[rule_id]
         rules_count = rules_count + 1
         rule.log = true
+
+        -- Tag the CRS ruleset category (file code = floor(id/1000): 942 = SQLi,
+        -- 941 = XSS, 920 = protocol-enforcement, …). Per-service
+        -- coreruleset_rulesets switches use this to skip a whole category at
+        -- eval time. Only CRS rules (this loop) are tagged — custom/local rules
+        -- carry no _crs_cat and are never category-gated.
+        local _crs_nid = tonumber(rule.id)
+        if _crs_nid then rule._crs_cat = math_floor(_crs_nid / 1000) end
 
         -- Sort conditions by estimated cost (simple first)
         if rule.conditions then
@@ -1096,8 +1146,17 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
         -- values-table and bail (CRS regression empty-diff confirmed).
         local has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
 
+        -- Per-service CRS ruleset-type switches (coreruleset_rulesets): a set of
+        -- disabled category codes for THIS service, or nil when all enabled
+        -- (then the per-rule check short-circuits). Only CRS rules carry a
+        -- _crs_cat, so custom/local rules are never category-gated.
+        local crs_disabled = crs_disabled_categories(plugin_conf)
+
         for _,rule in pairs(raw_rules) do
             if rule._needs_body and not has_body then
+                goto continue
+            end
+            if crs_disabled and rule._crs_cat and crs_disabled[rule._crs_cat] then
                 goto continue
             end
             -- if plugin_conf.private_debug and request header x-karna-test-rule-id is set, filter rule.id for the header value

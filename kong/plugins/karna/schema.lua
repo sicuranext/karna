@@ -13,6 +13,34 @@ local schema = {
           { set_karna_headers = { type = "boolean", default = false } },
           { engine_blocking_mode = { type = "boolean", default = false } },
           { coreruleset_enabled = { type = "boolean", default = true } },
+          -- Per-service CRS ruleset-type switches. The full CRS is loaded once
+          -- (init_worker, shared cache); these toggles decide which attack
+          -- categories are EVALUATED for THIS service — a disabled category's
+          -- rules are skipped in the eval loop (no per-request cost). Each
+          -- defaults true; set false to silence a whole category for a service.
+          -- Only the request-side attack categories are exposed — anomaly
+          -- scoring (949/959/980), response rules (95x), init (901) and the
+          -- common-exception files (905/999, which handle FP exclusions other
+          -- rules depend on) are NOT toggleable. Gated by coreruleset_enabled.
+          { coreruleset_rulesets = {
+              type = "record",
+              fields = {
+                { method_enforcement = { type = "boolean", default = true } }, -- 911
+                { scanner_detection  = { type = "boolean", default = true } }, -- 913
+                { protocol_enforcement = { type = "boolean", default = true } }, -- 920
+                { protocol_attack    = { type = "boolean", default = true } }, -- 921
+                { multipart_attack   = { type = "boolean", default = true } }, -- 922
+                { lfi                = { type = "boolean", default = true } }, -- 930
+                { rfi                = { type = "boolean", default = true } }, -- 931
+                { rce                = { type = "boolean", default = true } }, -- 932
+                { php                = { type = "boolean", default = true } }, -- 933
+                { generic            = { type = "boolean", default = true } }, -- 934
+                { xss                = { type = "boolean", default = true } }, -- 941
+                { sqli               = { type = "boolean", default = true } }, -- 942
+                { session_fixation   = { type = "boolean", default = true } }, -- 943
+                { java               = { type = "boolean", default = true } }, -- 944
+              },
+          } },
           -- engine_fast_path: skip the per-rule ARGS deep-copy when no
           -- rule_control mutation is pending. Sound, +5-7%. Default ON.
           { engine_fast_path = { type = "boolean", default = true } },

@@ -88,6 +88,7 @@ local _RULE_INTERNAL_FIELDS = {
     _compiled        = true,
     _compiled_logged = true,
     _needs_body      = true,  -- precomputed "rule cannot fire without a request body" flag
+    _crs_cat         = true,  -- CRS ruleset category code (floor(id/1000)) for per-type gating
 }
 
 local _CONDITION_INTERNAL_FIELDS = {
