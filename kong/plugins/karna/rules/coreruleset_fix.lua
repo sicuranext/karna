@@ -151,6 +151,97 @@ _M.global_fps = {
         }
     },
 
+    -- Kong-API-gateway pruning of CRS 920/921/934 rules that are redundant or
+    -- nonsensical when Karna runs as a Kong plugin in the access phase:
+    --  * nginx/OpenResty already parses + rejects malformed HTTP (request line,
+    --    Content-Length numeric/framing, CL+TE smuggling, Range framing, HTTP
+    --    version) with a 400 before Karna ever runs;
+    --  * Kong owns routing (Host) and the connection (Connection/keep-alive), so
+    --    re-checking Host presence/emptiness/IP-form or Connection is meaningless;
+    --  * Karna's schema already enforces content-type, charset and denied-headers
+    --    as configurable limits (config-as-rule duplicates belong in the schema);
+    --  * browser-nicety checks (missing/empty User-Agent or Accept, Cache-Control
+    --    / Accept-Encoding / Accept-charset allow-lists, PL4 HPP array notation)
+    --    false-positive on legitimate API/service clients;
+    --  * CRS paranoia-level skipAfter / anomaly-scoring control markers are inert
+    --    in Karna (no anomaly-score engine; PL handled separately).
+    -- KEPT: every attack-content / evasion rule Kong does not inspect (injection,
+    -- UTF-8 / unicode / multi-URL-encoding evasion, null/non-printable bytes,
+    -- multipart filename bypass, backup-file access, SSRF, prototype pollution,
+    -- SSTI, request smuggling/splitting via content, etc.). DELIBERATELY NOT
+    -- pruned: 920340/920640 (missing-CT-with-body — guards body inspection),
+    -- 920440 (file-extension policy, no schema equivalent), 920539/920540 (a
+    -- functional ctl gate). Decided via a 5-agent analysis + adversarial security
+    -- audit (zero detection gaps); the schema_dup removals assume the matching
+    -- schema gates (defaulted) stay populated.
+    {
+        id = "crs_prune_kong_gateway",
+        phase = "access",
+        log = false,
+        conditions = {},
+        unconditional_match_rule_control = {
+            -- protocol well-formedness (nginx/Kong already enforce)
+            { remove_rule = { rule_id = "920100" } }, -- Invalid HTTP Request Line
+            { remove_rule = { rule_id = "920160" } }, -- Content-Length not numeric
+            { remove_rule = { rule_id = "920170" } }, -- GET/HEAD with body
+            { remove_rule = { rule_id = "920171" } }, -- GET/HEAD with Transfer-Encoding
+            { remove_rule = { rule_id = "920180" } }, -- POST without CL/TE
+            { remove_rule = { rule_id = "920181" } }, -- CL + TE both present (smuggling framing)
+            { remove_rule = { rule_id = "920190" } }, -- Range: invalid last byte
+            { remove_rule = { rule_id = "920200" } }, -- Range: too many fields
+            { remove_rule = { rule_id = "920201" } }, -- Range: too many fields (pdf 63+)
+            { remove_rule = { rule_id = "920202" } }, -- Range: too many fields (pdf 6+, PL4)
+            { remove_rule = { rule_id = "920430" } }, -- HTTP protocol version not allowed
+            { remove_rule = { rule_id = "921230" } }, -- blanket HTTP Range header deny
+            -- Host / connection semantics Kong owns
+            { remove_rule = { rule_id = "920210" } }, -- Multiple/conflicting Connection header
+            { remove_rule = { rule_id = "920280" } }, -- Missing Host header
+            { remove_rule = { rule_id = "920290" } }, -- Empty Host header
+            { remove_rule = { rule_id = "920350" } }, -- Host is a numeric IP
+            -- browser-nicety / over-broad policy (FP on API clients)
+            { remove_rule = { rule_id = "920300" } }, -- Missing Accept header
+            { remove_rule = { rule_id = "920310" } }, -- Empty Accept header
+            { remove_rule = { rule_id = "920311" } }, -- Empty Accept header (no UA)
+            { remove_rule = { rule_id = "920320" } }, -- Missing User-Agent
+            { remove_rule = { rule_id = "920330" } }, -- Empty User-Agent
+            { remove_rule = { rule_id = "920510" } }, -- Invalid Cache-Control header
+            { remove_rule = { rule_id = "920521" } }, -- Illegal Accept-Encoding header
+            { remove_rule = { rule_id = "920600" } }, -- Illegal Accept charset parameter
+            { remove_rule = { rule_id = "921220" } }, -- HPP via array notation (PL4)
+            -- config-as-rule duplicated by Karna schema gates (defaulted)
+            { remove_rule = { rule_id = "920400" } }, -- Uploaded file size (body-length limit covers)
+            { remove_rule = { rule_id = "920420" } }, -- Content-type not allowed (request_content_type_allowed)
+            { remove_rule = { rule_id = "920451" } }, -- Restricted header (request_headers_denied)
+            { remove_rule = { rule_id = "920470" } }, -- Illegal Content-Type (request_content_type_allowed)
+            { remove_rule = { rule_id = "920480" } }, -- Content-type charset not allowed (request_content_type_charset_allowed)
+            -- CRS paranoia-level / anomaly-scoring control markers (inert in Karna)
+            { remove_rule = { rule_id = "920011" } },
+            { remove_rule = { rule_id = "920012" } },
+            { remove_rule = { rule_id = "920013" } },
+            { remove_rule = { rule_id = "920014" } },
+            { remove_rule = { rule_id = "920015" } },
+            { remove_rule = { rule_id = "920016" } },
+            { remove_rule = { rule_id = "920017" } },
+            { remove_rule = { rule_id = "920018" } },
+            { remove_rule = { rule_id = "921011" } },
+            { remove_rule = { rule_id = "921012" } },
+            { remove_rule = { rule_id = "921013" } },
+            { remove_rule = { rule_id = "921014" } },
+            { remove_rule = { rule_id = "921015" } },
+            { remove_rule = { rule_id = "921016" } },
+            { remove_rule = { rule_id = "921017" } },
+            { remove_rule = { rule_id = "921018" } },
+            { remove_rule = { rule_id = "934011" } },
+            { remove_rule = { rule_id = "934012" } },
+            { remove_rule = { rule_id = "934013" } },
+            { remove_rule = { rule_id = "934014" } },
+            { remove_rule = { rule_id = "934015" } },
+            { remove_rule = { rule_id = "934016" } },
+            { remove_rule = { rule_id = "934017" } },
+            { remove_rule = { rule_id = "934018" } },
+        }
+    },
+
     {
         id = "crs_compat_multipart",
         phase = "access",
