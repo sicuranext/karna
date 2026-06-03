@@ -53,6 +53,40 @@ _M.global_fps = {
         }
     },
 
+    -- Coverage add (not a CRS-rule fix): CRS 944200 matches the RAW Java
+    -- serialization magic bytes (\xac\xed\x00\x05), but the embedded NUL
+    -- truncates the value in Karna's arg/body parsing, so the raw form is
+    -- caught by other rules rather than 944200. The common real-world
+    -- vector is those magic bytes base64-encoded inside a JSON / form /
+    -- query field: "rO0AB..." (byte-aligned form) plus the two offset
+    -- variants "KztAAU" / "Cs7QAF". This closes that gap globally. No PL
+    -- tag -> active from PL1 (base64 Java serialization is a clear attack).
+    {
+        id = "crs_fix_java_serialization_b64",
+        phase = "access",
+        log = true,
+        message = "Magic bytes Detected, probable java serialization in use (base64)",
+        tags = { "attack-rce", "language-java", "platform-multi", "OWASP_CRS/ATTACK-JAVA" },
+        conditions = {
+            {
+                op = "rx",
+                transform = {},
+                value = "(?:rO0AB|KztAAU|Cs7QAF)",
+                variables = { "request.arg.value", "request.header.value" }
+            }
+        },
+        action = {
+            fixed_response = {
+                status_code = 403,
+                headers = {
+                    ["content-type"] = "text/plain",
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
+                },
+                body = "Forbidden\r\n"
+            }
+        }
+    },
+
     -- CRS-compatibility bridges: rewrite CRS rules that depend on ModSec
     -- TX-side-effect variables (TX:/MULTIPART_HEADERS_*/, etc.) to target
     -- Karna's native multipart namespace instead. See
