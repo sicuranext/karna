@@ -58,15 +58,11 @@ KARNA_PRUNED_RULES = {
 # decision) — distinct from the whole OOS families below. Marked passed* with
 # the reason instead of a misleading red.
 KARNA_OOS_RULES = {
-    # 921180 HTTP Parameter Pollution: needs a TX:/<regex>/ collection
-    # selector (`SecRule TX:/paramcounter_.*/ "@gt 1"`) fed by a
-    # dynamic-named setvar (`TX.paramcounter_%{MATCHED_VAR_NAME}=+1`).
-    # Supporting a regex-named TX collection for one PL3+ rule isn't worth
-    # the engine surface; the rule is also FP-prone (it fires on ANY
-    # repeated parameter name — legitimate multi-value params included), and
-    # Karna scans every duplicated parameter value for real attacks anyway,
-    # so no attack is missed. Out of scope.
-    "921180": "HPP meta-flag (PL3+) needs a TX:/regex/ collection selector; FP-prone, and all param values are scanned regardless",
+    # Currently empty by choice. 921180 (HTTP Parameter Pollution) is left
+    # UNMARKED so it shows as one of the documented PL3+ residuals behind the
+    # README's 99.9% (PL3/PL4), not silently passed*. It needs a TX:/<regex>/
+    # collection selector for one FP-prone PL3 rule, and Karna scans every
+    # duplicated parameter value for real attacks regardless.
 }
 
 # Rule families Karna intentionally does NOT implement, by design.
