@@ -1,9 +1,18 @@
-# Karna
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/karna-logo-dark.png">
+    <img src="docs/assets/karna-logo-light.png" alt="Karna" width="420">
+  </picture>
+</p>
 
-[![CI](https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg)](https://github.com/sicuranext/karna/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/sicuranext/karna/actions/workflows/ci.yml"><img src="https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
-A WAF (Web Application Firewall) for Kong Gateway — OWASP CoreRuleSet
-compatible, MCP-aware, rate-limit-native, with rules in SecLang or JSON.
+<p align="center">
+  A WAF (Web Application Firewall) for Kong Gateway — OWASP CoreRuleSet
+  compatible, MCP-aware, rate-limit-native, with rules in SecLang or JSON.
+</p>
 
 ## Why Karna
 
