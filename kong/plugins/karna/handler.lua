@@ -896,7 +896,7 @@ function plugin:header_filter(plugin_conf)
 
   -- local rules
   if plugin_conf.local_rules_enabled then
-    --engine:loop_rules(plugin_conf, local_rules_request, "header_filter", local_rules_request, false, nil, nil, nil)
+    evaluate_rules(plugin_conf, local_rules_request, "header_filter")
   end
 end
 
@@ -917,15 +917,21 @@ function plugin:body_filter(plugin_conf)
   local local_rules_request = {}
   if kong.ctx.plugin.local_rules then
     for _,req_rule in pairs(kong.ctx.plugin.local_rules) do
-      if req_rule.phase == "header_filter" then
+      if req_rule.phase == "body_filter" then
         table.insert(local_rules_request, req_rule)
       end
     end
   end
 
   -- local rules
+  -- Intentionally disabled: body_filter runs once per response chunk, so
+  -- evaluating rules here without end-of-stream / body-accumulation
+  -- handling would fire non-terminal side effects (redis_incr_key, …)
+  -- multiple times per request. Body-phase local rules also rely on the
+  -- body_filter-specific `replace_response_body` action, which is a
+  -- separate unwired feature. Enable as a dedicated follow-up.
   if plugin_conf.local_rules_enabled then
-    --engine:loop_rules(plugin_conf, local_rules_request, "body_filter", local_rules_request, false, nil, nil, nil)
+    --evaluate_rules(plugin_conf, local_rules_request, "body_filter")
   end
 end
 

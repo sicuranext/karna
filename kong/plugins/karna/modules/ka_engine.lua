@@ -1221,6 +1221,13 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                         kong.log.inspect(matches)
                     end
 
+                    -- Non-terminal side-effect actions (set_variable,
+                    -- set_log_fields, redis_incr_key) fire on every match,
+                    -- terminal or not — applied here BEFORE the terminal
+                    -- check so a blocking rule can still set a variable /
+                    -- log field before it returns.
+                    self:apply_action_side_effects(rule, plugin_conf, phase)
+
                     -- Only terminal actions stop the rule loop. Pass-
                     -- action rules (e.g. CRS 921170, which fires on
                     -- every ARGS name only to setvar a paramcounter
@@ -2040,6 +2047,28 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
     local matches = {}
     local rx_matched_values_cross_conditions = {}
 
+    -- Pattern / exact-name target removal. The rule-control evaluator
+    -- (ctl: remove_target_rule_by_pattern / _by_name / remove_target_tag_by_pattern)
+    -- tags the affected rule's rule_control with `remove_target_pattern`
+    -- (Lua pattern matched against the resolved values key) and/or
+    -- `remove_target_name` (exact key match). Collect them once here;
+    -- the per-variable value loop below strips matching keys from each
+    -- `values` table, alongside the runtime ctl:ruleRemoveTargetById
+    -- (ids_targets) and remove_target_from_all_rules filtering.
+    local rc_remove_patterns, rc_remove_names
+    if rule.rule_control then
+        for _, rc in pairs(rule.rule_control) do
+            if rc.remove_target_pattern then
+                rc_remove_patterns = rc_remove_patterns or {}
+                rc_remove_patterns[#rc_remove_patterns + 1] = rc.remove_target_pattern
+            end
+            if rc.remove_target_name then
+                rc_remove_names = rc_remove_names or {}
+                rc_remove_names[#rc_remove_names + 1] = rc.remove_target_name
+            end
+        end
+    end
+
 
     --[[
         ██╗██╗██╗    ██╗ █████╗ ██████╗ ███╗   ██╗██╗███╗   ██╗ ██████╗ ██╗██╗
@@ -2622,6 +2651,25 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     end
                     if next(values) == nil then values = nil end
                 end
+
+                -- Pattern / exact-name target removal (collected once at
+                -- the top of this function from the rule's rule_control).
+                if values and rc_remove_patterns then
+                    for k in pairs(values) do
+                        for _, p in pairs(rc_remove_patterns) do
+                            if string_match(k, p) then
+                                values[k] = nil
+                                break
+                            end
+                        end
+                    end
+                end
+                if values and rc_remove_names then
+                    for _, nm in pairs(rc_remove_names) do
+                        if values[nm] then values[nm] = nil end
+                    end
+                end
+                if values and next(values) == nil then values = nil end
             end
 
             -- Macro-presence flags, computed ONCE per condition and
@@ -2673,7 +2721,15 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         local mt
                         value_to_match_on, mt = condition._tchain(self, orig_value, condition.multi_match, txc)
                         if mt then multi_match_values = mt end
-                    else
+                    elseif condition.transform then
+                        -- Fallback transform loop. Guarded against a nil
+                        -- `transform` field: seclang always emits a table
+                        -- (possibly empty), but hand-written JSON rules may
+                        -- omit `transform` entirely, in which case this is a
+                        -- no-op (value passes through untransformed) rather
+                        -- than a pairs(nil) crash. _tchain stays unset for an
+                        -- empty/nil transform list (see ka_compile), so this
+                        -- branch is the only place that nil is observed.
                         for _,tfunc in pairs(condition.transform) do
                             if type(value_to_match_on) == "string" then
                                 value_to_match_on = self:__apply_transformation(tfunc, value_to_match_on, txc)
@@ -5432,7 +5488,11 @@ _M.resolve_variable = function(self, variable)
         -- escape all characters to be escaped for string match
         local var_name = var_name_raw:gsub("([%-%.%+%[%]%(%)%$%^%%%?%*])", "%%%1")
         local value_list = self:__get_value_from_inspection_table(var_name)
-        if value_list then
+        -- value_list[1] is nil when the macro names a variable absent from
+        -- the inspection table; leave the original string rather than
+        -- pairs(nil) crashing the log phase (resolve_variable runs at log
+        -- time over set_log_fields macros). Fail-soft.
+        if value_list and type(value_list[1]) == "table" then
             for k,v in pairs(value_list[1]) do
                 value = v
             end
@@ -5473,6 +5533,59 @@ _M.apply_set_variable = function(self, sv, ctx_plugin, ctx_shared)
     return false
 end
 
+-- Apply the non-terminal side-effect actions of a matched rule. These
+-- never block the request; they mutate request-scoped state (log
+-- fields, ctx variables) or bump a Redis counter, then evaluation
+-- continues. Mirrors ModSec semantics where setvar / log actions fire
+-- on every match. Called from loop_rules for BOTH terminal and
+-- pass-action matches, so a blocking rule can still set a variable or
+-- log field before it terminates the request.
+_M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
+    local action = rule.action
+    if type(action) ~= "table" then return end
+
+    -- set_log_fields: stash {name = macro-string} into
+    -- additional_log_fields. The macro is resolved at log time by
+    -- handler.lua (engine:resolve_variable), once the request's
+    -- inspection table is fully populated.
+    if action.set_log_fields then
+        for _, alf in pairs(action.set_log_fields) do
+            if alf.name and alf.value then
+                self:__set_log_field(alf.name, alf.value)
+            end
+        end
+    end
+
+    -- redis_incr_key: bump a named counter (key supports %{var}
+    -- macros). In access we increment synchronously; in later phases
+    -- (header_filter / body_filter / log) the cosocket API is not
+    -- available inline, so defer to a 0-delay timer.
+    if action.redis_incr_key
+       and action.redis_incr_key.key
+       and action.redis_incr_key.expire then
+        local key_resolved = self:replace_variable_in_string(action.redis_incr_key.key)
+        if phase == "access" then
+            utils.redis_host = plugin_conf and plugin_conf.redis_host
+            utils.redis_port = plugin_conf and plugin_conf.redis_port
+            utils.redis_password = plugin_conf and plugin_conf.redis_password
+            utils:redis_incr_key(key_resolved, action.redis_incr_key.expire)
+        else
+            local ok, err = ngx.timer.at(0, utils.redis_incr_key_async, utils,
+                                         plugin_conf, key_resolved, action.redis_incr_key.expire)
+            if not ok then
+                kong.log.err("Karna: error scheduling redis_incr_key timer: ", err)
+            end
+        end
+    end
+
+    -- set_variable: write a (macro-resolved) value into kong.ctx.plugin
+    -- (type="plugin", Karna-private) or kong.ctx.shared (type="shared",
+    -- sibling-plugin visible).
+    if action.set_variable then
+        self:apply_set_variable(action.set_variable, kong.ctx.plugin, kong.ctx.shared)
+    end
+end
+
 _M.replace_variable_in_string = function(self, str)
     -- get service id
     local service = kong.router.get_service()
@@ -5482,7 +5595,12 @@ _M.replace_variable_in_string = function(self, str)
         debug("replace_variable_in_string ---> replacing variable: "..variable)
         local var_name = variable:gsub("([%-%.%+%[%]%(%)%$%^%%%?%*])", "%%%1")
         local value_list = self:__get_value_from_inspection_table(var_name)
-        if value_list then
+        -- value_list[1] is nil when the macro names a variable absent from
+        -- the inspection table (e.g. a set_variable / redis_incr_key macro
+        -- that doesn't resolve for this request). Leave the macro literal
+        -- rather than pairs(nil) crashing the phase — fail-soft, same as
+        -- resolve_request_macros.
+        if value_list and type(value_list[1]) == "table" then
             for k,v in pairs(value_list[1]) do
                 debug("replace_variable_in_string ---> replacing variable: "..variable.." with value: "..v)
                 new_str = string_gsub(new_str, "%%{"..variable.."}", v)
