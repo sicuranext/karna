@@ -30,6 +30,14 @@ _G.ngx = {
                 return s:find("\0", 1, true) and { true } or nil
             end
             return nil
+        end,
+        find = function(s, pattern, _flags)
+            -- mirror ngx.re.find for the two PCRE patterns ka_multipart's
+            -- strict_crlf scan uses: bare LF ([^\r]\n) and bare CR (\r[^\n]).
+            -- Returns the match start (truthy) or nil, like the real find.
+            if pattern == "[^\\r]\\n" then return s:find("[^\r]\n") end
+            if pattern == "\\r[^\\n]" then return s:find("\r[^\n]") end
+            return nil
         end
     },
     unescape_uri = function(str)

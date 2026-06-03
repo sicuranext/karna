@@ -205,6 +205,25 @@ package.preload["kong.plugins.karna.ka_mcp"]           = function() return {
 } end
 package.preload["kong.plugins.karna.ka_mcp_sse"]       = function() return {} end
 package.preload["kong.plugins.karna.ka_multipart"]     = function() return { parse = function() return nil end } end
+-- Engine helpers added by the RE2 / Aho-Corasick work. The transformation
+-- functions never touch them, so stub them; available()=false makes the
+-- engine skip every native-scan path and stay on the pure-Lua route.
+package.preload["kong.plugins.karna.ka_compile"]       = function() return {
+    compile_rules           = function() return 0, 0 end,
+    compile_transform_chain = function() return nil end,
+    public_view             = function(r) return r end,
+} end
+package.preload["kong.plugins.karna.ka_re2"]           = function() return {
+    available  = function() return false end,
+    re_match   = function() return false end,
+    build      = function() return nil end,
+    re_compile = function() return nil end,
+} end
+package.preload["kong.plugins.karna.ka_ac"]            = function() return {
+    available = function() return false end,
+    build     = function() return nil end,
+    match_any = function() return false end,
+} end
 
 -- ===========================================================================
 -- Load the engine
