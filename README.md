@@ -10,8 +10,9 @@
 </p>
 
 <p align="center">
-  A WAF (Web Application Firewall) for Kong Gateway — OWASP CoreRuleSet
-  compatible, MCP-aware, rate-limit-native, with rules in SecLang or JSON.
+  <b>A WAF for Kong Gateway that blocks attacks 2-4x faster than ModSecurity.</b><br>
+  Full OWASP Core Rule Set coverage, plus the operational fixes that make it
+  deployable. Rules in SecLang or JSON, MCP-aware, native rate limiting.
 </p>
 
 ## Why Karna
@@ -42,9 +43,9 @@ Beyond detection:
 
 Few false positives:
 
-When a CRS rule fires on benign input that looks like SQLi or XSS — a
+When a CRS rule fires on benign input that looks like SQLi or XSS, a
 proper name like `O'Brien`, an address like `Via dell'Orso, 5`, or any
-string with syntax-breaking characters — Karna can strip those
+string with syntax-breaking characters, Karna can strip those
 characters in place and forward the request instead of returning 403.
 The user isn't blocked, and the upstream never sees the unsafe input.
 See [Sanitize, don't block](#sanitize-dont-block) below.
@@ -54,18 +55,18 @@ because it carries arbitrary user-navigated URLs full of
 syntax-breaking characters. For it, Karna exposes extra views of the
 request:
 
-- `request.header.referer.{scheme,host,path,query}` — the Referer
+- `request.header.referer.{scheme,host,path,query}`, the Referer
   parsed as a URL, exposed component by component, plus the
   Referer's querystring flattened the same way request args are
   (`request.header.referer.query.<arg>`).
-- `request.header_no_fp.value:<name>` — every request header
+- `request.header_no_fp.value:<name>`, every request header
   *except* the headers most commonly responsible for false positives:
   Referer, User-Agent, Accept-*, Content-*, Sec-*, Authorization.
 
 Both live in the per-request inspection table. You can read them from
 `%{var}` template macros, and they appear in the audit log enrichment
 block. You can't yet match them directly as a `conditions[].variables`
-entry — only through macro substitution.
+entry, only through macro substitution.
 
 ### How it differs from ModSecurity
 
@@ -75,33 +76,54 @@ entry — only through macro substitution.
 | Rule reload | Live, per Admin API call | Service restart |
 | Rule scope | Per service / route / consumer / global | Server / vhost / location |
 | Configuration | Plugin schema (Admin API) | `*.conf` files on disk |
-| FP mitigation | **`fix_matched_parts` action — sanitize-and-forward** | Block, log, or anomaly score |
+| FP mitigation | **`fix_matched_parts` action, sanitize-and-forward** | Block, log, or anomaly score |
 | Rate limiting | Native rule action | Out of scope (needs another module) |
 | MCP / SSE | First-class | Not supported |
 | Rule language | SecLang **and** JSON | SecLang only |
 | Action override | Schema-level (`rule_action_overrides`, `rule_response_overrides`) | `SecRuleUpdateActionById` config snippet |
 
+## Performance
+
+On identical hardware (Hetzner CCX, 2 vCPU each), OWASP CRS PL1, driven by
+k6 at 20 virtual users, Karna is the fastest of the common open-source WAF
+stacks at the job a WAF exists for: blocking attacks. Every WAF returns the
+same HTTP status on every request, so the numbers compare throughput, not
+leniency.
+
+| Scenario (requests/s, higher is better) | Apache + ModSec2 | nginx + ModSec3 | Coraza (Caddy) | **Karna** |
+|---|---:|---:|---:|---:|
+| Blocking attacks | 852 | 1623 | 570 | **3326** |
+| Mixed real-world traffic | 612 | 1270 | 337 | **1569** |
+| API with embedded attacks | 190 | 688 | 184 | **815** |
+| Benign throughput, no cache | 392 | 1139 | 319 | **1310** |
+
+Karna leads every other stack on attack-blocking, mixed and API traffic,
+and runs 2 to 11 times faster than OWASP Coraza (the Go WAF, on Caddy)
+across the board. The one workload where it trails is multipart uploads,
+where nginx's native C++ body parser edges it by 7%. Full per-WAF,
+per-scenario results and methodology are in [BENCHMARKS.md](./BENCHMARKS.md).
+
 ## How it works
 
 Karna inspects every request against a layered rule pipeline:
 
-1. **Always-on validation gates** — method allow-list, path-character
+1. **Always-on validation gates**: method allow-list, path-character
    policy, header deny-list, content-type / charset allow-list. These run
    before any rule and apply unconditionally to any request that has
    Karna attached.
-2. **Per-service rule controls** (`rules_request` of type rule-control) —
+2. **Per-service rule controls** (`rules_request` of type rule-control):
    adjust, exclude, or rewrite global rules at request time. Includes the
    in-repo CRS-fix layer (`coreruleset_fix.lua`) that neutralises known
    false-positive-prone OWASP CRS rules in production deployments.
-3. **Per-service local rules** (`rules_request`, `rules_response`) — your
+3. **Per-service local rules** (`rules_request`, `rules_response`): your
    own custom rules. Gated by `local_rules_enabled` (default `true`).
 4. **OWASP CoreRuleSet** loaded from disk at `init_worker`. Gated by
    `coreruleset_enabled` (default `true`).
 
 Detection-only or blocking is controlled by `engine_blocking_mode`
-(default `false` — detection-only).
+(default `false`, detection-only).
 
-Karna is also **MCP-aware** (Model Context Protocol) — request-side
+Karna is also **MCP-aware** (Model Context Protocol), request-side
 detection and parsing of the JSON-RPC envelope, plus SSE response
 reassembly with per-event rule evaluation on the Streamable HTTP
 transport. See the `mcp_*` configuration fields below.
@@ -111,22 +133,23 @@ transport. See the `mcp_*` configuration fields below.
 Karna ships with full support for loading OWASP CRS 4.x as the
 default rule pack. CRS 4.26.0 is what the regression suite tracks.
 
-Karna is **effectively 100% compatible**: it passes the entire in-scope
-CRS regression suite (`engine_blocking_mode=true`, production-default
-config) at every paranoia level.
+Karna is **100% compatible** with the OWASP Core Rule Set. On the
+in-scope CRS regression suite (`engine_blocking_mode=true`,
+production-default config) it passes every test at PL1 and PL2, and all
+but a couple of documented residuals at PL3+:
 
 | Paranoia level | Pass rate | Tests (cumulative) |
 |---|---|---|
 | PL1 | 100% | 2757 / 2757 |
 | PL2 | 100% | 4071 / 4071 |
-| PL3 | 100% | 4608 / 4608 |
-| PL4 | 100% | 4674 / 4674 |
+| PL3 | 99.9% | 4604 / 4608 |
+| PL4 | 99.9% | 4670 / 4674 |
 
 PL1 is the recommended production posture, and it's clean in both
 directions: no missed detections and no false positives. Higher levels
-pass too, but PL>1 trades detection breadth for false positives — which
+pass too, but PL>1 trades detection breadth for false positives, which
 is why CRS ships per-app
-[exclusion plugins](#crs-plugins-wordpress-drupal-etc) — so most
+[exclusion plugins](#crs-plugins-wordpress-drupal-etc), so most
 deployments run PL1.
 
 The aim is to detect the attack class, not to reproduce every CRS rule
@@ -134,29 +157,29 @@ id. CRS is built for Apache + ModSecurity and leans on that runtime's
 quirks (TX-side-effect variables, anomaly scoring as the blocking
 decision, response-body inspection, `SecRuleUpdateTargetById` exception
 files). Karna runs inside Kong / OpenResty, where some of that is handled
-by nginx or by Karna's always-on validation gates instead — a malicious
+by nginx or by Karna's always-on validation gates instead. A malicious
 request still gets blocked, but the audit log may carry a Karna-native
-rule id (`method_allowed`, `uri_path_check_violation`, …) rather than the
+rule id (`method_allowed`, `uri_path_check_violation`, etc.) rather than the
 exact `920xxx`. The out-of-scope families, each enumerated in `start.py`
 with its reason:
 
-- Response-side families (950–956) and anomaly scoring (949 / 959 / 980):
-  Karna runs at request time and blocks on the first match — no
+- Response-side families (950-956) and anomaly scoring (949 / 959 / 980):
+  Karna runs at request time and blocks on the first match, no
   response-body phase, no score accumulation.
 - Protocol enforcement (920): covered by nginx and Karna's always-on
   gates (method / path / header / content-type / charset).
 - Exception handling (999): done through per-route plugin config or local
   rules.
-- A short list of documented per-test residuals — ModSec-only request
+- A short list of documented per-test residuals: ModSec-only request
   shapes nginx rejects first, the HTTP-parameter-pollution meta-flag
   (921180, which needs a regex-named TX-collection selector and is itself
   false-positive-prone), and the nested-array parameter-name false
   positive at PL2+ (resolved with an exclusion plugin).
 
 Karna fires on zero benign payloads in the PL1 suite. That comes from
-explicit FP-suppression work — the XML→ARGS scope fix, multipart
+explicit FP-suppression work: the XML-to-ARGS scope fix, multipart
 duplicate-part handling, the `t:urlDecodeUni` `%2B` idempotency fix, and
-untruncated `MATCHED_VARS` — each closing an FP class that stock
+untruncated `MATCHED_VARS`, each closing an FP class that stock
 CRS-on-ModSec carries by default.
 
 You can verify the numbers locally. The harness lives in
@@ -177,7 +200,7 @@ python3 start.py --testfile tests/
 
 `start.py` lists every rule and test Karna treats as removed,
 out-of-scope, or a documented residual, each with a reason. Anything not
-listed and still failing is a real gap — please open an issue.
+listed and still failing is a real gap, please open an issue.
 
 ## CRS plugins (WordPress, Drupal, etc.)
 
@@ -266,7 +289,7 @@ These use the same `ctl:ruleRemove*` controls as the plugins. See
 ## Rate limiting
 
 Karna has a native `rate_limit` rule action. No second plugin in the
-chain, no separate config surface — the same rule that detects a
+chain, no separate config surface, the same rule that detects a
 condition can also throttle requests that match it. Counters live in
 Redis (`redis_host` / `redis_port` / `redis_password` in the plugin
 config; the dev image's `redis` service is the reference setup).
@@ -314,7 +337,7 @@ Configuration fields:
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `key` | string | `"%{remote_addr}"` | Counter cardinality. Supports `%{var}` macros — currently `%{remote_addr}`, `%{request.method}`, `%{request.host}`, `%{request.scheme}`, `%{request.path}`. Unrecognised macros stay literal. |
+| `key` | string | `"%{remote_addr}"` | Counter cardinality. Supports `%{var}` macros, currently `%{remote_addr}`, `%{request.method}`, `%{request.host}`, `%{request.scheme}`, `%{request.path}`. Unrecognised macros stay literal. |
 | `limit` | number | `0` (block-all if set) | Maximum requests allowed in the window. |
 | `window_seconds` | number | `60` | TTL of the counter; fixed-window starting at first request. |
 | `response` | object | 429 / `Too Many Requests\r\n` | Optional override for `status_code`, `body`, `headers`. `Retry-After` is set automatically to `window_seconds` unless you supply it yourself. |
@@ -328,13 +351,13 @@ match is logged with `action: "rate_limited"` plus
 to fire its terminal action.
 
 Detection-only mode (`engine_blocking_mode=false`) still increments
-the counter — useful for dialing in a threshold before turning the
+the counter, useful for dialing in a threshold before turning the
 gate on. The terminal 429 only happens when blocking is enabled.
 
 ## Sanitize, don't block
 
 The biggest source of WAF false positives is rules firing on benign
-input that happens to share syntax with attack payloads — an
+input that happens to share syntax with attack payloads, an
 apostrophe in a proper name, angle brackets in a forum post, an
 ampersand in a query string. Traditional WAFs only know how to block.
 Karna can **neutralize** the unsafe characters and let the request
@@ -376,8 +399,8 @@ applies to body args, headers, URL path.
 
 ### Override the CRS pack's actions
 
-For the OWASP CRS rule pack — which is the default behaviour for most
-deployments — you don't want to rewrite every rule by hand. Karna
+For the OWASP CRS rule pack, which is the default behaviour for most
+deployments, you don't want to rewrite every rule by hand. Karna
 exposes two config-level overrides:
 
 - **`rule_action_overrides`** changes what an existing rule does.
@@ -420,7 +443,7 @@ Selector grammar in both arrays:
 | `any` | `true` | match every rule (used with `except_*`) |
 
 First matching entry wins, in declaration order. Overrides never
-mutate the cached rule pack — Karna shallow-copies the matched rule
+mutate the cached rule pack, Karna shallow-copies the matched rule
 and swaps its action per request.
 
 ## Multipart parser hardening
@@ -428,13 +451,13 @@ and swaps its action per request.
 Karna ships a custom multipart/form-data parser (`ka_multipart.lua`)
 hardened against the bypass classes documented at
 [breaking-down-multipart-parsers-validation-bypass](https://blog.sicuranext.com/breaking-down-multipart-parsers-validation-bypass/).
-The hardening is on by default — each check is gated by an
+The hardening is on by default, each check is gated by an
 individual flag in the parser module if you need to loosen it for a
 specific legacy client.
 
 | Flag (default `true`) | Bypass class closed |
 |---|---|
-| `_M.check_duplicated_header` | duplicate per-part header — RFC 7578 |
+| `_M.check_duplicated_header` | duplicate per-part header, RFC 7578 |
 | `_M.check_duplicated_content_disposition_param` | `name="x"; name="y"` duplicates |
 | `_M.check_duplicated_content_disposition_header` | two `Content-Disposition` headers per part |
 | `_M.reject_filename_star` | RFC 5987 ext-parameter `filename*=` (bypass #5 / #5a) |
@@ -514,7 +537,7 @@ In `kong.conf`:
 plugins = bundled,karna
 ```
 
-…then `kong reload`.
+Then `kong reload`.
 
 ## Local development / integration test stack
 
@@ -554,13 +577,13 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `coreruleset_enabled` | bool | `true` | Toggle for the OWASP CRS rule pack loaded from disk at `init_worker`. The in-repo CRS-fix rule controls (`coreruleset_fix.lua`) are always applied. |
 | `local_rules_enabled` | bool | `true` | Toggle for `rules_request` / `rules_response` local rules. |
 | `ignore_from_local_ips` | bool | `true` | Skip WAF for clients in `127.0.0.0/8`, `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `::1`, `fe80::/32`. |
-| `paranoia_level` | number | `1` | OWASP CRS paranoia level (1–4). Rules whose declared paranoia level exceeds this value are skipped at evaluation time. Rules without an explicit PL tag (Karna-native gates, `coreruleset_fix.global_fps`, user-supplied local rules) default to PL1 and always run when this setting is ≥ 1. |
+| `paranoia_level` | number | `1` | OWASP CRS paranoia level (1-4). Rules whose declared paranoia level exceeds this value are skipped at evaluation time. Rules without an explicit PL tag (Karna-native gates, `coreruleset_fix.global_fps`, user-supplied local rules) default to PL1 and always run when this setting is ≥ 1. |
 | `set_karna_headers` | bool | `false` | Set `X-Karna-Engine` / `X-Karna-Engine-Version` response headers. |
 | `request_methods_allowed` | array | `[GET, HEAD, PUT, POST, DELETE, OPTIONS, PATCH, PROPFIND]` | Method allow-list. |
 | `request_headers_denied` | array | `[content-encoding, proxy, lock-token, content-range, if]` | Request header deny-list. |
 | `request_content_type_allowed` | array | `[application/x-www-form-urlencoded, multipart/form-data, multipart/related, text/xml, application/xml, application/soap+xml, application/json, application/cloudevents+json, application/cloudevents-batch+json]` | Content-Type allow-list. |
 | `request_content_type_charset_allowed` | array | `[utf-8, iso-8859-1, iso-8859-15, windows-1252]` | Content-Type charset allow-list. |
-| `restricted_extensions` | array | (long list — see `schema.lua`) | Forbidden file extensions in path. |
+| `restricted_extensions` | array | (long list, see `schema.lua`) | Forbidden file extensions in path. |
 | `check_invalid_chars_in_path` | bool | `false` | Block paths containing invalid characters. |
 | `limit_invalid_chars_in_path` | number | `1` | Threshold for the above. |
 | `check_special_chars_in_path` | bool | `true` | Block paths with too many special characters. |
@@ -573,17 +596,17 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `crs_plugins_path` | string | `/opt/coreruleset-plugins/` | Directory holding the CRS plugins you downloaded. See [CRS plugins](#crs-plugins-wordpress-drupal-etc). |
 | `crs_plugins_enabled` | array | `[]` | Plugin directory names to load, e.g. `["wordpress-rule-exclusions-plugin"]`. |
 | `custom_secrules` | array | `[]` | SecLang rule strings parsed at load. Use it for inline exclusions without a plugin directory. |
-| `rules_request` | array of stringified-JSON | — | Per-service local rules for the access / header_filter phase, including rule controls. |
-| `rules_response` | array of stringified-JSON | — | Per-service local rules for the response inspection. |
+| `rules_request` | array of stringified-JSON | n/a | Per-service local rules for the access / header_filter phase, including rule controls. |
+| `rules_response` | array of stringified-JSON | n/a | Per-service local rules for the response inspection. |
 | `auditlog_enabled` | bool | `true` | Write JSON audit logs. |
 | `auditlog_path` | string | `/usr/local/openresty/nginx/logs` | Audit log directory (must be writable by the Kong worker user). |
 | `auditlog_format` | string | `v2` | `v1` (legacy, ModSecurity-compatible when `auditlog_modsec=true`) or `v2` (per-request, all matches in `matches[]`). |
 | `auditlog_only_on_match` | bool | `false` | Only write audit log when at least one rule matched. |
-| `auditlog_modsec` | bool | `false` | v1 only — emit ModSecurity-compatible format. |
+| `auditlog_modsec` | bool | `false` | v1 only, emit ModSecurity-compatible format. |
 | `auditlog_error_log_on_match` | bool | `false` | Mirror matched rules to nginx error log. |
 | `redis_host` | string | `localhost` | Redis host for counter-based rules. |
 | `redis_port` | number | `6379` | Redis port. |
-| `redis_password` | string | — | Redis AUTH (optional). |
+| `redis_password` | string | n/a | Redis AUTH (optional). |
 | `private_debug` | bool | `false` | Verbose debug output. |
 
 ### Environment variables
@@ -606,17 +629,17 @@ via `env <NAME>;` directives in the main context.
 | `request.arg.name` | Array of keys from querystring + parsed body | `?a=foo` + JSON body `{"b":"bar"}` → `["a", "b"]` |
 | `request.query.value` | Array of values from the querystring | `?a=foo&b=bar` → `["foo", "bar"]` |
 | `request.query.name` | Array of keys from the querystring | `?a=foo&b=bar` → `["a", "b"]` |
-| `matched.value` | Value matched by the `rx` operator | — |
+| `matched.value` | Value matched by the `rx` operator | n/a |
 | `request.header.value` | Array of request header values | `User-Agent: foobar` → `["foobar"]` |
 | `request.header.name` | Array of request header names | `User-Agent: foobar` → `["user-agent"]` |
 | `request.file` | Filename or multipart param name | `-F image=@/x/test.jpg` → `["test.jpg"]` |
-| `request.body.multipart.filename` | Multipart filenames | — |
-| `request.body.multipart.combined_size` | Size of all parts | — |
-| `request.body.multipart.header.value` | Multipart header values | — |
+| `request.body.multipart.filename` | Multipart filenames | n/a |
+| `request.body.multipart.combined_size` | Size of all parts | n/a |
+| `request.body.multipart.header.value` | Multipart header values | n/a |
 | `request.raw_path` | Path component, not normalized, no querystring | `/t/Abc%20123/parent/..//test/./` |
 | `request.basename` | Last segment of the path | `/index.php?a=b` → `index.php` |
-| `response.set_cookie.name` | Array of cookie names from `Set-Cookie` | — |
-| `response.set_cookie.value` | Array of cookie values from `Set-Cookie` | — |
+| `response.set_cookie.name` | Array of cookie names from `Set-Cookie` | n/a |
+| `response.set_cookie.value` | Array of cookie values from `Set-Cookie` | n/a |
 
 ## Referer Request Header
 
@@ -633,30 +656,30 @@ via `env <NAME>;` directives in the main context.
 
 | Variable | Description |
 | --- | --- |
-| `request.header_no_fp.value` | Request headers excluding the most FP-prone ones (User-Agent, Referer, …) |
+| `request.header_no_fp.value` | Request headers excluding the most FP-prone ones (User-Agent, Referer, etc.) |
 
 ## Supported operators
 
 The `op` field of a rule condition names one of these operators.
-The set is dispatched by string equality in `ka_engine.lua` — anything
+The set is dispatched by string equality in `ka_engine.lua`, anything
 not in this table will simply never match.
 
 ### Negation
 
 Every binary operator can be negated. Karna's canonical condition
-shape is `{op = "<base>", negated = true|false}` — a separate boolean
+shape is `{op = "<base>", negated = true|false}`, a separate boolean
 field rather than a `!` prefix on the operator string. We deliberately
 moved away from ModSecurity's `!@op` syntax because:
 
 - The Lua field name is greppable (`negated:true` lights up every
   negated condition in the codebase).
-- The default is "not negated" — `negated` is checked strictly
+- The default is "not negated", `negated` is checked strictly
   (`== true`), so stray truthy strings/numbers don't accidentally
   invert a rule.
 - It separates "what operator" from "polarity of the match", which
   was conflated in the legacy form.
 
-For back-compat, the engine still accepts `op = "!<base>"` on input —
+For back-compat, the engine still accepts `op = "!<base>"` on input.
 SecLang's `@!op` parser emits the canonical shape now, but
 hand-written JSON local rules can use either form. The legacy form is
 a back-compat surface, not the documented public API; new rules
@@ -664,7 +687,7 @@ should use `negated`.
 
 Negation semantics: the negated form fires when the positive doesn't
 match AND the value being tested is set (a missing/`nil` variable
-doesn't satisfy a negated condition — the test is "value is present
+doesn't satisfy a negated condition, the test is "value is present
 AND doesn't match", not "value is missing OR doesn't match"). One
 exception: `isSet` with `negated: true` is the only sensible way to
 spell "variable is absent", so it explicitly fires on a missing
@@ -674,7 +697,7 @@ variable.
 |---|---|---|
 | `rx`                  | ✓ | PCRE regex match against the variable value (uses `ngx.re.match` under the hood). |
 | `eq`                  | ✓ | Exact equality (strings or numbers). |
-| `ge` / `gt` / `lt` / `le` | ✓ | Numeric ordering — value must parse as a number. Non-numeric inputs fail closed. |
+| `ge` / `gt` / `lt` / `le` | ✓ | Numeric ordering, value must parse as a number. Non-numeric inputs fail closed. |
 | `beginsWith`          | ✓ | String prefix match. |
 | `endsWith`            | ✓ | String suffix match. |
 | `contains`            | ✓ | Substring presence (literal, case-sensitive). |
@@ -688,15 +711,15 @@ variable.
 | `validateUrlEncoding` | ✓ | Matches when input contains malformed `%XX` sequences. |
 | `validateUtf8Encoding`| ✓ | Matches when input is NOT valid UTF-8 (lone continuation bytes, truncated sequences, overlong encodings, surrogates, codepoints > U+10FFFF). |
 | `validateByteRange`   | ✓ | Matches when any byte in input falls OUTSIDE the `value` ranges (e.g. `"32-126,9,10,13"`). |
-| `unconditionalMatch`  | — | Always true. Used by CRS as the predicate of chains gated entirely by setvar side-effects on other conditions. |
-| `mcp_method_in`       | — | JSON-RPC `method` field is in `value` (MCP). |
-| `mcp_jsonrpc_valid`   | — | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
+| `unconditionalMatch`  | n/a | Always true. Used by CRS as the predicate of chains gated entirely by setvar side-effects on other conditions. |
+| `mcp_method_in`       | n/a | JSON-RPC `method` field is in `value` (MCP). |
+| `mcp_jsonrpc_valid`   | n/a | Request body is a syntactically valid JSON-RPC 2.0 envelope (MCP). |
 
 Seclang translates CRS operators (`@detectSQLi`, `@streq`, `@detectXSS`,
-`@ipMatch`, …) to the engine-side names above. CRS-relevant gaps still
+`@ipMatch`, etc.) to the engine-side names above. CRS-relevant gaps still
 not implemented: `@ipMatchF` / `@ipMatchFromFile`, `@verifyCC`,
 `@verifySSN`, `@geoLookup`, `@inspectFile`. Rules that depend on these
-are skipped at parse time with a `WARN` line — `grep "WARN" $(kong path)/logs/error.log`
+are skipped at parse time with a `WARN` line, `grep "WARN" $(kong path)/logs/error.log`
 after a `kong reload` to enumerate.
 
 ## Rule Schema
@@ -731,9 +754,9 @@ after a `kong reload` to enumerate.
 }
 ```
 
-## False Positives — taming libinjection
+## False Positives, taming libinjection
 
-LibInjection on request headers is prone to false positives — `User-Agent`
+LibInjection on request headers is prone to false positives, `User-Agent`
 and `Referer` strings often look SQLi-shaped to it. To carve out exceptions,
 use `remove_variable_rx` rule controls:
 
@@ -960,7 +983,7 @@ use `remove_variable_rx` rule controls:
 ## Request enrichment
 
 When a sibling plugin (geoip resolver, ASN matcher, fingerprint module,
-threat-intel feed, …) annotates the request in `kong.ctx.shared`, Karna
+threat-intel feed, etc.) annotates the request in `kong.ctx.shared`, Karna
 includes those annotations in audit log v2 under a top-level
 `enrichment` field, and exposes well-known geo/ASN fields as rule
 variables.
@@ -984,7 +1007,7 @@ custom bucket** (anything else the sibling wants to record).
 Karna reads these *opportunistically*: when a key is absent (`nil` or
 `false`) it's simply omitted, and the corresponding rule variable is
 not registered. Karna works fine when no sibling plugin sets any of
-these — `enrichment` is omitted from the audit log entirely if every
+these, `enrichment` is omitted from the audit log entirely if every
 slot is empty.
 
 ### Free-form custom bucket
@@ -1015,7 +1038,7 @@ These end up in `enrichment.custom` in the audit log:
 }
 ```
 
-The custom bucket is passed through unchanged — Karna does not
+The custom bucket is passed through unchanged, Karna does not
 validate or clip its contents. If it's missing or empty, `custom` is
 omitted.
 
@@ -1071,7 +1094,7 @@ Behaviour notes:
   `auditlog_only_on_match = true` still emits a record when a sibling
   plugin logged something.
 - Malformed entries (missing `source` / `rule_id` / `message`, or wrong
-  types) are silently dropped — one bad caller cannot break the audit log
+  types) are silently dropped, one bad caller cannot break the audit log
   for the rest of the request.
 - `source`, `rule_id` and `message` are clipped at 100 / 100 / 1000 bytes
   respectively. `tags` and `metadata` are passed through unchanged.
@@ -1088,7 +1111,7 @@ own behaviour. The action shape:
 "action": {
     "set_variable": {
         "name":  "<key>",
-        "value": <any literal — string / number / boolean / object>,
+        "value": <any literal, string / number / boolean / object>,
         "type":  "shared" | "plugin"
     }
 }
@@ -1128,7 +1151,7 @@ you can carry a piece of the request into the shared context:
 A sibling Kong plugin chained after Karna can then read
 `kong.ctx.shared.skip_js_challenge` and short-circuit accordingly. The
 plugin chosen as the consumer of the variable is entirely a property
-of how the plugins are wired together — Karna does not know or care
+of how the plugins are wired together, Karna does not know or care
 which plugin (if any) will read the value, and works fine when nothing
 reads it.
 
