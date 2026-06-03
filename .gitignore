@@ -41,6 +41,14 @@ secrets/
 luarocks/
 lua_modules/
 
+# === Native (C/C++) build artefacts ===
+# libka_ac / libka_re2 are compiled from src/ at container start (and when
+# testing locally). The C/C++ sources are tracked; the binaries are not.
+src/**/*.o
+src/**/*.so
+src/**/*.dylib
+src/**/test
+
 # === Logs / runtime artefacts ===
 logs/
 *.log
