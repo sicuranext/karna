@@ -2,53 +2,47 @@
 
 [![CI](https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg)](https://github.com/sicuranext/karna/actions/workflows/ci.yml)
 
-A modern WAF (Web Application Firewall) for Kong Gateway — OWASP
-CoreRuleSet compatible, MCP-aware, rate-limit-native, with rules in
-SecLang or JSON.
+A WAF (Web Application Firewall) for Kong Gateway — OWASP CoreRuleSet
+compatible, MCP-aware, rate-limit-native, with rules in SecLang or JSON.
 
 ## Why Karna
 
-**Modern operator surface.**
+Operating it:
 
-- **No restarts.** Add / remove / modify rules at runtime via Kong's
-  Admin API. No `kong reload`, no nginx restart, no SIGHUP. Config
-  cache invalidates per plugin instance on its own.
-- **No config files.** Rules, limits, policies — all in the plugin
-  schema, configurable per-service / per-route through the Admin API.
-- **Toggle scope.** Attach Karna selectively: a service, a route, a
-  consumer, globally. Disable it the same way.
-- **Two rule languages.** Write rules in SecLang (ModSec-compatible)
-  for the CRS pack and CRS exclusion plugins, or in JSON for inline
-  custom detections. Choose per rule.
+- Change rules at runtime through Kong's Admin API: add, remove, or
+  edit them with no `kong reload` and no nginx restart. The config
+  cache invalidates per plugin instance.
+- Rules, limits, and policies live in the plugin schema, set per
+  service or per route through the Admin API. No config files on disk.
+- Attach Karna where you want it: a service, a route, a consumer, or
+  globally. Detach it the same way.
+- Write rules in SecLang (ModSecurity-compatible) for the CRS pack and
+  exclusion plugins, or in JSON for inline custom rules. Pick per rule.
 
-**Beyond detection.**
+Beyond detection:
 
-- **Rate-limit rules** native in the rule language — no separate
-  plugin to chain.
-- **MCP-aware.** First-class detection on the Model Context Protocol
-  (Streamable HTTP transport): JSON-RPC envelope parsing, SSE
-  reassembly, per-event rule evaluation. No other WAF does this today.
-- **CRS exclusion plugins** loaded straight from upstream — drop a
-  WordPress / Drupal / Nextcloud exclusion pack on disk, enable it
-  per route. We don't fork upstream plugins.
-- **Sibling-plugin enrichment.** Karna reads `kong.ctx.shared` keys
-  set by GeoIP / ASN / UA-parser plugins and surfaces them as rule
-  variables and audit log fields.
+- Rate limiting is a rule action, so there's no second plugin to chain.
+- Karna understands the Model Context Protocol (Streamable HTTP
+  transport): it parses the JSON-RPC envelope, reassembles SSE, and
+  evaluates rules per event.
+- CRS exclusion plugins load straight from upstream. Drop a WordPress,
+  Drupal, or Nextcloud pack on disk and enable it per route; Karna
+  doesn't fork them.
+- Karna reads `kong.ctx.shared` keys set by GeoIP, ASN, or user-agent
+  plugins and exposes them as rule variables and audit log fields.
 
-**Designed for ~0 false positives.** When a CRS rule fires on a
-payload that looks like SQLi or XSS but is actually a proper name
-(`O'Brien`), an Italian street address (`Via dell'Orso, 5`), or any
-innocuous string that happens to contain syntax-breaking characters,
-Karna can strip the dangerous characters in place and forward the
-request upstream instead of returning 403. The user is never
-blocked, the upstream never sees the unsafe input. See
-[Sanitize, don't block](#sanitize-dont-block-karnas-killer-feature)
-below.
+Few false positives:
 
-For the specific FP class around the **Referer header** —
-historically a top contributor to noisy WAF dashboards because it
-carries arbitrary user-navigated URLs full of syntax-breaking
-characters — Karna surfaces additional structured views of the
+When a CRS rule fires on benign input that looks like SQLi or XSS — a
+proper name like `O'Brien`, an address like `Via dell'Orso, 5`, or any
+string with syntax-breaking characters — Karna can strip those
+characters in place and forward the request instead of returning 403.
+The user isn't blocked, and the upstream never sees the unsafe input.
+See [Sanitize, don't block](#sanitize-dont-block) below.
+
+The Referer header is a common source of these false positives,
+because it carries arbitrary user-navigated URLs full of
+syntax-breaking characters. For it, Karna exposes extra views of the
 request:
 
 - `request.header.referer.{scheme,host,path,query}` — the Referer
@@ -59,11 +53,10 @@ request:
   *except* the headers most commonly responsible for false positives:
   Referer, User-Agent, Accept-*, Content-*, Sec-*, Authorization.
 
-Both live in the per-request inspection table — readable from
-`%{var}` template macros and surfaced in the audit log enrichment
-block. Direct rule-variable matching against them is not yet wired
-into the match dispatch (you can target them via macro substitution,
-not as a `conditions[].variables` entry today).
+Both live in the per-request inspection table. You can read them from
+`%{var}` template macros, and they appear in the audit log enrichment
+block. You can't yet match them directly as a `conditions[].variables`
+entry — only through macro substitution.
 
 ### How it differs from ModSecurity
 
@@ -109,73 +102,157 @@ transport. See the `mcp_*` configuration fields below.
 Karna ships with full support for loading OWASP CRS 4.x as the
 default rule pack. CRS 4.26.0 is what the regression suite tracks.
 
-The compatibility goal is **detect the attack class**, not **match
-the exact CRS rule id**. CRS is designed primarily for Apache +
-ModSecurity and assumes that runtime's quirks (TX-side-effect
-variables, anomaly scoring as the blocking decider, response-side
-body inspection, `SecRuleUpdateTargetById` exception files). Karna
-runs on Kong / OpenResty / nginx, where many of those mechanisms are
-either covered upstream by nginx itself or replaced by Karna's
-explicit always-on validation gates. So a malicious request gets
-blocked, but the audit log entry sometimes carries a Karna-native
-rule id (`method_allowed`, `uri_path_check_violation`,
-`request_body_parser_violation`, …) rather than the exact `920XXX`
-the CRS regression framework expects.
+Karna is **effectively 100% compatible**: it passes the entire in-scope
+CRS regression suite (`engine_blocking_mode=true`, production-default
+config) at every paranoia level.
 
-**Pass rates on the in-tree regression suite (CRS 4.26.0,
-`engine_blocking_mode=true`):**
-
-| Paranoia level | Pass rate | Tests |
+| Paranoia level | Pass rate | Tests (cumulative) |
 |---|---|---|
-| **PL1** | **100.00%** | 2668 / 2668 |
-| **PL2** | **99.07%** | 1284 / 1296 |
+| PL1 | 100% | 2757 / 2757 |
+| PL2 | 100% | 4071 / 4071 |
+| PL3 | 100% | 4608 / 4608 |
+| PL4 | 100% | 4674 / 4674 |
 
-Every PL1 CRS test that exists upstream either passes outright or
-is explicitly tagged in `KARNA_ARCH_RESIDUAL_TESTS` with a
-documented reason (malformed request lines rejected by Kong/nginx
-before Karna sees them, payloads whose detection differs from the
-ruleset's letter for reasons that would force engine compromises
-elsewhere, hardware-bound timeouts on multi-KB bodies).
+PL1 is the recommended production posture, and it's clean in both
+directions: no missed detections and no false positives. Higher levels
+pass too, but PL>1 trades detection breadth for false positives — which
+is why CRS ships per-app
+[exclusion plugins](#crs-plugins-wordpress-drupal-etc) — so most
+deployments run PL1.
 
-The 12 remaining PL2 fails are out-of-scope by design: CRS rule
-families targeting response bodies (950-956), anomaly scoring
-(949 / 959 / 980), and `999-COMMON-EXCEPTIONS-AFTER`. Response-side
-rules require a different processing model than Karna's
-request-time engine; anomaly scoring is replaced by eager-block /
-fixed_response actions; the `999` bucket is exception handling
-that Karna users address via local rules instead.
+The aim is to detect the attack class, not to reproduce every CRS rule
+id. CRS is built for Apache + ModSecurity and leans on that runtime's
+quirks (TX-side-effect variables, anomaly scoring as the blocking
+decision, response-body inspection, `SecRuleUpdateTargetById` exception
+files). Karna runs inside Kong / OpenResty, where some of that is handled
+by nginx or by Karna's always-on validation gates instead — a malicious
+request still gets blocked, but the audit log may carry a Karna-native
+rule id (`method_allowed`, `uri_path_check_violation`, …) rather than the
+exact `920xxx`. The out-of-scope families, each enumerated in `start.py`
+with its reason:
 
-**False positives**: Karna ships with **zero false positives**
-across the combined PL1+PL2 corpus. Every CRS test marked
-`no_expect_ids` passes (i.e. Karna does NOT fire the rule on a
-benign payload it shouldn't fire on). This is the result of
-explicit FP-suppression work: the XML→ARGS scope fix, the
-multipart-duplicate-part handling, the `t:urlDecodeUni`
-idempotency adjustment for `%2B` decode, the `MATCHED_VARS`
-untruncated value plumbing — each one closed an FP class that
-stock CRS-on-ModSec carries by default.
+- Response-side families (950–956) and anomaly scoring (949 / 959 / 980):
+  Karna runs at request time and blocks on the first match — no
+  response-body phase, no score accumulation.
+- Protocol enforcement (920): covered by nginx and Karna's always-on
+  gates (method / path / header / content-type / charset).
+- Exception handling (999): done through per-route plugin config or local
+  rules.
+- A short list of documented per-test residuals — ModSec-only request
+  shapes nginx rejects first, the HTTP-parameter-pollution meta-flag
+  (921180, which needs a regex-named TX-collection selector and is itself
+  false-positive-prone), and the nested-array parameter-name false
+  positive at PL2+ (resolved with an exclusion plugin).
 
-**Verify the numbers locally**. The OWASP CRS regression bench
-harness lives at [`crs-regression-test/`](./crs-regression-test/) and
-is the same code the CI runs. With the docker-compose dev stack up:
+Karna fires on zero benign payloads in the PL1 suite. That comes from
+explicit FP-suppression work — the XML→ARGS scope fix, multipart
+duplicate-part handling, the `t:urlDecodeUni` `%2B` idempotency fix, and
+untruncated `MATCHED_VARS` — each closing an FP class that stock
+CRS-on-ModSec carries by default.
+
+You can verify the numbers locally. The harness lives in
+[`crs-regression-test/`](./crs-regression-test/) and is the code CI runs:
 
 ```sh
 cd crs-regression-test
-./fetch-tests.sh                # downloads CRS 4.26.0 PL1 test YAMLs
-./configure-kong.sh             # configures Kong + Karna plugin
+./fetch-tests.sh                # PL1 test set (CRS 4.26.0)
+./configure-kong.sh             # configure Kong + Karna
 python3 start.py --testfile tests/
-# → PL1 100% (2668/2668)
+# -> PL1 100% (2757/2757)
 
-CRS_MAX_PL=2 ./fetch-tests.sh   # extend to PL1+PL2
-PARANOIA=2 ./configure-kong.sh  # raise Karna paranoia ceiling
+CRS_MAX_PL=4 ./fetch-tests.sh   # extend through PL4
+PARANOIA=4 ./configure-kong.sh
 python3 start.py --testfile tests/
-# → combined 99.5%+ (4052/4071)
+# -> 100% (4674/4674)
 ```
 
-The harness reads `KARNA_REMOVED_RULES` and `KARNA_ARCH_RESIDUAL_TESTS`
-maps in `start.py` — every CRS rule we intentionally don't fire (and
-why) is enumerated there. Anything not listed and still failing is a
-real gap, please open an issue.
+`start.py` lists every rule and test Karna treats as removed,
+out-of-scope, or a documented residual, each with a reason. Anything not
+listed and still failing is a real gap — please open an issue.
+
+## CRS plugins (WordPress, Drupal, etc.)
+
+OWASP ships extra rule packs called CRS plugins. Each one adjusts the
+Core Rule Set for a specific app (WordPress, Drupal, Nextcloud, phpBB,
+and others), usually by switching off the rules that cause false
+positives on that app.
+
+Karna loads these plugins unchanged, the same way any other CRS setup
+does. It doesn't ship with them, so download the ones you need first.
+
+### 1. Download the plugins
+
+The plugins live at [github.com/coreruleset](https://github.com/coreruleset),
+one repo each. Clone the ones you want into a single directory. Karna
+reads from `/opt/coreruleset-plugins/` by default.
+
+```sh
+mkdir -p /opt/coreruleset-plugins
+cd /opt/coreruleset-plugins
+git clone https://github.com/coreruleset/wordpress-rule-exclusions-plugin.git
+```
+
+Each plugin keeps its rules in a `plugins/` subdirectory:
+
+```
+/opt/coreruleset-plugins/
+  wordpress-rule-exclusions-plugin/
+    plugins/
+      wordpress-rule-exclusions-before.conf
+      wordpress-rule-exclusions-config.conf
+```
+
+If you run Karna in a container, clone the plugins into the image or
+mount the directory as a volume.
+
+### 2. Enable the plugin
+
+Add the plugin's directory name to `crs_plugins_enabled`:
+
+```json
+{
+  "name": "karna",
+  "config": {
+    "crs_plugins_path": "/opt/coreruleset-plugins/",
+    "crs_plugins_enabled": ["wordpress-rule-exclusions-plugin"]
+  }
+}
+```
+
+Use the directory name, not a file path. The next request to that
+service loads the plugin and applies its exclusions.
+
+### Notes
+
+- Plugins apply per service. Enable the WordPress plugin on the service
+  in front of WordPress; your other services keep the full CRS.
+- Karna reads the files once and caches them. After you change files on
+  disk for an enabled plugin, re-save the Karna config or restart the
+  worker to reload them.
+- A name in `crs_plugins_enabled` that isn't on disk is ignored, not an
+  error. You can list it before you clone it.
+- Update a plugin with `git pull` in its directory.
+- A plugin's own settings, if it has any, live in its `*-config.conf`
+  file. Edit them there.
+
+### Inline exclusions
+
+For one or two small changes you don't need a plugin directory. Put the
+rules in `custom_secrules` instead. This stops CRS rule 941100 from
+running on the WordPress admin path:
+
+```json
+{
+  "config": {
+    "custom_secrules": [
+      "SecRule REQUEST_URI \"@beginsWith /wp-admin/\" \"id:9000001,phase:1,pass,nolog,ctl:ruleRemoveById=941100\""
+    ]
+  }
+}
+```
+
+These use the same `ctl:ruleRemove*` controls as the plugins. See
+[Rule Control Functions](#rule-control-functions) for the full list.
 
 ## Rate limiting
 
@@ -245,7 +322,7 @@ Detection-only mode (`engine_blocking_mode=false`) still increments
 the counter — useful for dialing in a threshold before turning the
 gate on. The terminal 429 only happens when blocking is enabled.
 
-## Sanitize, don't block — Karna's killer feature
+## Sanitize, don't block
 
 The biggest source of WAF false positives is rules firing on benign
 input that happens to share syntax with attack payloads — an
@@ -432,7 +509,7 @@ plugins = bundled,karna
 
 ## Local development / integration test stack
 
-A turnkey Docker Compose stack is in this repo: Postgres + Redis + Kong
+A Docker Compose stack is in this repo: Postgres + Redis + Kong
 (with libinjection + CRS pre-installed) + an HTTP echo upstream.
 
 ```sh
@@ -484,6 +561,9 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `limit_arg_value_length` | number | `400` | Max length of a single arg value. |
 | `limit_arg_num` | number | `255` | Max number of args. |
 | `try_bas64decode_if_possible` | bool | `false` | Attempt base64 decoding of arg values before inspection. |
+| `crs_plugins_path` | string | `/opt/coreruleset-plugins/` | Directory holding the CRS plugins you downloaded. See [CRS plugins](#crs-plugins-wordpress-drupal-etc). |
+| `crs_plugins_enabled` | array | `[]` | Plugin directory names to load, e.g. `["wordpress-rule-exclusions-plugin"]`. |
+| `custom_secrules` | array | `[]` | SecLang rule strings parsed at load. Use it for inline exclusions without a plugin directory. |
 | `rules_request` | array of stringified-JSON | — | Per-service local rules for the access / header_filter phase, including rule controls. |
 | `rules_response` | array of stringified-JSON | — | Per-service local rules for the response inspection. |
 | `auditlog_enabled` | bool | `true` | Write JSON audit logs. |
