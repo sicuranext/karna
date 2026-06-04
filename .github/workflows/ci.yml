@@ -94,8 +94,8 @@ jobs:
 
       - name: Build & bring up the dev stack
         run: |
-          docker compose up -d --build
-          docker compose ps
+          docker compose -f docker/docker-compose.dev.yml up -d --build
+          docker compose -f docker/docker-compose.dev.yml ps
 
       - name: Wait for Kong admin API
         run: |
