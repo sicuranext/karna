@@ -110,3 +110,5 @@ private/
 # raw results, and the ongoing blog-post notes. Not part of Karna's
 # public surface and the result data is too noisy to publish raw.
 bench/
+# Generated WAF evaluation reports (not source)
+tests/reports/
