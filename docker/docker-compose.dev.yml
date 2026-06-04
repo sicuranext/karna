@@ -3,10 +3,14 @@
 # Ports are intentionally shifted into the 28xxx / 25432 / 26379 range to
 # avoid clashing with other Kong / Postgres / Redis instances on the host.
 #
-# Quickstart:
-#   docker compose up --build
+# Run from the repo root:
+#   docker compose -f docker/docker-compose.dev.yml up --build
 #   curl http://localhost:28001/   # Kong Admin API ready?
 # See docker/README.md for the full walkthrough and how to run hurl tests.
+#
+# This builds the `base` stage of docker/Dockerfile (Kong + libinjection + CRS +
+# native scanners) and bind-mounts the plugin source, running `luarocks make` at
+# start for live iteration. For production use docker-compose.prod.yml instead.
 
 services:
   postgres:
@@ -45,8 +49,9 @@ services:
 
   kong:
     build:
-      context: .
-      dockerfile: docker/kong/Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: base
     image: karna-dev:latest
     container_name: karna-kong
     user: "root"
@@ -106,12 +111,12 @@ services:
 
     volumes:
       # Plugin source — read-only. luarocks make at startup installs from here.
-      - ./kong:/usr/local/kong/custom-plugins/karna/kong:ro
+      - ../kong:/usr/local/kong/custom-plugins/karna/kong:ro
       # RE2 spike: C source compiled to libka_re2.so at start (memory karna-re2-spike).
-      - ./src:/usr/local/kong/custom-plugins/karna/src:ro
-      - ./tests:/usr/local/kong/custom-plugins/karna/tests:ro
-      - ./kong-plugin-karna-1.0.0-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.0.0-0.rockspec:ro
-      - ./docker/kong/main-env.conf:/etc/kong/nginx/main-env.conf:ro
+      - ../src:/usr/local/kong/custom-plugins/karna/src:ro
+      - ../tests:/usr/local/kong/custom-plugins/karna/tests:ro
+      - ../kong-plugin-karna-1.0.0-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.0.0-0.rockspec:ro
+      - ./main-env.conf:/etc/kong/nginx/main-env.conf:ro
 
     command: >
       sh -c "

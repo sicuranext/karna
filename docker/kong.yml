@@ -1,0 +1,20 @@
+# Karna — DB-less declarative config. Put Karna in front of your app.
+#
+# Loaded by docker-compose.prod.yml at boot (KONG_DECLARATIVE_CONFIG).
+# Point the service `url` at whatever you already run: any language, any host.
+_format_version: "3.0"
+
+services:
+  - name: my-app
+    url: http://my-backend:8080        # <-- your existing app (host:port or http://...)
+    routes:
+      - name: my-app
+        paths: ["/"]
+    plugins:
+      - name: karna
+        config:
+          engine_blocking_mode: false  # start in detection-only; set true to block (403)
+          paranoia_level: 1            # OWASP CRS paranoia level (1-4)
+          auditlog_enabled: true       # JSON audit log
+          redis_host: redis            # only used by rate_limit rules
+          redis_port: 6379

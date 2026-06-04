@@ -62,10 +62,10 @@ plugin with no required dependency on other plugins.
 - **Language**: Lua (LuaJIT via OpenResty)
 - **Runtime**: Kong Gateway (OpenResty/nginx)
 - **Lua dependencies (bundled with OpenResty / Kong)**: `resty.lrucache`, `resty.ipmatcher`, `resty.redis`, `cjson`, `ngx.base64`, `ngx.re`
-- **Lua dependencies (declared in rockspec)**: `lua-resty-http`, `lua-zlib`, `inspect`. The dev image installs `lua-zlib` from a direct rockspec URL because the luarocks.org manifest exceeds LuaJIT's 65k-constants limit (`luarocks install lua-zlib` plain fails on Kong's image — see `docker/kong/Dockerfile`).
+- **Lua dependencies (declared in rockspec)**: `lua-zlib` (gzip request bodies). The image installs it from a direct rockspec URL because the luarocks.org manifest exceeds LuaJIT's 65k-constants limit (`luarocks install lua-zlib` plain fails on Kong's image — see `docker/Dockerfile`).
 - **Native dependencies**: `libinjection.so` (system library, FFI-loaded). Default path `/usr/local/lib/libinjection.so`, overridable via `KARNA_LIBINJECTION_SO` env var.
 - **Data dependencies**: OWASP CRS rules at `/opt/coreruleset/rules/` (download separately). Override the path with the `KARNA_CRS_PATH` env var (read once at `init_worker` via `modules/seclang.lua`; trailing slash auto-normalized).
-- **Env var propagation**: env vars are read with `os.getenv()` from worker processes. nginx wipes the env by default, so any var you want available must be declared in the main context via `env <NAME>;`. With Kong, point `KONG_NGINX_MAIN_INCLUDE` at a snippet such as `docker/kong/main-env.conf`.
+- **Env var propagation**: env vars are read with `os.getenv()` from worker processes. nginx wipes the env by default, so any var you want available must be declared in the main context via `env <NAME>;`. With Kong, point `KONG_NGINX_MAIN_INCLUDE` at a snippet such as `docker/main-env.conf`.
 
 ## Module Require Paths
 Modules use Kong's plugin require convention:

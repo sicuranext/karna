@@ -1,0 +1,43 @@
+# Karna — production stack (DB-less).
+#
+# Kong runs in DB-less mode: no Postgres, no migrations. The declarative config
+# (kong.yml) is loaded at boot and puts Karna in front of your backend. Redis is
+# only used by `rate_limit` rules; the rest of the WAF works without it.
+#
+# Run from the repo root:
+#   1. edit docker/kong.yml -> point the service `url` at your app
+#   2. docker compose -f docker/docker-compose.prod.yml up -d --build
+#   3. traffic: client -> :8000 (Karna / Kong) -> your app
+#
+# For the local dev/integration stack (Postgres + echo + live plugin reload)
+# use docker-compose.dev.yml instead.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: karna-redis
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  karna:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: prod
+    image: karna:latest
+    container_name: karna
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"      # proxy
+      - "8443:8443"      # proxy SSL
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_LOG_LEVEL: warn
+      # KONG_PLUGINS=bundled,karna and the PCRE match-limit are baked into the image.
+    volumes:
+      - ./kong.yml:/kong/kong.yml:ro
+    restart: unless-stopped

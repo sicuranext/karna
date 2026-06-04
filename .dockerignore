@@ -1,0 +1,16 @@
+# Build context is the repo root (docker build -f docker/Dockerfile .).
+# Only the plugin source (kong/), the native C sources (src/), and the rockspec
+# are COPYed into the image; everything below is excluded to keep the context
+# (and the baked image) lean.
+.git
+.github
+bench
+docs
+ka-integration-tests
+ka-regression-tests
+ka-stress-test
+ka-unittest
+crs-regression-test
+tests
+scripts
+*.md
