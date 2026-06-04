@@ -476,21 +476,40 @@ other matches that fired.
 
 ## Installation
 
-Three pieces need to be on the Kong / OpenResty host.
-
-### 1. The plugin itself
-
-Install via LuaRocks from the cloned repo:
+The quickest way onto an existing Kong / OpenResty host is the installer
+script. One command installs the plugin (via LuaRocks), builds
+`libinjection.so`, downloads the OWASP CoreRuleSet, and builds the native
+RE2 / Aho-Corasick scanners:
 
 ```sh
 git clone https://github.com/sicuranext/karna.git
 cd karna
-luarocks make
+sudo ./scripts/install.sh
 ```
 
-Runtime deps declared in the rockspec (`lua-resty-http`, `lua-zlib`,
-`inspect`) are pulled in automatically. `lua-zlib` requires `zlib1g-dev`
-at compile time. On Kong base images, `inspect` is already pre-installed.
+Override the defaults with env vars (`CRS_VERSION`, `CRS_PATH`,
+`LIBINJECTION_REF`, `LIB_PREFIX`; pass them through with `sudo -E`) or skip
+pieces you already have (`--skip-libinjection`, `--skip-crs`, `--skip-native`).
+On a Debian-based Kong image it installs the build dependencies too. Then
+enable the plugin in Kong (see below) and `kong reload`.
+
+The manual steps the script automates are below, if you prefer to run them by
+hand.
+
+### 1. The plugin itself
+
+Install via LuaRocks from the cloned repo. The one runtime dep declared in
+the rockspec is `lua-zlib` (gzip-encoded request bodies); it needs
+`zlib1g-dev` at compile time and must be installed from a direct rockspec URL
+first, because the full luarocks.org manifest is too large for LuaJIT to load
+(`luarocks install lua-zlib` plain fails on Kong's image).
+
+```sh
+git clone https://github.com/sicuranext/karna.git
+cd karna
+luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.2-2.rockspec
+luarocks make
+```
 
 ### 2. `libinjection.so`
 
@@ -527,7 +546,7 @@ The path is overridable via the env var `KARNA_CRS_PATH` (default
 > env KARNA_LIBINJECTION_SO;
 > ```
 >
-> See `docker/kong/main-env.conf` in this repo for the working reference.
+> See `docker/main-env.conf` in this repo for the working reference.
 
 ### Enable the plugin in Kong
 
@@ -539,13 +558,52 @@ plugins = bundled,karna
 
 Then `kong reload`.
 
-## Local development / integration test stack
+## Run with Docker (production)
 
-A Docker Compose stack is in this repo: Postgres + Redis + Kong
-(with libinjection + CRS pre-installed) + an HTTP echo upstream.
+The repo ships a self-contained production image. One `docker build` bakes
+Kong, the OWASP CoreRuleSet, libinjection, Karna, and the native RE2 /
+Aho-Corasick scanners into a single image. No bind mounts, no `luarocks make`
+at container start.
 
 ```sh
-docker compose up --build
+git clone https://github.com/sicuranext/karna.git
+cd karna
+docker build -f docker/Dockerfile -t karna .
+```
+
+Point Kong at your backend with a DB-less declarative config. `docker/kong.yml`
+is a template: set the service `url` to your app. Then bring it up with
+`docker/docker-compose.prod.yml`, which runs Karna plus Redis (Redis is only
+used by `rate_limit` rules):
+
+```sh
+# edit docker/kong.yml -> set the service url to your app, then:
+docker compose -f docker/docker-compose.prod.yml up -d
+```
+
+Or run the image on its own (rate-limit rules then need an external Redis):
+
+```sh
+docker run -d --name karna -p 8000:8000 \
+  -e KONG_DATABASE=off \
+  -e KONG_DECLARATIVE_CONFIG=/kong/kong.yml \
+  -v $PWD/docker/kong.yml:/kong/kong.yml:ro \
+  karna
+```
+
+Traffic then flows `client -> :8000 (Karna / Kong) -> your app`. Start with
+`engine_blocking_mode: false` (detection-only), watch the JSON audit log, and
+flip it to `true` to block. `KONG_PLUGINS=bundled,karna` and the PCRE
+match-limit are baked into the image.
+
+## Local development / integration test stack
+
+The dev stack (`docker/docker-compose.dev.yml`) adds Postgres, an HTTP echo
+upstream, and live plugin reload on top of Kong with libinjection + CRS
+pre-installed. For production use the self-contained image above.
+
+```sh
+docker compose -f docker/docker-compose.dev.yml up --build
 ```
 
 See [`docker/README.md`](./docker/README.md) for the quickstart and the
