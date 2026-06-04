@@ -32,10 +32,12 @@ local function reset_mocks()
         query = nil,
         headers = {},
         body = nil,
+        body_form = nil,        -- set_body(args, "...urlencoded") capture
         raw_path_returns = nil,
         query_returns = nil,
         header_returns = {},
         body_returns = nil,
+        body_form_returns = nil, -- get_body("...urlencoded") seed
     }
 end
 
@@ -45,6 +47,7 @@ local kong = {
     request = {
         get_raw_path = function() return recorded.raw_path_returns end,
         get_query = function() return recorded.query_returns end,
+        get_body = function(_mime) return recorded.body_form_returns end,
     },
     service = {
         request = {
@@ -52,6 +55,7 @@ local kong = {
             set_query = function(q) recorded.query = q end,
             set_header = function(name, v) recorded.headers[name] = v end,
             set_raw_body = function(b) recorded.body = b end,
+            set_body = function(args, _mime) recorded.body_form = args end,
         },
     },
 }
@@ -71,6 +75,14 @@ end
 -- 99% of the time and is what we exercise here).
 -- ============================================================
 local function fix_matching_parts(rule, matched_parts)
+    local ue_body
+    local ue_dirty = false
+    local function _ue_clean(s)
+        if type(s) ~= "string" then return s end
+        s = string_gsub(s, "%%", "")
+        s = string_gsub(s, "\\", "")
+        return (string_gsub(s, rule.action.fix_matched_parts.remove_chars_pattern, ""))
+    end
     for _, mp in pairs(matched_parts) do
 
         -- path
@@ -111,9 +123,26 @@ local function fix_matching_parts(rule, matched_parts)
             end
         end
 
-        -- request body (in-memory branch only)
-        m = string_match(mp.matched_on, '^request%.body')
-        if m then
+        -- urlencoded body field: per-value sanitize, structure preserved.
+        -- Match both `.value:<name>` and `.name:<name>` (request.arg.value:x
+        -- resolves to both; pairs() order is non-deterministic).
+        local ub = string_match(mp.matched_on, '^request%.body%.urlencode%.[^:]+:(.+)$')
+        if ub then
+            if ue_body == nil then
+                ue_body = kong.request.get_body("application/x-www-form-urlencoded") or false
+            end
+            if type(ue_body) == "table" and ue_body[ub] ~= nil then
+                local v = ue_body[ub]
+                if type(v) == "table" then
+                    for i, vv in ipairs(v) do v[i] = _ue_clean(vv) end
+                else
+                    ue_body[ub] = _ue_clean(v)
+                end
+                ue_dirty = true
+            end
+
+        -- generic body (scalar request.body / json / multipart / xml): raw strip
+        elseif string_match(mp.matched_on, '^request%.body') then
             local body = request_get_raw_body()
             if body then
                 body = string_gsub(body, "%%", "")
@@ -122,6 +151,10 @@ local function fix_matching_parts(rule, matched_parts)
                 kong.service.request.set_raw_body(body)
             end
         end
+    end
+
+    if ue_dirty and type(ue_body) == "table" then
+        kong.service.request.set_body(ue_body, "application/x-www-form-urlencoded")
     end
 end
 
@@ -213,6 +246,30 @@ fix_matching_parts(
 )
 ok(recorded.query.x == "abbc",
    "default strips %% and backslash even with empty pattern (got: " .. tostring(recorded.query.x) .. ")")
+
+print("- urlencoded body field: user=andrea' OR 1=1-- → value sanitized, form kept")
+reset_mocks()
+recorded.body_form_returns = { user = "andrea' OR 1=1-- ", password = "1234" }
+fix_matching_parts(
+    { action = { fix_matched_parts = { remove_chars_pattern = "[-\"';=()|]" } } },
+    { { matched_on = "request.body.urlencode.value:user", matched_value = "andrea' OR 1=1-- " } }
+)
+ok(recorded.body == nil, "raw body NOT rewritten (per-field path taken, structure preserved)")
+ok(recorded.body_form and recorded.body_form.user == "andrea OR 11 ",
+   "user value sanitized (got: " .. tostring(recorded.body_form and recorded.body_form.user) .. ")")
+ok(recorded.body_form and recorded.body_form.password == "1234",
+   "password field untouched (got: " .. tostring(recorded.body_form and recorded.body_form.password) .. ")")
+
+print("- urlencoded body via NAME key (race path): still sanitizes the field value")
+reset_mocks()
+recorded.body_form_returns = { user = "andrea' OR 1=1-- ", password = "1234" }
+fix_matching_parts(
+    { action = { fix_matched_parts = { remove_chars_pattern = "[-\"';=()|]" } } },
+    { { matched_on = "request.body.urlencode.name:user", matched_value = "user" } }
+)
+ok(recorded.body == nil, "raw body NOT rewritten on the name-key path either")
+ok(recorded.body_form and recorded.body_form.user == "andrea OR 11 ",
+   "name-key path sanitizes the field VALUE (got: " .. tostring(recorded.body_form and recorded.body_form.user) .. ")")
 
 print("- no match on unknown surface → silent no-op")
 reset_mocks()

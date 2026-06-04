@@ -5397,6 +5397,17 @@ _M.__apply_transformation = function(self, tfunc, value, txc)
 end
 
 _M.__fix_matching_parts = function(self, rule, matched_parts)
+    -- Urlencoded body is parsed once and sanitized per-field across all
+    -- matched parts, then written back with a single set_body (a per-part
+    -- set_body would let the last write drop earlier field edits).
+    local ue_body            -- parsed urlencoded form; nil = not tried, false = parse failed
+    local ue_dirty = false
+    local function _ue_clean(s)
+        if type(s) ~= "string" then return s end
+        s = string_gsub(s, "%%", "")
+        s = string_gsub(s, "\\", "")
+        return (string_gsub(s, rule.action.fix_matched_parts.remove_chars_pattern, ""))
+    end
     for _,mp in pairs(matched_parts) do
         --inspect(mp)
 
@@ -5440,9 +5451,34 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
             end
         end
 
-        -- on body args
-        local m = string_match(mp.matched_on, '^request%.body')
-        if m then
+        -- urlencoded body field: sanitize the matched field's VALUE and
+        -- re-encode, so the form structure (key=value&key=value) survives.
+        -- A raw-body strip would also eat the '=' / '&' separators when the
+        -- pattern contains them, leaving the upstream with no fields at all.
+        -- Match BOTH the `.value:<name>` and `.name:<name>` keys: a rule on
+        -- `request.arg.value:user` resolves to every key ending in `:user`,
+        -- which includes the name key, and pairs() order is non-deterministic,
+        -- so matched_on can be either. Either way the target field is the same.
+        local ub = string_match(mp.matched_on, '^request%.body%.urlencode%.[^:]+:(.+)$')
+        if ub then
+            if ue_body == nil then
+                ue_body = kong.request.get_body("application/x-www-form-urlencoded") or false
+            end
+            if type(ue_body) == "table" and ue_body[ub] ~= nil then
+                debug("Fixing matched part (per-field): " .. mp.matched_on)
+                local v = ue_body[ub]
+                if type(v) == "table" then
+                    for i, vv in ipairs(v) do v[i] = _ue_clean(vv) end
+                else
+                    ue_body[ub] = _ue_clean(v)
+                end
+                ue_dirty = true
+            end
+
+        -- generic body (scalar request.body, or json / multipart / xml):
+        -- raw-string strip on the whole body. Structured per-field
+        -- sanitisation currently covers urlencoded only.
+        elseif string_match(mp.matched_on, '^request%.body') then
             local body = request_get_raw_body()
             -- if not body, but content-length is set, then try to use ngx.req.get_body_file
             -- ngx.req.get_body_file: Retrieves the file name for the in-file request body data. Returns nil if the request body has not been read or has been read into memory.
@@ -5467,6 +5503,12 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
                 kong.service.request.set_raw_body(body)
             end
         end
+    end
+
+    -- One set_body for all sanitized urlencoded fields (avoids the last
+    -- write winning when several form fields matched).
+    if ue_dirty and type(ue_body) == "table" then
+        kong.service.request.set_body(ue_body, "application/x-www-form-urlencoded")
     end
 end
 
