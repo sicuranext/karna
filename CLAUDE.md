@@ -34,10 +34,9 @@ plugin with no required dependency on other plugins.
 - **`ka_mcp.lua`** — MCP (Model Context Protocol) request-side detection and JSON-RPC envelope parsing. Populates the `mcp.*` variable namespace used by rules and exposes operators `mcp_method_in` and `mcp_jsonrpc_valid`. Brand-neutral (`mcp.*` names are protocol-level, not Karna-branded).
 - **`ka_mcp_sse.lua`** — Response-side SSE reassembler for the MCP Streamable HTTP transport. Reconstructs `event:` / `data:` frames, evaluates rules per event in the `mcp_event` phase, and supports streaming actions (drop / replace / terminate / inject).
 - **`ka_utils.lua`** — Utility functions: URL decode/encode, base64 decode, UTF-8/hex conversion, audit log generation, Redis operations, URL parsing.
-- **`ka_ai.lua`** — OpenAI integration for LLM-based analysis (chat completions).
 - **`ka_multipart.lua`** — Custom multipart form-data parser.
 - **`libinjection.lua`** — SQL injection and XSS detection via libinjection (FFI-loaded). Path defaults to `/usr/local/lib/libinjection.so`, overridable via `KARNA_LIBINJECTION_SO` env var.
-- **`slaxml.lua` / `slaxdom.lua`** — Pure Lua SAX XML parser used for XML body parsing.
+- **`slaxml.lua`** — Pure Lua SAX XML parser used for XML body parsing.
 
 ### Rules (in `kong/plugins/karna/rules/`)
 - **`coreruleset_fix.lua`** — Rule controls that fix/adjust problematic CRS rules in production: removes known false-positive-prone rules, narrows over-broad condition variables. Loaded unconditionally at `init_worker` (no toggle). This is the operational-wisdom layer that makes OWASP CRS deployable without drowning in FPs.

@@ -18,7 +18,6 @@ description = {
 
 dependencies = {
   "lua >= 5.1",
-  "lua-resty-http",
   "lua-zlib",
 }
 
@@ -31,7 +30,6 @@ build = {
     ["kong.plugins."..pluginName..".ka_body_parser"]  = "kong/plugins/"..pluginName.."/modules/ka_body_parser.lua",
     ["kong.plugins."..pluginName..".ka_multipart"]    = "kong/plugins/"..pluginName.."/modules/ka_multipart.lua",
     ["kong.plugins."..pluginName..".ka_utils"]        = "kong/plugins/"..pluginName.."/modules/ka_utils.lua",
-    ["kong.plugins."..pluginName..".ka_ai"]           = "kong/plugins/"..pluginName.."/modules/ka_ai.lua",
     ["kong.plugins."..pluginName..".ka_seclang"]      = "kong/plugins/"..pluginName.."/modules/seclang.lua",
     ["kong.plugins."..pluginName..".ka_mcp"]          = "kong/plugins/"..pluginName.."/modules/ka_mcp.lua",
     ["kong.plugins."..pluginName..".ka_mcp_sse"]      = "kong/plugins/"..pluginName.."/modules/ka_mcp_sse.lua",
@@ -42,7 +40,6 @@ build = {
 
     ["kong.plugins."..pluginName..".libinjection"]    = "kong/plugins/"..pluginName.."/modules/libinjection.lua",
     ["kong.plugins."..pluginName..".slaxml"]          = "kong/plugins/"..pluginName.."/modules/slaxml.lua",
-    ["kong.plugins."..pluginName..".slaxdom"]         = "kong/plugins/"..pluginName.."/modules/slaxdom.lua",
 
     ["kong.plugins."..pluginName..".ka_rules_crs_fix"]  = "kong/plugins/"..pluginName.."/rules/coreruleset_fix.lua",
   }
