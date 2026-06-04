@@ -1,35 +1,42 @@
 #!/usr/bin/env python3
 """
-karna-rules, push local rules onto a Karna plugin instance.
+karna-rules, push local rules or action/response overrides onto a Karna plugin.
 
-Reads a JSON file holding an ARRAY of rule objects and writes them to the
-`rules_request` of the Karna plugin attached to a Kong service, through the
-Admin API. Works two ways:
+Reads a JSON file (a top-level ARRAY) and writes it to one of the karna
+plugin's array config fields on a chosen Kong service, via the Admin API.
+Three things you can push (--type):
 
-  Interactive   ./karna-rules.py
-                (pick the service from a list, then point it at a rules file)
+  rules               -> config.rules_request          (your own detection rules)
+  action-overrides    -> config.rule_action_overrides  (switch EXISTING rules to
+                         fix / passthrough / block, by tag / id / id-range)
+  response-overrides  -> config.rule_response_overrides (custom block response)
 
-  Direct        ./karna-rules.py --service api --file rules.json
+Works two ways:
+  Interactive   ./karna-rules.py            (asks for type, service, file)
+  Direct        ./karna-rules.py --type action-overrides --service api --file ov.json
 
 Options:
   --admin URL    Kong Admin API base (default: $KARNA_ADMIN_URL or
                  http://localhost:28001)
+  --type T       rules | action-overrides | response-overrides
+                 (default: rules; asked interactively if neither --type nor
+                 --file is given)
   --service S    service name or id (skips the interactive picker)
-  --file F       JSON file: a top-level array of rule objects
-  --append       add to the existing local rules instead of replacing them
-  --no-enable    do not force local_rules_enabled=true
+  --file F       the JSON array file to push
+  --append       add to what is already there instead of replacing it
+  --no-enable    for --type rules only: do not force local_rules_enabled=true
   --dry-run      show what would happen, change nothing
   --yes, -y      skip the confirmation prompt
   --no-color     plain output
 
-The rules file is a JSON array; each element becomes one entry in the
-plugin's `rules_request` (Karna stores them as JSON strings). Example:
+Each array element becomes one JSON string in the target config field. Examples:
 
-  [
-    { "id": "vp_1", "phase": "access",
-      "conditions": [ { "op": "isSet", "variables": ["request.arg.value:user"] } ],
-      "action": { "fix_matched_parts": { "remove_chars_pattern": "[^a-zA-Z0-9]" } } }
-  ]
+  rules:              { "id": "vp_1", "phase": "access",
+                        "conditions": [ ... ], "action": { ... } }
+  action-overrides:   { "selector": { "tags": ["attack-xss"] },
+                        "action": { "type": "fix", "remove_chars_pattern": "[<>'&;]" } }
+  response-overrides: { "selector": { "id_ranges": ["942000-942999"] },
+                        "response": { "status_code": 429, "body": "slow down" } }
 """
 
 import argparse
@@ -130,7 +137,7 @@ def banner():
     title = "%s  %s   %s" % (
         c("क", GOLD, bold=True),
         c("Karna", INK, bold=True),
-        c("local rules", DIM),
+        c("rules & overrides", DIM),
     )
     print()
     print(panel([title], color=GOLD))
@@ -223,23 +230,71 @@ class Admin:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Domain helpers
+# What we can push. All three are `array of string` config fields on the karna
+# plugin: each list element is one JSON-encoded object.
 # ─────────────────────────────────────────────────────────────────────────────
-def read_rules(path):
+TYPES = {
+    "rules": {
+        "label": "local rules", "noun": "rule",
+        "config_key": "rules_request", "enable_key": "local_rules_enabled",
+        "hint": "a JSON array of rule objects",
+    },
+    "action-overrides": {
+        "label": "action overrides", "noun": "override",
+        "config_key": "rule_action_overrides", "enable_key": None,
+        "hint": "a JSON array of {selector, action} objects",
+    },
+    "response-overrides": {
+        "label": "response overrides", "noun": "override",
+        "config_key": "rule_response_overrides", "enable_key": None,
+        "hint": "a JSON array of {selector, response} objects",
+    },
+}
+
+
+def read_entries(path):
     if not os.path.isfile(path):
-        die("rules file not found: %s" % path)
+        die("file not found: %s" % path)
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         die("invalid JSON in %s: %s" % (path, e))
     if not isinstance(data, list):
-        die("rules file must be a JSON array of rule objects (got %s)"
-            % type(data).__name__)
-    for i, r in enumerate(data):
-        if not isinstance(r, dict):
-            die("rule #%d is not an object" % (i + 1))
+        die("file must be a JSON array (got %s)" % type(data).__name__)
+    for i, e in enumerate(data):
+        if not isinstance(e, dict):
+            die("entry #%d is not an object" % (i + 1))
     return data
+
+
+def validate(entries, typ):
+    """Soft validation: return human-readable warnings (does not abort)."""
+    issues = []
+    for i, e in enumerate(entries):
+        n = i + 1
+        if typ == "rules":
+            if not e.get("id"):
+                issues.append("entry %d has no id" % n)
+            if not e.get("phase"):
+                issues.append("entry %d has no phase" % n)
+        elif typ == "action-overrides":
+            if not isinstance(e.get("selector"), dict):
+                issues.append("entry %d is missing a selector" % n)
+            act = e.get("action")
+            if not isinstance(act, dict) or act.get("type") not in ("fix", "passthrough", "block"):
+                issues.append("entry %d: action.type must be fix, passthrough or block" % n)
+        elif typ == "response-overrides":
+            if not isinstance(e.get("selector"), dict):
+                issues.append("entry %d is missing a selector" % n)
+            if not isinstance(e.get("response"), dict):
+                issues.append("entry %d is missing a response" % n)
+    return issues
+
+
+def _clip(s, n):
+    s = str(s)
+    return s if len(s) <= n else s[: n - 1] + "+"
 
 
 def rule_action(rule):
@@ -251,14 +306,65 @@ def rule_action(rule):
     return c("(none)", DIM)
 
 
-def rules_table(rules):
+def selector_summary(sel):
+    if not isinstance(sel, dict):
+        return c("(invalid)", RED)
+    parts = []
+    if sel.get("any") is True:
+        parts.append("any")
+    if sel.get("ids"):
+        parts.append("ids=" + _clip(",".join(map(str, sel["ids"])), 26))
+    if sel.get("id_ranges"):
+        parts.append("ranges=" + _clip(",".join(map(str, sel["id_ranges"])), 26))
+    if sel.get("tags"):
+        parts.append("tags=" + _clip(",".join(map(str, sel["tags"])), 26))
+    if sel.get("except_ids"):
+        parts.append("!ids=" + _clip(",".join(map(str, sel["except_ids"])), 16))
+    if sel.get("except_tags"):
+        parts.append("!tags=" + _clip(",".join(map(str, sel["except_tags"])), 16))
+    return ", ".join(parts) if parts else c("(empty)", RED)
+
+
+def preview(entries, typ):
+    if typ == "rules":
+        rows = []
+        for i, r in enumerate(entries):
+            rows.append([i + 1,
+                         r.get("id", c("(no id)", RED)),
+                         r.get("phase", c("(no phase)", RED)),
+                         len(r.get("conditions") or []),
+                         rule_action(r)])
+        return table(["#", "ID", "PHASE", "COND", "ACTION"], rows)
+    if typ == "action-overrides":
+        rows = []
+        for i, e in enumerate(entries):
+            act = e.get("action") or {}
+            t = act.get("type") or c("(no type)", RED)
+            detail = act.get("remove_chars_pattern", "default") if t == "fix" else ""
+            rows.append([i + 1, selector_summary(e.get("selector")), t, detail])
+        return table(["#", "SELECTOR", "TYPE", "FIX PATTERN"], rows)
     rows = []
-    for i, r in enumerate(rules):
-        conds = r.get("conditions") or []
-        rid = r.get("id", c("(no id)", RED))
-        phase = r.get("phase", c("(no phase)", RED))
-        rows.append([i + 1, rid, phase, len(conds), rule_action(r)])
-    return table(["#", "ID", "PHASE", "COND", "ACTION"], rows)
+    for i, e in enumerate(entries):
+        resp = e.get("response") or {}
+        rows.append([i + 1,
+                     selector_summary(e.get("selector")),
+                     resp.get("status_code", ""),
+                     _clip(resp.get("body") or "", 22),
+                     _clip(",".join((resp.get("headers") or {}).keys()), 22)])
+    return table(["#", "SELECTOR", "STATUS", "BODY", "HEADERS"], rows)
+
+
+def prompt_type():
+    items = [(k, TYPES[k]["label"], TYPES[k]["config_key"])
+             for k in ("rules", "action-overrides", "response-overrides")]
+    rows = [[i + 1, k, lbl, key] for i, (k, lbl, key) in enumerate(items)]
+    print(table(["#", "TYPE", "WHAT", "CONFIG FIELD"], rows))
+    print()
+    while True:
+        sel = ask("what do you want to push %s:" % c("[1-3]", DIM))
+        if sel.isdigit() and 1 <= int(sel) <= 3:
+            return items[int(sel) - 1][0]
+        info("enter 1, 2 or 3")
 
 
 def service_label(svc):
@@ -300,10 +406,12 @@ def pick_service(admin, wanted):
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(
-        description="Push Karna local rules onto a Kong service.",
+        description="Push Karna local rules or action/response overrides onto a Kong service.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--admin", default=os.environ.get("KARNA_ADMIN_URL", "http://localhost:28001"))
+    ap.add_argument("--type", choices=list(TYPES.keys()),
+                    help="what to push (default: rules, or asked interactively)")
     ap.add_argument("--service")
     ap.add_argument("--file")
     ap.add_argument("--append", action="store_true")
@@ -322,47 +430,51 @@ def main():
 
     # 1) connect
     try:
-        status = admin.get("/")
-        ver = status.get("version", "?")
+        ver = admin.get("/").get("version", "?")
         step(True, "connected to Kong %s at %s" % (c(ver, INK, bold=True), c(admin.base, DIM)))
     except RuntimeError as e:
         die(str(e))
 
-    # 2) service
+    # 2) what to push (explicit --type, else default rules in direct mode, else ask)
+    typ = args.type or ("rules" if args.file else prompt_type())
+    t = TYPES[typ]
+    step(True, "target: %s %s" % (c(t["label"], INK, bold=True), c("(config." + t["config_key"] + ")", DIM)))
+
+    # 3) service
     svc = pick_service(admin, args.service)
     name, sid, target = service_label(svc)
     step(True, "service %s %s" % (c(name, INK, bold=True), c("(" + sid + ")", DIM)))
 
-    # 3) rules file
-    path = args.file or ask("path to the rules JSON file:")
-    rules = read_rules(path)
-    if not rules:
-        die("the rules file is an empty array, nothing to push.")
-    step(True, "loaded %s rule(s) from %s" % (c(len(rules), INK, bold=True), c(path, DIM)))
+    # 4) the file
+    path = args.file or ask("path to the %s file (%s):" % (t["label"], t["hint"]))
+    entries = read_entries(path)
+    if not entries:
+        die("the file is an empty array, nothing to push.")
+    step(True, "loaded %s %s(s) from %s" % (c(len(entries), INK, bold=True), t["noun"], c(path, DIM)))
+    for issue in validate(entries, typ):
+        print("  %s %s" % (c("!", RED, bold=True), c(issue, RED)))
     print()
-    print(rules_table(rules))
+    print(preview(entries, typ))
     print()
 
-    # 4) current state on the service
+    # 5) current state on the service
+    encoded = [json.dumps(e) for e in entries]
     plugin = admin.karna_plugin(svc["id"])
     if plugin:
-        cur = plugin.get("config", {}).get("rules_request") or []
-        enabled = plugin.get("config", {}).get("local_rules_enabled")
-        info("current Karna plugin: %d local rule(s), local_rules_enabled=%s"
-             % (len(cur), enabled))
-        final = (cur + [json.dumps(r) for r in rules]) if args.append else [json.dumps(r) for r in rules]
-        verb = "append" if args.append else "replace"
-        arrow("will %s -> %s local rule(s) total" % (verb, c(len(final), GOLD, bold=True)))
+        cur = plugin.get("config", {}).get(t["config_key"]) or []
+        info("current: %d %s(s) in config.%s" % (len(cur), t["noun"], t["config_key"]))
+        final = (cur + encoded) if args.append else encoded
+        arrow("will %s -> %s %s(s) total"
+              % ("append" if args.append else "replace", c(len(final), GOLD, bold=True), t["noun"]))
     else:
-        cur = []
-        final = [json.dumps(r) for r in rules]
+        final = encoded
         arrow("no Karna plugin on this service yet, one will be created")
 
-    enable = not args.no_enable
+    enable = bool(t["enable_key"]) and not args.no_enable
     if enable:
-        info("local_rules_enabled will be set to true")
+        info("%s will be set to true" % t["enable_key"])
 
-    # 5) dry-run / confirm
+    # 6) dry-run / confirm
     if args.dry_run:
         print()
         print(panel([c("dry run", GOLD, bold=True) + ", nothing was changed"], color=GOLD))
@@ -372,25 +484,25 @@ def main():
     if not args.yes and not confirm("apply to service %s?" % c(name, INK, bold=True)):
         die("aborted.", code=0)
 
-    # 6) apply
-    cfg = {"rules_request": final}
+    # 7) apply
+    cfg = {t["config_key"]: final}
     if enable:
-        cfg["local_rules_enabled"] = True
+        cfg[t["enable_key"]] = True
     try:
         if plugin:
             admin.patch("/plugins/%s" % plugin["id"], {"config": cfg})
-            action = "updated"
+            verb = "updated"
         else:
             admin.post("/services/%s/plugins" % svc["id"], {"name": "karna", "config": cfg})
-            action = "created"
+            verb = "created"
     except RuntimeError as e:
         die(str(e))
 
     print()
     print(panel([
         c("✓ done", OLIVE, bold=True),
-        "%s local rule(s) on service %s" % (c(len(final), INK, bold=True), c(name, INK, bold=True)),
-        c("plugin %s · %s" % (action, admin.base), DIM),
+        "%s %s(s) on service %s" % (c(len(final), INK, bold=True), t["noun"], c(name, INK, bold=True)),
+        c("plugin %s · %s" % (verb, admin.base), DIM),
     ], color=OLIVE))
     print()
 
