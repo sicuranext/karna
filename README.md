@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/karna-logo-dark.png">
-    <img src="docs/assets/karna-logo-light.png" alt="Karna" width="420">
-  </picture>
+  <img src="docs/assets/karna-hero.png" alt="Karna: a WAF built for AI, built for speed (by SicuraNext)" width="760">
 </p>
 
 <p align="center">
