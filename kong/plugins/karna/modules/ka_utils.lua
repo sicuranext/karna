@@ -702,4 +702,149 @@ _M.redis_incr_key_async = function(premature, self, plugin_conf, key, expire_tim
     end
 end
 
+-- Read-only Redis command whitelist for rule inspection. Deny by default:
+-- anything not listed is rejected before it reaches Redis, so a rule can never
+-- mutate state or run an admin / blocking / keyspace-scan command.
+local REDIS_INSPECT_READ_CMDS = {
+    get = true, strlen = true, exists = true, ttl = true, pttl = true,
+    type = true, sismember = true, smismember = true, scard = true,
+    hget = true, hexists = true, hlen = true, hstrlen = true,
+    llen = true, lindex = true, zscore = true, zrank = true, zcard = true,
+}
+
+-- Run a single read-only Redis command for rule inspection. `conf` carries the
+-- per-request connection settings (host/port/password/database/timeout/keepalive)
+-- so we never mutate shared module state across concurrent requests on a worker.
+-- Returns:
+--   value, nil   on success (value may be `ngx.null` when the key/member is absent)
+--   nil, err     on a disallowed command, connection/auth/select failure, or Redis error
+-- The caller (engine) decides the on_error posture (skip / fail_open / fail_closed).
+_M.redis_inspect_read = function(self, conf, cmd, ...)
+    if not REDIS_INSPECT_READ_CMDS[cmd] then
+        return nil, "redis command not allowed for inspection: " .. tostring(cmd)
+    end
+
+    local redis_client = require "resty.redis"
+    local red = redis_client:new()
+    if not red then return nil, "redis: client init failed" end
+    if type(red[cmd]) ~= "function" then
+        return nil, "redis command unsupported by client: " .. tostring(cmd)
+    end
+
+    local t = tonumber(conf and conf.timeout_ms) or 50
+    red:set_timeouts(t, t, t)
+
+    local ok, err = red:connect(conf and conf.host or "localhost",
+                                conf and conf.port or 6379)
+    if not ok then return nil, "redis connect: " .. tostring(err) end
+
+    if conf and conf.password and conf.password ~= "" then
+        local auth_ok, aerr = red:auth(conf.password)
+        if not auth_ok then
+            pcall(function() red:close() end)
+            return nil, "redis auth: " .. tostring(aerr)
+        end
+    end
+
+    local db = tonumber(conf and conf.database) or 0
+    if db > 0 then
+        local sel_ok, serr = red:select(db)
+        if not sel_ok then
+            pcall(function() red:close() end)
+            return nil, "redis select: " .. tostring(serr)
+        end
+    end
+
+    local res, cerr = red[cmd](red, ...)
+    if res == nil then
+        -- network / protocol error: do not pool a possibly-broken connection
+        pcall(function() red:close() end)
+        return nil, cerr or "redis command failed"
+    end
+
+    -- Success (res may be ngx.null for an absent key/member): return the
+    -- connection to the per-worker pool. A fresh TCP + auth handshake per
+    -- request would be unacceptable on the hot path.
+    local pool = tonumber(conf and conf.keepalive_pool_size) or 64
+    local idle = tonumber(conf and conf.keepalive_idle_ms) or 60000
+    if not red:set_keepalive(idle, pool) then
+        pcall(function() red:close() end)
+    end
+
+    return res, nil
+end
+
+-- Write commands Karna may issue as a rule ACTION side effect (auto-ban /
+-- distributed denylist). Separate from the read whitelist; never reachable
+-- from the read-inspection path.
+local REDIS_WRITE_CMDS = { set = true, sadd = true, srem = true, del = true, expire = true }
+
+-- Run a single write command, fire-and-forget. `conf` carries the per-request
+-- connection settings. Usage:
+--   redis_write(conf, "set",  key, value, ttl) -> SET key value [EX ttl]
+--   redis_write(conf, "sadd", key, member, ttl)-> SADD key member; EXPIRE key ttl (if ttl)
+--   redis_write(conf, "srem", key, member)     -> SREM key member
+--   redis_write(conf, "del",  key)             -> DEL key
+-- Fail-soft: a disallowed command / connection / Redis error is logged and
+-- returns nil; it never propagates to block the request.
+_M.redis_write = function(self, conf, op, key, arg, ttl)
+    if not REDIS_WRITE_CMDS[op] then
+        kong.log.err("Karna: redis write command not allowed: ", tostring(op))
+        return nil
+    end
+    local redis_client = require "resty.redis"
+    local red = redis_client:new()
+    if not red then return nil end
+
+    local t = tonumber(conf and conf.timeout_ms) or 50
+    red:set_timeouts(t, t, t)
+
+    local ok, err = red:connect(conf and conf.host or "localhost", conf and conf.port or 6379)
+    if not ok then kong.log.err("Karna: redis connect (write): ", tostring(err)); return nil end
+
+    if conf and conf.password and conf.password ~= "" then
+        local aok, aerr = red:auth(conf.password)
+        if not aok then
+            pcall(function() red:close() end)
+            kong.log.err("Karna: redis auth (write): ", tostring(aerr)); return nil
+        end
+    end
+
+    local db = tonumber(conf and conf.database) or 0
+    if db > 0 then red:select(db) end
+
+    ttl = tonumber(ttl)
+    local res, cerr
+    if op == "set" then
+        if ttl and ttl > 0 then res, cerr = red:set(key, arg, "EX", ttl)
+        else res, cerr = red:set(key, arg) end
+    elseif op == "sadd" then
+        res, cerr = red:sadd(key, arg)
+        if res and ttl and ttl > 0 then red:expire(key, ttl) end
+    elseif op == "srem" then
+        res, cerr = red:srem(key, arg)
+    elseif op == "del" then
+        res, cerr = red:del(key)
+    elseif op == "expire" then
+        res, cerr = red:expire(key, ttl or 0)
+    end
+
+    if res == nil then
+        pcall(function() red:close() end)
+        kong.log.err("Karna: redis " .. op .. " failed: ", tostring(cerr))
+        return nil
+    end
+
+    local pool = tonumber(conf and conf.keepalive_pool_size) or 64
+    local idle = tonumber(conf and conf.keepalive_idle_ms) or 60000
+    if not red:set_keepalive(idle, pool) then pcall(function() red:close() end) end
+    return res
+end
+
+-- Async wrapper for ngx.timer.at in non-access phases (cosocket unavailable inline).
+_M.redis_write_async = function(premature, self, conf, op, key, arg, ttl)
+    if premature then return end
+    self:redis_write(conf, op, key, arg, ttl)
+end
+
 return _M

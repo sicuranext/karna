@@ -2037,6 +2037,115 @@ end
 -- per-step helpers via upvalues. This function therefore stays the
 -- canonical reference: when behaviour diverges between a compiled
 -- closure and this body, the closure is wrong.
+-- ========================================================================
+-- Redis inspection (read-only) — variables `redis.<key>` + operators
+-- `redis_sismember` / `redis_hexists`. See the design in
+-- ~/.claude/plans/dazzling-mapping-thacker.md. The variable is the Redis
+-- key/dataset; the operator is the test and picks the command. Off unless
+-- plugin_conf.redis_inspect_enabled.
+-- ========================================================================
+
+-- Resolve request-context macros in a string: %{remote_addr} and
+-- %{request.method|host|scheme|path}. Used for the condition.value needle
+-- (e.g. an IP looked up in a banned set) and inside the Redis key resolver.
+_M.__resolve_reqctx_only = function(self, s)
+    if not s or s == "" then return s end
+    if not string_find(s, "%{", 1, true) then return s end  -- plain find: the literal "%{"
+    s = string_gsub(s, "%%{remote_addr}",      function() return ngx.var.remote_addr or "" end)
+    s = string_gsub(s, "%%{request%.method}",  function() return kong.request.get_method() or "" end)
+    s = string_gsub(s, "%%{request%.host}",    function() return kong.request.get_host() or "" end)
+    s = string_gsub(s, "%%{request%.scheme}",  function() return kong.request.get_scheme() or "" end)
+    s = string_gsub(s, "%%{request%.path}",    function() return kong.request.get_path() or "" end)
+    return s
+end
+
+-- Resolve macros allowed inside a Redis key: request context (above) plus
+-- request headers, so a key can be derived from the client IP or a header
+-- like x-consumer-id (e.g. `ban:%{remote_addr}`, `acl:%{request_headers.x-consumer-id}`).
+_M.__resolve_redis_key_macros = function(self, s)
+    if not s or s == "" then return s end
+    s = self:__resolve_reqctx_only(s)
+    if string_find(s, "%%{request_headers%.", 1, false) then
+        s = string_gsub(s, "%%{request_headers%.([%w%-_]+)}", function(h)
+            return kong.request.get_header(h) or ""
+        end)
+    end
+    return s
+end
+
+-- @redis_sismember: is the resolved `condition.value` (the member) a member
+-- of the Redis SET named by the `redis.<key>` variable? `value_to_match_on`
+-- is the resolved set key (the redis.* variable branch hands it over);
+-- `condition_value` is the macro-resolved member. Mirrors @ipMatch (source in
+-- the rule, needle in the value), but the "source" is the variable here.
+local function __redis_membership(cmd, variable_name, key, member)
+    local conf = kong.ctx.plugin and kong.ctx.plugin.karna_redis_conf
+    if not conf or key == nil or member == nil then
+        return nil, nil  -- inspection off / nothing to test
+    end
+    local res, rerr = utils:redis_inspect_read(conf, cmd, key, member)
+    if rerr then
+        return nil, conf.on_error      -- caller maps on_error → match/no-match
+    end
+    return (res == 1), nil
+end
+
+_M.__match_op_redis_sismember = function(variable_name, value_to_match_on, condition_value)
+    local hit, on_err = __redis_membership("sismember", variable_name, value_to_match_on, condition_value)
+    if hit == nil then
+        if on_err == "fail_closed" then
+            return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+        end
+        return false, nil
+    end
+    if hit then
+        return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+    end
+    return false, nil
+end
+
+_M.__match_op_redis_sismember_negative = function(variable_name, value_to_match_on, condition_value)
+    local hit, on_err = __redis_membership("sismember", variable_name, value_to_match_on, condition_value)
+    if hit == nil then
+        if on_err == "fail_closed" then
+            return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+        end
+        return false, nil
+    end
+    if not hit then  -- NOT a member → negation matches (e.g. allowlist set)
+        return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+    end
+    return false, nil
+end
+
+_M.__match_op_redis_hexists = function(variable_name, value_to_match_on, condition_value)
+    local hit, on_err = __redis_membership("hexists", variable_name, value_to_match_on, condition_value)
+    if hit == nil then
+        if on_err == "fail_closed" then
+            return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+        end
+        return false, nil
+    end
+    if hit then
+        return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+    end
+    return false, nil
+end
+
+_M.__match_op_redis_hexists_negative = function(variable_name, value_to_match_on, condition_value)
+    local hit, on_err = __redis_membership("hexists", variable_name, value_to_match_on, condition_value)
+    if hit == nil then
+        if on_err == "fail_closed" then
+            return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+        end
+        return false, nil
+    end
+    if not hit then
+        return true, { matched_on = variable_name, matched_value = string.sub(tostring(condition_value), 1, 100) }
+    end
+    return false, nil
+end
+
 _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
     --kong.log.debug("\n\n")
     --kong.log.debug("Matching rule " .. tostring(rule.id) .. " for phase " .. rule.phase)
@@ -2607,6 +2716,57 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         values = { [variable] = tostring(v or "") }
                     end
                 end
+
+                -- Redis inspection: the variable IS a Redis key/dataset
+                -- (`redis.<key>`, macros allowed in the key). The OPERATOR
+                -- picks the command: isSet→EXISTS, eq/rx/gt/...→GET, and the
+                -- membership ops (redis_sismember/redis_hexists) do the test
+                -- themselves (they get the resolved key as their value). Off
+                -- unless redis_inspect_enabled. NOT cached in ka_variable_cache
+                -- (the resolved value is command-dependent — see the write guard).
+                if string_find(variable, "^redis%.") then
+                    if plugin_conf.redis_inspect_enabled then
+                        local rconf = kong.ctx.plugin.karna_redis_conf
+                        if not rconf then
+                            rconf = {
+                                host                = plugin_conf.redis_host,
+                                port                = plugin_conf.redis_port,
+                                password            = plugin_conf.redis_password,
+                                database            = plugin_conf.redis_database,
+                                timeout_ms          = plugin_conf.redis_timeout_ms,
+                                keepalive_pool_size = plugin_conf.redis_keepalive_pool_size,
+                                keepalive_idle_ms   = plugin_conf.redis_keepalive_idle_ms,
+                                on_error            = plugin_conf.redis_on_error,
+                            }
+                            kong.ctx.plugin.karna_redis_conf = rconf
+                        end
+                        local key = self:__resolve_redis_key_macros(variable:sub(7))  -- after "redis."
+                        local rop = condition.op or ""
+                        if rop:sub(1, 1) == "!" then rop = rop:sub(2) end
+                        if rop == "redis_sismember" or rop == "redis_hexists" then
+                            -- the operator runs the redis command; hand it the key
+                            values = { [variable] = key }
+                        elseif rop == "isSet" then
+                            local res, rerr = utils:redis_inspect_read(rconf, "exists", key)
+                            if rerr then
+                                -- absent({}) is the no-match shape; fail_closed forces present
+                                values = (rconf.on_error == "fail_closed") and { [variable] = "1" } or {}
+                            else
+                                values = (res == 1) and { [variable] = "1" } or {}
+                            end
+                        else
+                            -- value operators (eq/rx/contains/gt/...): GET then compare
+                            local res, rerr = utils:redis_inspect_read(rconf, "get", key)
+                            if rerr or res == nil or res == ngx.null then
+                                values = {}   -- skip / absent → no match
+                            else
+                                values = { [variable] = tostring(res) }
+                            end
+                        end
+                    else
+                        values = nil
+                    end
+                end
                 end  -- close `if not _used_resolver` (stage 3)
 
                 -- `ka_variable_cache` write — store the freshly
@@ -2616,7 +2776,8 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- don't bleed into the cached entry. Pairs with the
                 -- copy-on-read above.
                 if values and kong.ctx.plugin and kong.ctx.plugin.ka_variable_cache
-                   and kong.ctx.plugin.ka_variable_cache[variable] == nil then
+                   and kong.ctx.plugin.ka_variable_cache[variable] == nil
+                   and not string_find(variable, "^redis%.") then  -- redis reads are command-dependent, never cache by variable string
                     if type(values) == "table" then
                         local snapshot = {}
                         for k, v in pairs(values) do snapshot[k] = v end
@@ -2693,6 +2854,11 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     hdr  = string.find(cv, "%%%{request_headers%.", 1, false) ~= nil,
                     tx   = string.find(cv, "%%{tx%.", 1, false) ~= nil,
                     args = string.find(cv, "%%{[Aa][Rr][Gg][Ss][%.:]", 1, false) ~= nil,
+                    -- request-context macros (%{remote_addr}, %{request.*}) in the
+                    -- needle — used by Redis membership rules (e.g. is the client IP
+                    -- in a banned set). Resolved via __resolve_reqctx_only.
+                    ctx  = (string.find(cv, "%%{remote_addr}", 1, true) ~= nil)
+                           or (string.find(cv, "%%{request%.", 1, false) ~= nil),
                 }
                 condition._ka_macro_flags = mflags
             end
@@ -2703,6 +2869,9 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 for variable_name,orig_value in pairs(values) do
                     loop_counter = loop_counter + 1
                     local condition_value_resolved = condition.value
+                    if mflags.ctx then
+                        condition_value_resolved = self:__resolve_reqctx_only(condition_value_resolved)
+                    end
 
                     -- apply transformation_functions
                     local value_to_match_on = orig_value
@@ -2768,10 +2937,15 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         for header_name in string.gmatch(condition_value_resolved, "%%%{request_headers%.([^}]+)%}") do
                             local header_value = request_get_header(header_name)
                             if header_value then
+                                -- Escape Lua-pattern magic chars in the header name
+                                -- (e.g. the `-` in x-api-key / content-type) so the
+                                -- replacement actually matches, and use a function
+                                -- replacement so a `%` in the header value is literal.
+                                local esc = string_gsub(header_name, "[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%1")
                                 condition_value_resolved = string.gsub(
                                     condition_value_resolved,
-                                    "%%%{request_headers%." .. header_name .. "%}",
-                                    header_value
+                                    "%%%{request_headers%." .. esc .. "%}",
+                                    function() return header_value end
                                 )
                             end
                         end
@@ -2968,6 +3142,17 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         if op_base == "libinjection_sqli" then
                             local fn = negated and self.__match_op_libinjection_sqli_negative or self.__match_op_libinjection_sqli
                             rule_condition_has_matched, matched_table = fn(variable_name, try_value)
+                        end
+                        -- Redis membership: try_value is the resolved Redis key
+                        -- (handed over by the redis.* variable branch);
+                        -- condition_value_resolved is the member/field needle.
+                        if op_base == "redis_sismember" then
+                            local fn = negated and self.__match_op_redis_sismember_negative or self.__match_op_redis_sismember
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
+                        end
+                        if op_base == "redis_hexists" then
+                            local fn = negated and self.__match_op_redis_hexists_negative or self.__match_op_redis_hexists
+                            rule_condition_has_matched, matched_table = fn(variable_name, try_value, condition_value_resolved)
                         end
                         if op_base == "pm" then
                             local fn = negated and self.__match_op_pm_negative or self.__match_op_pm
@@ -5617,6 +5802,47 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
             if not ok then
                 kong.log.err("Karna: error scheduling redis_incr_key timer: ", err)
             end
+        end
+    end
+
+    -- redis_set / redis_sadd / redis_del: write cluster-wide state (auto-ban,
+    -- distributed denylist) as a side effect of a match. Fire-and-forget; sync
+    -- in access, deferred via a 0-delay timer in later phases (the cosocket API
+    -- is not available inline there). Keys/values/members support macros,
+    -- including %{remote_addr} (via __resolve_redis_key_macros). Closes the
+    -- auto-ban loop with the `redis.*` inspection reads.
+    if (action.redis_set and action.redis_set.key)
+       or (action.redis_sadd and action.redis_sadd.key and action.redis_sadd.member ~= nil)
+       or (action.redis_del and action.redis_del.key) then
+        local rconf = {
+            host = plugin_conf.redis_host, port = plugin_conf.redis_port,
+            password = plugin_conf.redis_password, database = plugin_conf.redis_database,
+            timeout_ms = plugin_conf.redis_timeout_ms,
+            keepalive_pool_size = plugin_conf.redis_keepalive_pool_size,
+            keepalive_idle_ms = plugin_conf.redis_keepalive_idle_ms,
+        }
+        local function do_write(op, key, arg, ttl)
+            if phase == "access" then
+                utils:redis_write(rconf, op, key, arg, ttl)
+            else
+                local ok, err = ngx.timer.at(0, utils.redis_write_async, utils, rconf, op, key, arg, ttl)
+                if not ok then
+                    kong.log.err("Karna: error scheduling redis_" .. op .. " timer: ", err)
+                end
+            end
+        end
+        if action.redis_set and action.redis_set.key then
+            local key = self:__resolve_redis_key_macros(tostring(action.redis_set.key))
+            local val = self:__resolve_redis_key_macros(tostring(action.redis_set.value ~= nil and action.redis_set.value or "1"))
+            do_write("set", key, val, action.redis_set.expire)
+        end
+        if action.redis_sadd and action.redis_sadd.key and action.redis_sadd.member ~= nil then
+            local key = self:__resolve_redis_key_macros(tostring(action.redis_sadd.key))
+            local member = self:__resolve_redis_key_macros(tostring(action.redis_sadd.member))
+            do_write("sadd", key, member, action.redis_sadd.expire)
+        end
+        if action.redis_del and action.redis_del.key then
+            do_write("del", self:__resolve_redis_key_macros(tostring(action.redis_del.key)), nil, nil)
         end
     end
 

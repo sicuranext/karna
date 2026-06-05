@@ -48,6 +48,8 @@ jobs:
         run: lua ka-unittest/op_negation_normalization.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)
         run: lua ka-unittest/json_in_urlencoded.lua
+      - name: Redis inspection read helper (whitelist + connection behavior)
+        run: lua ka-unittest/redis_inspect.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

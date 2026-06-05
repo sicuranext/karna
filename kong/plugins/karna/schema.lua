@@ -222,6 +222,20 @@ local schema = {
           { redis_port = { type = "number", default = 6379 } },
           { redis_password = { type = "string" } },
 
+          -- Redis rule-inspection (read-only): rules can read cluster-wide
+          -- shared state via the `redis.*` variable namespace and the
+          -- `redis_sismember` / `redis_hexists` operators. Off by default.
+          { redis_inspect_enabled = { type = "boolean", default = false } },
+          { redis_database = { type = "number", default = 0 } },
+          { redis_timeout_ms = { type = "number", default = 50 } },
+          { redis_keepalive_pool_size = { type = "number", default = 64 } },
+          { redis_keepalive_idle_ms = { type = "number", default = 60000 } },
+          -- What to do when a Redis read fails (down / timeout / wrong type):
+          --   skip        condition = no-match, request flows (default; Redis is not a SPOF)
+          --   fail_open   force the rule to NOT match
+          --   fail_closed force the condition to match (deny on unreachable shared-state)
+          { redis_on_error = { type = "string", default = "skip", one_of = { "skip", "fail_open", "fail_closed" } } },
+
           { private_debug = { type = "boolean", default = false } },
         },
         entity_checks = {
