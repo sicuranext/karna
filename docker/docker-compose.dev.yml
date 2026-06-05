@@ -12,6 +12,11 @@
 # native scanners) and bind-mounts the plugin source, running `luarocks make` at
 # start for live iteration. For production use docker-compose.prod.yml instead.
 
+# Explicit project name: the compose file lives under docker/, so without this
+# the project would default to "docker" and its volumes/network ("docker_*")
+# would collide with any other compose project named "docker" on the host.
+name: karna-dev
+
 services:
   postgres:
     image: postgres:13
@@ -20,6 +25,8 @@ services:
       POSTGRES_USER: kong
       POSTGRES_PASSWORD: kong
       POSTGRES_DB: kong
+    volumes:
+      - karna_pg_data:/var/lib/postgresql/data
     ports:
       - "25432:5432"
     healthcheck:
@@ -130,3 +137,8 @@ services:
       kong start --vv
       "
     restart: unless-stopped
+
+volumes:
+  # Isolated, project-scoped Postgres volume (karna-dev_karna_pg_data) so the
+  # dev DB never collides with another compose project's postgres volume.
+  karna_pg_data:

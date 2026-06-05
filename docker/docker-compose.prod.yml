@@ -12,6 +12,10 @@
 # For the local dev/integration stack (Postgres + echo + live plugin reload)
 # use docker-compose.dev.yml instead.
 
+# Explicit project name so volumes/network don't collide with another compose
+# project (the file lives under docker/, which would otherwise default to "docker").
+name: karna-prod
+
 services:
   redis:
     image: redis:7-alpine
