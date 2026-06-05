@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Writing rules — Karna documentation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="The Karna rule-authoring reference: rule format, phases, variables, operators, transformations, actions, rule controls, and worked examples for detection, sanitization, and rate limiting."/>
+<link rel="canonical" href="https://karna.sicuranext.com/docs/rules.html"/>
+<link rel="icon" type="image/png" href="assets/karna-mark-gold.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"/>
+<link rel="stylesheet" href="assets/karna.css"/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Karna home">
+      <img src="assets/karna-mark-light.png" width="34" height="33" alt=""/>
+      <span class="brand-word">Karna</span>
+      <span class="brand-by">by SicuraNext</span>
+    </a>
+    <div class="nav-links">
+      <a href="/#why">Why Karna</a>
+      <a href="/#features">Features</a>
+      <a href="/#install">Install</a>
+      <a href="./" class="active">Docs</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-secondary" href="./">Docs home</a>
+      <a class="btn btn-gold" href="configuration.html">Configuration</a>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head">
+  <div class="doc-head-inner">
+    <div class="doc-crumbs"><a href="./">Docs</a> / Writing rules</div>
+    <span class="doc-eyebrow">Reference</span>
+    <h1>Writing rules</h1>
+    <p>How to author detection, sanitization, rate-limiting, and exception rules. Rules are JSON objects you put in <code>rules_request</code> / <code>rules_response</code>, or SecLang strings in <code>custom_secrules</code>. This page is the full technical reference.</p>
+  </div>
+</header>
+
+<div class="doc-layout">
+  <aside class="doc-side">
+    <h5>Language</h5>
+    <a href="#format">Rule format</a>
+    <a href="#conditions">Conditions</a>
+    <a href="#phases">Phases</a>
+    <a href="#variables">Variables</a>
+    <a href="#operators">Operators</a>
+    <a href="#negation">Negation</a>
+    <a href="#transforms">Transformations</a>
+    <a href="#actions">Actions</a>
+    <a href="#rule-controls">Rule controls</a>
+    <a href="#overrides">CRS overrides</a>
+    <a href="#seclang">SecLang rules</a>
+    <h5>Examples</h5>
+    <a href="#ex-detect">Detect &amp; block</a>
+    <a href="#ex-sanitize">Sanitize, don't block</a>
+    <a href="#ex-ratelimit">Rate limit</a>
+    <a href="#ex-counter">Counter + threshold</a>
+    <a href="#ex-chain">Chained rule</a>
+    <h5>Reference</h5>
+    <a href="configuration.html">Configuration</a>
+  </aside>
+
+  <main class="doc-main">
+
+    <section id="format">
+      <h2>Rule format</h2>
+      <p>A rule is a JSON object. It fires when <strong>all</strong> of its conditions match, then runs its <code>action</code>. Add it to the plugin config under <code>rules_request</code> (request phase) or <code>rules_response</code> (response phase).</p>
+      <div class="code-card">
+        <div class="code-head"><span>a complete rule</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"1234"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    {
+      <span class="prm">"op"</span>: <span class="str">"rx"</span>,
+      <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
+      <span class="prm">"value"</span>: <span class="str">"['\"`]+.*['\"`;&amp;|]+"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.arg.value"</span>],
+      <span class="prm">"multi_match"</span>: <span class="kw">false</span>
+    }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
+  <span class="prm">"log"</span>: <span class="kw">true</span>,
+  <span class="prm">"message"</span>: <span class="str">"Example injection rule"</span>,
+  <span class="prm">"tags"</span>: [<span class="str">"injection"</span>, <span class="str">"virtual-patching"</span>]
+}</pre></div>
+      </div>
+      <table class="doc-table">
+        <thead><tr><th>Field</th><th class="mono">Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>id</code></td><td class="mono">string</td><td>Unique identifier. Used in logs and by rule controls / overrides.</td></tr>
+          <tr><td class="name"><code>phase</code></td><td class="mono">string</td><td><code>access</code>, <code>header_filter</code>, <code>body_filter</code>, or <code>mcp_event</code>. See <a class="link" href="#phases">Phases</a>.</td></tr>
+          <tr><td class="name"><code>conditions</code></td><td class="mono">array</td><td>One or more condition objects, AND-ed together. See <a class="link" href="#conditions">Conditions</a>.</td></tr>
+          <tr><td class="name"><code>action</code></td><td class="mono">object</td><td>What to do when the rule fires. See <a class="link" href="#actions">Actions</a>.</td></tr>
+          <tr><td class="name"><code>message</code></td><td class="mono">string</td><td>Human-readable description, written to the audit log.</td></tr>
+          <tr><td class="name"><code>tags</code></td><td class="mono">array</td><td>Labels used by overrides and rule controls (e.g. <code>attack-sqli</code>).</td></tr>
+          <tr><td class="name"><code>log</code></td><td class="mono">boolean</td><td>Whether a match is written to the audit log.</td></tr>
+          <tr><td class="name"><code>rule_control</code></td><td class="mono">array</td><td>Optional self-modifications applied to this or other rules. See <a class="link" href="#rule-controls">Rule controls</a>.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="conditions">
+      <h2>Conditions</h2>
+      <p>Each condition applies its operator to one or more variables, optionally after a transformation chain. A condition matches if the operator matches on any of its resolved values.</p>
+      <table class="doc-table">
+        <thead><tr><th>Field</th><th class="mono">Type</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>variables</code></td><td class="mono">array</td><td>What to inspect (e.g. <code>request.arg.value</code>, <code>request.header.value:host</code>). See <a class="link" href="#variables">Variables</a>.</td></tr>
+          <tr><td class="name"><code>op</code></td><td class="mono">string</td><td>The operator (e.g. <code>rx</code>, <code>eq</code>, <code>libinjection_sqli</code>). See <a class="link" href="#operators">Operators</a>.</td></tr>
+          <tr><td class="name"><code>value</code></td><td class="mono">string</td><td>The operator argument (pattern, number, token list…). Use <code>""</code> for operators that take none (<code>isSet</code>, <code>libinjection_*</code>).</td></tr>
+          <tr><td class="name"><code>transform</code></td><td class="mono">array</td><td>Transformations applied to each value before the operator runs, in order. Omit or <code>[]</code> for none. See <a class="link" href="#transforms">Transformations</a>.</td></tr>
+          <tr><td class="name"><code>negated</code></td><td class="mono">boolean</td><td>Invert the match. See <a class="link" href="#negation">Negation</a>.</td></tr>
+          <tr><td class="name"><code>multi_match</code></td><td class="mono">boolean</td><td>When <code>true</code>, the operator is also tested against each intermediate transform result, not only the final one.</td></tr>
+        </tbody>
+      </table>
+      <div class="note"><span class="lbl">Chaining</span>Multiple conditions form a chain (logical AND). A later condition can inspect an earlier one's match via <code>matched.value</code> and the regex capture groups <code>group:0</code>, <code>group:1</code>, …</div>
+    </section>
+
+    <section id="phases">
+      <h2>Phases</h2>
+      <table class="doc-table">
+        <thead><tr><th>Phase</th><th>Runs</th><th>Can inspect</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>access</code></td><td>Before the request reaches your app</td><td>Method, path, query, headers, cookies, and the parsed body. Can block, sanitize, or modify the request. Most rules live here.</td></tr>
+          <tr><td class="name"><code>header_filter</code></td><td>After the app responds, before headers go to the client</td><td>The request plus the upstream response status and headers.</td></tr>
+          <tr><td class="name"><code>body_filter</code></td><td>While streaming the response body</td><td>Response body chunks. Used internally for MCP SSE reassembly.</td></tr>
+          <tr><td class="name"><code>mcp_event</code></td><td>Per reassembled SSE event (Karna-native)</td><td>A single Model Context Protocol event. Rules can drop / replace / terminate / inject events. Non-MCP requests skip this phase.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="variables">
+      <h2>Variables</h2>
+      <p>Variables name what a condition inspects. Many are arrays (e.g. all header values). Append <code>:&lt;selector&gt;</code> to target a specific named element, for example <code>request.header.value:host</code> or <code>request.arg.value:username</code>.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Variable</th><th>Resolves to</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>request.arg.value</code></td><td>Values from query string + parsed body (ModSec ARGS). Canonical for "any argument value".</td></tr>
+          <tr><td class="name"><code>request.arg.name</code></td><td>Argument names from query string + parsed body.</td></tr>
+          <tr><td class="name"><code>request.query.value</code> / <code>.name</code></td><td>Values / names from the query string only.</td></tr>
+          <tr><td class="name"><code>request.body.urlencode.value:&lt;name&gt;</code></td><td>A specific urlencoded form field.</td></tr>
+          <tr><td class="name"><code>request.body.json.value:&lt;path&gt;</code></td><td>A value at a JSON path in the parsed body.</td></tr>
+          <tr><td class="name"><code>request.body</code></td><td>Raw body (for urlencoded / text bodies).</td></tr>
+          <tr><td class="name"><code>request.header.value</code> / <code>.name</code></td><td>Request header values / names. Target one with <code>:&lt;header&gt;</code>.</td></tr>
+          <tr><td class="name"><code>request.header_no_fp.value</code></td><td>Header values excluding the most FP-prone ones (User-Agent, Referer, …).</td></tr>
+          <tr><td class="name"><code>request.cookie.value</code> / <code>.name</code></td><td>Cookie values / names.</td></tr>
+          <tr><td class="name"><code>request.raw_path</code></td><td>URL path, not normalized, no query string.</td></tr>
+          <tr><td class="name"><code>request.basename</code></td><td>Last segment of the path (e.g. <code>index.php</code>).</td></tr>
+          <tr><td class="name"><code>request.method</code></td><td>HTTP method.</td></tr>
+          <tr><td class="name"><code>request.file</code></td><td>Uploaded file names / multipart param names.</td></tr>
+          <tr><td class="name"><code>request.body.multipart.filename</code></td><td>Multipart filenames.</td></tr>
+          <tr><td class="name"><code>request.body.multipart.header.value</code></td><td>Multipart part header values.</td></tr>
+          <tr><td class="name"><code>request.header.referer.{path,query,scheme,host}</code></td><td>Components of the <code>Referer</code> URL.</td></tr>
+          <tr><td class="name"><code>response.set_cookie.value</code> / <code>.name</code></td><td>Values / names from <code>Set-Cookie</code> (response phases).</td></tr>
+          <tr><td class="name"><code>response.header.name:&lt;name&gt;</code></td><td>A specific response header (response phases).</td></tr>
+          <tr><td class="name"><code>matched.value</code></td><td>The value matched by an earlier condition in the chain.</td></tr>
+          <tr><td class="name"><code>group:&lt;n&gt;</code></td><td>Capture group <code>n</code> from an earlier <code>rx</code> match (<code>group:0</code> = full match).</td></tr>
+          <tr><td class="name"><code>tx:&lt;name&gt;</code> / <code>var:&lt;name&gt;</code></td><td>Transaction variables (CRS <code>TX:</code>), e.g. <code>var:paranoia_level</code>.</td></tr>
+          <tr><td class="name"><code>redis.key:&lt;macro&gt;</code></td><td>Value of a Redis key (macro-resolved). See <a class="link" href="#ex-counter">Counter example</a>.</td></tr>
+          <tr><td class="name"><code>geoip.*</code> / <code>asn.*</code></td><td>Enrichment from a sibling plugin (<code>geoip.country_code</code>, <code>asn.org</code>, …), when present.</td></tr>
+          <tr><td class="name"><code>mcp.*</code></td><td>MCP fields (<code>mcp.method</code>, <code>mcp.tool.name</code>, …) when <code>mcp_enabled</code>.</td></tr>
+        </tbody>
+      </table>
+      <div class="tip"><span class="lbl">Targeting a named arg</span>To match a specific argument by name, prefer <code>request.arg.value:&lt;name&gt;</code> (covers query + urlencoded body).</div>
+    </section>
+
+    <section id="operators">
+      <h2>Operators</h2>
+      <p>The <code>op</code> field names one operator. An operator not in this set never matches. CRS operators (<code>@detectSQLi</code>, <code>@streq</code>, <code>@detectXSS</code>, …) are translated to these names when SecLang is parsed.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">op</th><th class="mono">Negatable</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>rx</code></td><td class="mono">yes</td><td>Regex match against the value. With the RE2 engine this is linear-time and ReDoS-safe.</td></tr>
+          <tr><td class="name"><code>eq</code></td><td class="mono">yes</td><td>Exact equality (string or number).</td></tr>
+          <tr><td class="name"><code>ge</code> / <code>gt</code> / <code>lt</code> / <code>le</code></td><td class="mono">yes</td><td>Numeric ordering. Non-numeric input fails closed.</td></tr>
+          <tr><td class="name"><code>beginsWith</code> / <code>endsWith</code></td><td class="mono">yes</td><td>String prefix / suffix match.</td></tr>
+          <tr><td class="name"><code>contains</code></td><td class="mono">yes</td><td>Literal substring (case-sensitive).</td></tr>
+          <tr><td class="name"><code>within</code></td><td class="mono">yes</td><td>Value is one of the whitespace-separated tokens in <code>value</code>.</td></tr>
+          <tr><td class="name"><code>isSet</code></td><td class="mono">yes</td><td>Whether the variable resolves to anything. With <code>negated: true</code>, fires on absence.</td></tr>
+          <tr><td class="name"><code>pm</code> / <code>pmFromFile</code></td><td class="mono">yes</td><td>Phrase match: any token in <code>value</code> (or a file) appears in the variable.</td></tr>
+          <tr><td class="name"><code>ipMatch</code></td><td class="mono">yes</td><td>IPv4/IPv6/CIDR match against a comma- or space-separated list.</td></tr>
+          <tr><td class="name"><code>libinjection_sqli</code> / <code>libinjection_xss</code></td><td class="mono">yes</td><td>SQLi / XSS detection via libinjection.</td></tr>
+          <tr><td class="name"><code>validateUrlEncoding</code></td><td class="mono">yes</td><td>Matches on malformed <code>%XX</code> sequences.</td></tr>
+          <tr><td class="name"><code>validateUtf8Encoding</code></td><td class="mono">yes</td><td>Matches when input is not valid UTF-8.</td></tr>
+          <tr><td class="name"><code>validateByteRange</code></td><td class="mono">yes</td><td>Matches when any byte falls outside the ranges in <code>value</code> (e.g. <code>"32-126,9,10,13"</code>).</td></tr>
+          <tr><td class="name"><code>unconditionalMatch</code></td><td class="mono">n/a</td><td>Always true. Used as the predicate of chains gated by other conditions' side-effects.</td></tr>
+          <tr><td class="name"><code>mcp_method_in</code></td><td class="mono">n/a</td><td>The JSON-RPC <code>method</code> is in <code>value</code> (MCP).</td></tr>
+          <tr><td class="name"><code>mcp_jsonrpc_valid</code></td><td class="mono">n/a</td><td>The body is a valid JSON-RPC 2.0 envelope (MCP).</td></tr>
+        </tbody>
+      </table>
+      <div class="note"><span class="lbl">Not implemented</span>Some CRS operators have no equivalent: <code>@ipMatchFromFile</code>, <code>@verifyCC</code>, <code>@verifySSN</code>, <code>@geoLookup</code>, <code>@inspectFile</code>. Rules that need them are skipped at parse time with a <code>WARN</code> line in the Kong error log.</div>
+    </section>
+
+    <section id="negation">
+      <h2>Negation</h2>
+      <p>Every binary operator can be negated. The canonical form is a separate boolean field, not a <code>!</code> prefix:</p>
+      <div class="code-card">
+        <div class="code-head"><span>negated condition</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"value"</span>: <span class="str">""</span>,
+  <span class="prm">"variables"</span>: [<span class="str">"request.header.value:content-type"</span>] }</pre></div>
+      </div>
+      <p>Semantics: a negated condition fires when the positive match fails <strong>and</strong> the value is present. A missing variable does not satisfy a negated condition. The one exception is <code>isSet</code> with <code>negated: true</code>, which is the way to spell "variable is absent" and so fires on a missing variable.</p>
+      <p>For back-compat the engine still accepts <code>"op": "!rx"</code>, but new rules should use <code>negated</code>.</p>
+    </section>
+
+    <section id="transforms">
+      <h2>Transformations</h2>
+      <p>Listed in <code>transform</code>, applied in order to each value before the operator runs. There are no implicit transforms — what you list is what runs. Results are cached per request.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Transform</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>lowercase</code></td><td>Lowercase ASCII.</td></tr>
+          <tr><td class="name"><code>urlDecodeUni</code></td><td>URL-decode, including <code>%uHHHH</code> sequences (alias: <code>urlDecode</code>).</td></tr>
+          <tr><td class="name"><code>hexSequenceDecode</code></td><td>Decode <code>%HH</code> sequences (one pass).</td></tr>
+          <tr><td class="name"><code>htmlEntityDecode</code></td><td>Decode HTML entities (<code>&amp;#xHH;</code>, <code>&amp;quot;</code>, …).</td></tr>
+          <tr><td class="name"><code>jsDecode</code></td><td>Decode JavaScript <code>\uHHHH</code> / fullwidth escapes.</td></tr>
+          <tr><td class="name"><code>cssDecode</code></td><td>Decode CSS escapes.</td></tr>
+          <tr><td class="name"><code>escapeSeqDecode</code></td><td>Decode ANSI-C escapes (<code>\n</code>, <code>\xHH</code>, …).</td></tr>
+          <tr><td class="name"><code>base64Decode</code></td><td>Base64-decode (alias: <code>base64decode</code>).</td></tr>
+          <tr><td class="name"><code>removeNulls</code></td><td>Strip NUL bytes.</td></tr>
+          <tr><td class="name"><code>removeWhitespace</code></td><td>Strip all whitespace.</td></tr>
+          <tr><td class="name"><code>compressWhitespace</code></td><td>Collapse runs of whitespace to a single space.</td></tr>
+          <tr><td class="name"><code>replaceComments</code></td><td>Replace <code>/* */</code> and <code>//</code> with a space.</td></tr>
+          <tr><td class="name"><code>removeCommentsChar</code></td><td>Strip comment characters (<code>/*</code>, <code>*/</code>, <code>//</code>, <code>#</code>).</td></tr>
+          <tr><td class="name"><code>normalisePath</code></td><td>Normalize path slashes and <code>.</code> / <code>..</code> segments (alias: <code>normalizePath</code>).</td></tr>
+          <tr><td class="name"><code>normalizePathWin</code></td><td>Like above, treating <code>\</code> as a separator.</td></tr>
+          <tr><td class="name"><code>cmdLine</code></td><td>Command-line normalization (strip quoting, collapse spaces, lowercase).</td></tr>
+          <tr><td class="name"><code>utf8toUnicode</code></td><td>Convert UTF-8 to <code>%uHHHH</code> form.</td></tr>
+          <tr><td class="name"><code>length</code></td><td>Replace the value with its length (a number).</td></tr>
+          <tr><td class="name"><code>sha1</code></td><td>SHA-1 digest (raw bytes).</td></tr>
+          <tr><td class="name"><code>hexEncode</code></td><td>Hex-encode bytes.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="actions">
+      <h2>Actions</h2>
+      <p>The <code>action</code> object decides what happens on a match. Side-effect actions (<code>set_variable</code>, <code>set_log_fields</code>, <code>redis_incr_key</code>) fire whether or not the request is blocked. Terminal actions only block when <code>engine_blocking_mode</code> is on.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Action</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>fixed_response</code></td><td>Terminate with a fixed status / headers / body (the standard block).</td></tr>
+          <tr><td class="name"><code>fix_matched_parts</code></td><td>Sanitize the matched targets in place and let the request through. Takes precedence over <code>fixed_response</code> if both are present.</td></tr>
+          <tr><td class="name"><code>rate_limit</code></td><td>Redis fixed-window counter; returns 429 when the limit is exceeded.</td></tr>
+          <tr><td class="name"><code>redis_incr_key</code></td><td>Increment a Redis key with a TTL (no terminal effect).</td></tr>
+          <tr><td class="name"><code>set_variable</code></td><td>Write a value into <code>kong.ctx.shared</code> or <code>kong.ctx.plugin</code> for sibling plugins / later phases.</td></tr>
+          <tr><td class="name"><code>set_log_fields</code></td><td>Add custom fields to the audit log entry.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="a-fixed">fixed_response</h3>
+      <div class="code-card">
+        <div class="code-head"><span>action</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: {
+  <span class="prm">"fixed_response"</span>: {
+    <span class="prm">"status_code"</span>: <span class="num">403</span>,
+    <span class="prm">"headers"</span>: { <span class="prm">"content-type"</span>: <span class="str">"text/plain"</span> },
+    <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span>
+  }
+}</pre></div>
+      </div>
+
+      <h3 id="a-fix">fix_matched_parts</h3>
+      <p>Strips <code>remove_chars_pattern</code> from every matched target and forwards upstream. The audit log marks the entry <code>action: "sanitized"</code>.</p>
+      <div class="code-card">
+        <div class="code-head"><span>action</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: { <span class="prm">"fix_matched_parts"</span>: { <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[\"';&amp;|`]*"</span> } }</pre></div>
+      </div>
+
+      <h3 id="a-ratelimit">rate_limit</h3>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Field</th><th class="mono">Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>key</code></td><td class="mono">%{remote_addr}</td><td>Counter cardinality. Macros: <code>%{remote_addr}</code>, <code>%{request.method}</code>, <code>%{request.host}</code>, <code>%{request.scheme}</code>, <code>%{request.path}</code>.</td></tr>
+          <tr><td class="name"><code>limit</code></td><td class="mono">0</td><td>Max requests in the window.</td></tr>
+          <tr><td class="name"><code>window_seconds</code></td><td class="mono">60</td><td>Window length / counter TTL.</td></tr>
+          <tr><td class="name"><code>response</code></td><td class="mono">429</td><td>Optional <code>status_code</code> / <code>body</code> / <code>headers</code>. <code>Retry-After</code> is set automatically.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="a-setvar">set_variable</h3>
+      <p><code>type</code> is required (<code>shared</code> &rarr; <code>kong.ctx.shared</code>, <code>plugin</code> &rarr; <code>kong.ctx.plugin</code>). String values support <code>%{var}</code> macros resolved against the request.</p>
+      <div class="code-card">
+        <div class="code-head"><span>action</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: {
+  <span class="prm">"set_variable"</span>: { <span class="prm">"name"</span>: <span class="str">"skip_js_challenge"</span>, <span class="prm">"value"</span>: <span class="kw">true</span>, <span class="prm">"type"</span>: <span class="str">"shared"</span> }
+}</pre></div>
+      </div>
+
+      <h3 id="a-logfields">set_log_fields</h3>
+      <div class="code-card">
+        <div class="code-head"><span>action</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: {
+  <span class="prm">"set_log_fields"</span>: [ { <span class="prm">"name"</span>: <span class="str">"username"</span>, <span class="prm">"value"</span>: <span class="str">"%{request.body.urlencode.value:username}"</span> } ]
+}</pre></div>
+      </div>
+    </section>
+
+    <section id="rule-controls">
+      <h2>Rule controls</h2>
+      <p>A rule's <code>rule_control</code> array modifies rules (itself or others by id / tag). Useful for carving out false positives and patching CRS rules without editing the pack.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Control</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>remove_rule</code></td><td>Skip a rule entirely (<code>{ "rule_id": "1234" }</code>).</td></tr>
+          <tr><td class="name"><code>remove_rules_by_tag</code></td><td>Skip all rules with a tag.</td></tr>
+          <tr><td class="name"><code>remove_variable_from_rule_conditions</code></td><td>Drop a variable from every condition of a rule.</td></tr>
+          <tr><td class="name"><code>remove_variable_rx</code></td><td>Drop variables whose key matches a regex (great for libinjection header FPs).</td></tr>
+          <tr><td class="name"><code>remove_target_rule_by_pattern</code></td><td>Drop matched-key targets from a rule by Lua pattern.</td></tr>
+          <tr><td class="name"><code>remove_target_tag_by_pattern</code></td><td>Same, for all rules with a tag.</td></tr>
+          <tr><td class="name"><code>change_rule_action</code></td><td>Replace a rule's action.</td></tr>
+          <tr><td class="name"><code>change_condition_tfunc</code></td><td>Replace a condition's transform chain (<code>condition_number</code> is 1-based).</td></tr>
+          <tr><td class="name"><code>change_condition_value</code></td><td>Replace a condition's operator value.</td></tr>
+          <tr><td class="name"><code>replace_condition</code> / <code>remove_condition</code> / <code>add_condition</code></td><td>Replace, delete, or append a condition.</td></tr>
+        </tbody>
+      </table>
+      <div class="code-card">
+        <div class="code-head"><span>carve out libinjection header false positives</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"rule_control"</span>: [
+  { <span class="prm">"remove_variable_rx"</span>: {
+      <span class="prm">"name"</span>: <span class="str">"request.header.value"</span>,
+      <span class="prm">"rx"</span>: <span class="str">".*(?:[Uu]ser\\-[Aa]gent|[Rr]eferer|[Aa]uthorization).*"</span> } }
+]</pre></div>
+      </div>
+    </section>
+
+    <section id="overrides">
+      <h2>CRS overrides</h2>
+      <p>To change what existing CRS rules do without rewriting them, use the config-level <code>rule_action_overrides</code> and <code>rule_response_overrides</code> arrays (see <a class="link" href="configuration.html#overrides">Configuration</a>). Each entry has a <code>selector</code> and a payload; the first matching entry wins.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Selector</th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>ids</code></td><td>OR-match against <code>rule.id</code>.</td></tr>
+          <tr><td class="name"><code>id_ranges</code></td><td>Numeric range, inclusive (e.g. <code>"941000-941999"</code>).</td></tr>
+          <tr><td class="name"><code>tags</code></td><td>Any tag in the list intersects <code>rule.tags</code>.</td></tr>
+          <tr><td class="name"><code>except_ids</code> / <code>except_tags</code></td><td>Exclude a rule even on a positive match.</td></tr>
+          <tr><td class="name"><code>any</code></td><td><code>true</code> matches every rule (use with <code>except_*</code>).</td></tr>
+        </tbody>
+      </table>
+      <div class="code-card">
+        <div class="code-head"><span>switch the XSS family to sanitize</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"selector"</span>: { <span class="prm">"tags"</span>: [<span class="str">"attack-xss"</span>] },
+  <span class="prm">"action"</span>:   { <span class="prm">"type"</span>: <span class="str">"fix"</span>, <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span> } }</pre></div>
+      </div>
+    </section>
+
+    <section id="seclang">
+      <h2>SecLang rules</h2>
+      <p>If you prefer ModSecurity syntax, put raw <code>SecRule</code> strings in <code>custom_secrules</code>. They are parsed at worker start and added to the global pool alongside the CRS. Only the canonical <code>SecRule &lt;vars&gt; "&lt;op&gt;" "&lt;actions&gt;"</code> form is parsed; <code>SecRule*</code> derivatives are skipped.</p>
+      <div class="code-card">
+        <div class="code-head"><span>config</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"custom_secrules"</span>: [
+  <span class="str">"SecRule ARGS:debug \"@streq 1\" \"id:9001,phase:1,deny,status:403,msg:'debug arg blocked'\""</span>
+]</pre></div>
+      </div>
+    </section>
+
+    <section id="ex-detect">
+      <h2>Example: detect &amp; block</h2>
+      <p>Block header-borne SQL injection, with a carve-out for FP-prone headers.</p>
+      <div class="code-card">
+        <div class="code-head"><span>rules_request entry</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"2201"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>, <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
+      <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"request.header.value"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
+  <span class="prm">"message"</span>: <span class="str">"SQL Injection: header-borne"</span>,
+  <span class="prm">"rule_control"</span>: [
+    { <span class="prm">"remove_variable_rx"</span>: { <span class="prm">"name"</span>: <span class="str">"request.header.value"</span>,
+        <span class="prm">"rx"</span>: <span class="str">".*(?:[Uu]ser\\-[Aa]gent|[Rr]eferer|[Aa]uthorization).*"</span> } }
+  ],
+  <span class="prm">"tags"</span>: [<span class="str">"injection"</span>, <span class="str">"attack-sqli"</span>]
+}</pre></div>
+      </div>
+    </section>
+
+    <section id="ex-sanitize">
+      <h2>Example: sanitize, don't block</h2>
+      <p>Strip XSS-shape characters from the <code>name</code> argument instead of blocking. <code>GET /signup?name=O'Brien</code> reaches the app as <code>name=OBrien</code>.</p>
+      <div class="code-card">
+        <div class="code-head"><span>rules_request entry</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"sanitize-name-field"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"log"</span>: <span class="kw">true</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"rx"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"value"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.arg.value:name"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fix_matched_parts"</span>: { <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span> } },
+  <span class="prm">"tags"</span>: [<span class="str">"sanitize"</span>],
+  <span class="prm">"message"</span>: <span class="str">"neutralize XSS-shape chars in name"</span>
+}</pre></div>
+      </div>
+    </section>
+
+    <section id="ex-ratelimit">
+      <h2>Example: rate limit</h2>
+      <p>Cap <code>/api/login</code> to 5 attempts per minute per source IP.</p>
+      <div class="code-card">
+        <div class="code-head"><span>rules_request entry</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"rl-login-per-ip"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"value"</span>: <span class="str">"/api/login"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] }
+  ],
+  <span class="prm">"action"</span>: {
+    <span class="prm">"rate_limit"</span>: {
+      <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>, <span class="prm">"limit"</span>: <span class="num">5</span>, <span class="prm">"window_seconds"</span>: <span class="num">60</span>,
+      <span class="prm">"response"</span>: { <span class="prm">"status_code"</span>: <span class="num">429</span>, <span class="prm">"body"</span>: <span class="str">"Too many login attempts.\r\n"</span> }
+    }
+  },
+  <span class="prm">"message"</span>: <span class="str">"login rate limit"</span>, <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>, <span class="str">"auth"</span>]
+}</pre></div>
+      </div>
+    </section>
+
+    <section id="ex-counter">
+      <h2>Example: counter + threshold</h2>
+      <p>Two rules: the first increments a Redis counter on a failed login (no session cookie set on a login POST); the second blocks once the counter is high.</p>
+      <div class="code-card">
+        <div class="code-head"><span>1 — count failed logins</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"count-failed-login"</span>, <span class="prm">"phase"</span>: <span class="str">"header_filter"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/login"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"POST"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.method"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"value"</span>: <span class="str">""</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"response.set_cookie.name:session"</span>] }
+  ],
+  <span class="prm">"action"</span>: {
+    <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"failed_login_%{request.header.value:host}_%{remote_addr}"</span>,
+                       <span class="prm">"expire"</span>: <span class="num">300</span> }
+  },
+  <span class="prm">"log"</span>: <span class="kw">false</span>
+}</pre></div>
+      </div>
+      <div class="code-card">
+        <div class="code-head"><span>2 — block over threshold</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"block-failed-login"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"ge"</span>, <span class="prm">"value"</span>: <span class="str">"5"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"redis.key:failed_login_%{request.header.value:host}_%{remote_addr}"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Too many login attempts.\r\n"</span> } },
+  <span class="prm">"log"</span>: <span class="kw">false</span>
+}</pre></div>
+      </div>
+    </section>
+
+    <section id="ex-chain">
+      <h2>Example: chained rule</h2>
+      <p>Conditions are AND-ed. This rule fires only on a <code>POST</code> to <code>/upload</code> carrying a script-like filename.</p>
+      <div class="code-card">
+        <div class="code-head"><span>rules_request entry</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"block-script-upload"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"POST"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.method"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/upload"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"rx"</span>, <span class="prm">"transform"</span>: [<span class="str">"lowercase"</span>], <span class="prm">"value"</span>: <span class="str">"\\.(php|phtml|jsp|asp)$"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.file"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
+  <span class="prm">"message"</span>: <span class="str">"script upload blocked"</span>, <span class="prm">"tags"</span>: [<span class="str">"upload"</span>]
+}</pre></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <div>
+      <div class="foot-brand-row">
+        <img src="assets/karna-mark-dark.png" width="40" height="39" alt=""/>
+        <span class="word">Karna</span>
+      </div>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. <span style="color: var(--inchworm)">Cybersecurity for everyone.</span></p>
+    </div>
+    <div>
+      <h5>Project</h5>
+      <a href="https://github.com/sicuranext/karna">GitHub repository</a>
+      <a href="https://github.com/sicuranext/karna/releases">Releases</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/LICENSE">License</a>
+    </div>
+    <div>
+      <h5>Docs</h5>
+      <a href="./#install">Installation</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="rules.html">Writing rules</a>
+    </div>
+    <div>
+      <h5>SicuraNext</h5>
+      <a href="https://sicuranext.com">sicuranext.com</a>
+      <a href="https://sicuranext.com/contatti">Contact</a>
+      <a href="mailto:karna@sicuranext.com">karna@sicuranext.com</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
+    <span>karna v1.x · built on OpenResty</span>
+  </div>
+</footer>
+
+<script src="assets/docs.js"></script>
+</body>
+</html>

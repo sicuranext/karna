@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Karna documentation — WAF engine for Kong Gateway</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="Technical documentation for Karna, the source-available OWASP CRS-compatible WAF plugin for Kong Gateway: installation, every configuration option, and the full rule-authoring reference."/>
+<link rel="canonical" href="https://karna.sicuranext.com/docs/"/>
+<link rel="icon" type="image/png" href="assets/karna-mark-gold.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"/>
+<link rel="stylesheet" href="assets/karna.css"/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Karna home">
+      <img src="assets/karna-mark-light.png" width="34" height="33" alt=""/>
+      <span class="brand-word">Karna</span>
+      <span class="brand-by">by SicuraNext</span>
+    </a>
+    <div class="nav-links">
+      <a href="/#why">Why Karna</a>
+      <a href="/#features">Features</a>
+      <a href="/#install">Install</a>
+      <a href="./" class="active">Docs</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-secondary" href="configuration.html">Configuration</a>
+      <a class="btn btn-gold" href="rules.html">Writing rules</a>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head">
+  <div class="doc-head-inner">
+    <span class="doc-eyebrow">Documentation</span>
+    <h1>Karna for developers</h1>
+    <p>Everything you need to run Karna in production, configure it for your service, and write your own detection and mitigation rules. Karna is a self-contained WAF engine for Kong Gateway, compatible with the OWASP CoreRuleSet.</p>
+  </div>
+</header>
+
+<div class="doc-layout">
+  <aside class="doc-side">
+    <h5>Get started</h5>
+    <a href="#overview">Overview</a>
+    <a href="#install">Installation</a>
+    <a href="#docker">Docker (production)</a>
+    <a href="#existing-kong">Existing Kong</a>
+    <a href="#attach">Attach to a service</a>
+    <a href="#detection-first">Detection-only first</a>
+    <h5>Reference</h5>
+    <a href="configuration.html">Configuration options</a>
+    <a href="rules.html">Writing rules</a>
+  </aside>
+
+  <main class="doc-main">
+    <section id="overview">
+      <h2>Overview</h2>
+      <p>Karna is a WAF (Web Application Firewall) engine that runs as a native Kong Gateway plugin. It loads the OWASP CoreRuleSet at worker start, evaluates incoming requests against those rules plus any rules you write, and either logs or blocks attacks. It needs no other plugin to work.</p>
+      <p>There are three things you will typically do, each documented here:</p>
+      <ul>
+        <li><strong>Install and deploy</strong> Karna in front of your application (this page).</li>
+        <li><strong>Configure</strong> the plugin for your service: blocking mode, paranoia level, request limits, audit logging, and more. See <a class="link" href="configuration.html">Configuration options</a>.</li>
+        <li><strong>Write rules</strong>: custom detection, sanitization, rate limiting, and CRS exceptions. See <a class="link" href="rules.html">Writing rules</a>.</li>
+      </ul>
+      <div class="doc-cards">
+        <a class="doc-card" href="configuration.html">
+          <h3>Configuration options</h3>
+          <p>Every setting in the plugin schema, with type, default, and what it does.</p>
+          <span class="go">Read the config reference &rarr;</span>
+        </a>
+        <a class="doc-card" href="rules.html">
+          <h3>Writing rules</h3>
+          <p>Rule format, variables, operators, transformations, actions, and worked examples.</p>
+          <span class="go">Read the rule reference &rarr;</span>
+        </a>
+      </div>
+    </section>
+
+    <section id="install">
+      <h2>Installation</h2>
+      <p>Two supported paths. Use the Docker image for a self-contained stack, or install the plugin into a Kong you already run.</p>
+    </section>
+
+    <section id="docker">
+      <h3>Docker (production)</h3>
+      <p>The production Dockerfile builds one self-contained image: Kong, the OWASP CoreRuleSet, libinjection, the native RE2 / Aho-Corasick scanners, and Karna. Kong runs DB-less; the declarative config in <code>docker/kong.yml</code> puts Karna in front of your backend. Redis is only used by <code>rate_limit</code> rules.</p>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">docker</span></div>
+        <div class="code-body"><pre><span class="cmt"># 1. get the source (the production Dockerfile ships with it)</span>
+git clone https://github.com/sicuranext/karna.git
+cd karna
+
+<span class="cmt"># 2. point the upstream at your app:</span>
+<span class="cmt">#    edit docker/kong.yml -&gt; services[0].url: http://your-app:8080</span>
+
+<span class="cmt"># 3. build and run (Kong DB-less + Redis)</span>
+docker compose -f docker/docker-compose.prod.yml up -d --build
+
+<span class="cmt"># traffic now flows: client -&gt; :8000 (Karna / Kong) -&gt; your app</span></pre></div>
+      </div>
+      <p>Ports <code>8000</code> (proxy) and <code>8443</code> (proxy TLS) are exposed. The image bakes in <code>KONG_PLUGINS=bundled,karna</code> and the PCRE backtracking cap <code>KONG_NGINX_HTTP_LUA_REGEX_MATCH_LIMIT=100000</code>, so there is nothing to compile by hand.</p>
+    </section>
+
+    <section id="existing-kong">
+      <h3>Install into an existing Kong</h3>
+      <p>If you already run Kong, install the plugin and its native dependencies, then enable it. Karna needs <code>lua-zlib</code> (gzip bodies), <code>libinjection.so</code> (SQLi/XSS), the OWASP CoreRuleSet on disk, and optionally the native scanners (they fall back to pure Lua if absent).</p>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre><span class="cmt"># lua-zlib must come from the direct rockspec URL — the full</span>
+<span class="cmt"># luarocks.org manifest is too large for LuaJIT to parse.</span>
+luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.2-2.rockspec
+
+<span class="cmt"># the plugin itself (from the cloned repo)</span>
+cd /path/to/karna &amp;&amp; luarocks make
+
+<span class="cmt"># libinjection.so</span>
+git clone --branch v3.10.0 https://github.com/client9/libinjection.git
+cd libinjection/src &amp;&amp; gcc -shared -fPIC -O2 -o /usr/local/lib/libinjection.so \
+    libinjection_sqli.c libinjection_xss.c libinjection_html5.c &amp;&amp; ldconfig
+
+<span class="cmt"># OWASP CoreRuleSet</span>
+mkdir -p /opt/coreruleset
+curl -fsSL https://github.com/coreruleset/coreruleset/archive/refs/tags/v4.26.0.tar.gz \
+    | tar -xz --strip-components=1 -C /opt/coreruleset
+
+<span class="cmt"># optional native scanners (graceful fallback to Lua if missing)</span>
+g++ -shared -fPIC -O2 -std=c++17 -o /usr/local/lib/libka_re2.so src/libka_re2/ka_re2.cc -lre2
+gcc -shared -fPIC -O2 -o /usr/local/lib/libka_ac.so src/libka_ac/ka_ac.c &amp;&amp; ldconfig</pre></div>
+      </div>
+      <p>Then wire Kong:</p>
+      <ul>
+        <li>Add <code>karna</code> to <code>plugins</code> in <code>kong.conf</code> (<code>plugins = bundled,karna</code>).</li>
+        <li>Set the PCRE cap: <code>KONG_NGINX_HTTP_LUA_REGEX_MATCH_LIMIT=100000</code>.</li>
+        <li>Expose the <code>KARNA_*</code> env vars to nginx workers via <code>KONG_NGINX_MAIN_INCLUDE</code> pointing at a snippet like <code>docker/main-env.conf</code> (nginx wipes the environment by default — see <a class="link" href="configuration.html#env">Environment variables</a>).</li>
+        <li>Make the audit-log directory writable by the Kong worker user: <code>chown -R kong:kong /usr/local/openresty/nginx/logs</code>.</li>
+        <li><code>kong reload</code>.</li>
+      </ul>
+      <div class="tip"><span class="lbl">Tip</span>The native scanners and CRS path are overridable with env vars (<code>KARNA_LIBKA_RE2_SO</code>, <code>KARNA_LIBKA_AC_SO</code>, <code>KARNA_LIBINJECTION_SO</code>, <code>KARNA_CRS_PATH</code>). Missing native libs never cause a silent drop — the engine falls back to the pure-Lua path.</div>
+    </section>
+
+    <section id="attach">
+      <h2>Attach Karna to a service</h2>
+      <p>Declaratively in <code>kong.yml</code> (DB-less):</p>
+      <div class="code-card">
+        <div class="code-head"><span>kong.yml</span><span class="lang">yaml</span></div>
+        <div class="code-body"><pre><span class="prm">_format_version</span>: <span class="str">"3.0"</span>
+<span class="prm">services</span>:
+  - <span class="prm">name</span>: my-app
+    <span class="prm">url</span>: <span class="str">http://my-backend:8080</span>      <span class="cmt"># your existing app</span>
+    <span class="prm">routes</span>:
+      - <span class="prm">name</span>: my-app
+        <span class="prm">paths</span>: [<span class="str">"/"</span>]
+    <span class="prm">plugins</span>:
+      - <span class="prm">name</span>: karna
+        <span class="prm">config</span>:
+          <span class="prm">engine_blocking_mode</span>: <span class="kw">false</span>   <span class="cmt"># detection-only to start</span>
+          <span class="prm">paranoia_level</span>: <span class="num">1</span>
+          <span class="prm">auditlog_enabled</span>: <span class="kw">true</span></pre></div>
+      </div>
+      <p>Or via the Admin API on a running Kong:</p>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">curl</span></div>
+        <div class="code-body"><pre>curl -X POST http://localhost:8001/services/&lt;service_id&gt;/plugins \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{
+    "name": "karna",
+    "config": {
+      "engine_blocking_mode": false,
+      "paranoia_level": 1,
+      "auditlog_enabled": true
+    }
+  }'</span></pre></div>
+      </div>
+    </section>
+
+    <section id="detection-first">
+      <h2>Run detection-only first</h2>
+      <p>Always start with <code>engine_blocking_mode: false</code>. In this mode Karna evaluates every rule and writes the matches to the audit log, but never blocks. Watch the log against real traffic, tune away false positives with rule overrides and exceptions (see <a class="link" href="rules.html#overrides">Writing rules</a>), then flip <code>engine_blocking_mode</code> to <code>true</code> once you trust the result.</p>
+      <div class="note"><span class="lbl">Note</span>A handful of request-validation gates (allowed methods, path character limits, denied headers, content-type/charset) always run regardless of blocking mode and the CRS toggles. They are hard limits — to loosen them, raise the relevant schema values. See <a class="link" href="configuration.html#gates">Always-on validation gates</a>.</div>
+    </section>
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <div>
+      <div class="foot-brand-row">
+        <img src="assets/karna-mark-dark.png" width="40" height="39" alt=""/>
+        <span class="word">Karna</span>
+      </div>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. <span style="color: var(--inchworm)">Cybersecurity for everyone.</span></p>
+    </div>
+    <div>
+      <h5>Project</h5>
+      <a href="https://github.com/sicuranext/karna">GitHub repository</a>
+      <a href="https://github.com/sicuranext/karna/releases">Releases</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/LICENSE">License</a>
+    </div>
+    <div>
+      <h5>Docs</h5>
+      <a href="./#install">Installation</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="rules.html">Writing rules</a>
+    </div>
+    <div>
+      <h5>SicuraNext</h5>
+      <a href="https://sicuranext.com">sicuranext.com</a>
+      <a href="https://sicuranext.com/contatti">Contact</a>
+      <a href="mailto:karna@sicuranext.com">karna@sicuranext.com</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
+    <span>karna v1.x · built on OpenResty</span>
+  </div>
+</footer>
+
+<script src="assets/docs.js"></script>
+</body>
+</html>

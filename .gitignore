@@ -95,7 +95,9 @@ dist/
 build/
 
 # === Claude Code / AI tooling ===
-.claude/
+# Ignore local Claude state but ship the bundled Karna agent skill.
+.claude/*
+!.claude/skills/
 
 # === Personal / WIP scratchpads ===
 TODO.local.md

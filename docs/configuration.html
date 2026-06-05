@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Configuration — Karna documentation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="Every Karna plugin configuration option: blocking mode, paranoia level, CRS category toggles, engine optimizations, MCP, request-validation gates and limits, audit logging, Redis, and environment variables."/>
+<link rel="canonical" href="https://karna.sicuranext.com/docs/configuration.html"/>
+<link rel="icon" type="image/png" href="assets/karna-mark-gold.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"/>
+<link rel="stylesheet" href="assets/karna.css"/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Karna home">
+      <img src="assets/karna-mark-light.png" width="34" height="33" alt=""/>
+      <span class="brand-word">Karna</span>
+      <span class="brand-by">by SicuraNext</span>
+    </a>
+    <div class="nav-links">
+      <a href="/#why">Why Karna</a>
+      <a href="/#features">Features</a>
+      <a href="/#install">Install</a>
+      <a href="./" class="active">Docs</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-secondary" href="./">Docs home</a>
+      <a class="btn btn-gold" href="rules.html">Writing rules</a>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head">
+  <div class="doc-head-inner">
+    <div class="doc-crumbs"><a href="./">Docs</a> / Configuration</div>
+    <span class="doc-eyebrow">Reference</span>
+    <h1>Configuration options</h1>
+    <p>Every setting in the Karna plugin schema. Set them in the plugin <code>config</code> block (declarative <code>kong.yml</code>) or via the Admin API. All options are per-service: the same Karna can run in detection-only on one route and blocking on another.</p>
+  </div>
+</header>
+
+<div class="doc-layout">
+  <aside class="doc-side">
+    <h5>Sections</h5>
+    <a href="#engine">Engine &amp; blocking</a>
+    <a href="#crs">CRS category toggles</a>
+    <a href="#optimizations">Engine optimizations</a>
+    <a href="#gates">Validation gates &amp; limits</a>
+    <a href="#crs-setup">CRS-setup knobs</a>
+    <a href="#body">Body parsing</a>
+    <a href="#mcp">MCP (AI / Model Context Protocol)</a>
+    <a href="#crs-plugins">CRS exclusion plugins</a>
+    <a href="#custom-rules">Custom rules</a>
+    <a href="#overrides">Action &amp; response overrides</a>
+    <a href="#audit">Audit logging</a>
+    <a href="#redis">Redis</a>
+    <a href="#debug">Debug</a>
+    <a href="#env">Environment variables</a>
+    <h5>Reference</h5>
+    <a href="rules.html">Writing rules</a>
+  </aside>
+
+  <main class="doc-main">
+
+    <section id="engine">
+      <h2>Engine &amp; blocking</h2>
+      <p>The core switches: whether Karna blocks or only detects, and which rule sources are active.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name"><code>engine_blocking_mode</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td>
+            <td>When <code>true</code>, a matched rule terminates the request (default 403). When <code>false</code> (detection-only), rules are evaluated and logged but never block. Always start here.</td>
+          </tr>
+          <tr>
+            <td class="name"><code>coreruleset_enabled</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
+            <td>Load and evaluate the OWASP CoreRuleSet pack (loaded once at worker start, shared across requests). The in-repo CRS-fix rule controls are always applied independently of this toggle.</td>
+          </tr>
+          <tr>
+            <td class="name"><code>local_rules_enabled</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
+            <td>Evaluate your per-service custom rules (<code>rules_request</code> / <code>rules_response</code>).</td>
+          </tr>
+          <tr>
+            <td class="name"><code>set_karna_headers</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td>
+            <td>Add Karna diagnostic headers to the response. Useful when debugging behind a proxy where worker logs are not visible.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="crs">
+      <h2>CRS category toggles</h2>
+      <p>The full CoreRuleSet is loaded once; these per-service switches decide which attack categories are <em>evaluated</em> for this service. A disabled category's rules are skipped in the eval loop (no per-request cost). All are gated by <code>coreruleset_enabled</code> and live under the <code>coreruleset_rulesets</code> record. Each defaults <code>true</code> except where noted.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option (under <code>coreruleset_rulesets</code>)</th><th class="mono">CRS</th><th class="mono">Default</th><th>Category</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>method_enforcement</code></td><td class="mono">911</td><td class="mono">true</td><td>Method enforcement</td></tr>
+          <tr><td class="name"><code>scanner_detection</code></td><td class="mono">913</td><td class="mono">true</td><td>Scanner / bot detection</td></tr>
+          <tr><td class="name"><code>protocol_enforcement</code></td><td class="mono">920</td><td class="mono"><span class="badge badge-gate">false</span></td><td>HTTP protocol enforcement. Default <strong>off</strong>: nginx/OpenResty already enforces method/version/header/encoding well-formedness before the request reaches the rule engine, so this pack is largely redundant in a Kong deployment.</td></tr>
+          <tr><td class="name"><code>protocol_attack</code></td><td class="mono">921</td><td class="mono">true</td><td>Protocol attacks (request smuggling, splitting)</td></tr>
+          <tr><td class="name"><code>multipart_attack</code></td><td class="mono">922</td><td class="mono">true</td><td>Multipart/form-data attacks</td></tr>
+          <tr><td class="name"><code>lfi</code></td><td class="mono">930</td><td class="mono">true</td><td>Local file inclusion</td></tr>
+          <tr><td class="name"><code>rfi</code></td><td class="mono">931</td><td class="mono">true</td><td>Remote file inclusion</td></tr>
+          <tr><td class="name"><code>rce</code></td><td class="mono">932</td><td class="mono">true</td><td>Remote command execution</td></tr>
+          <tr><td class="name"><code>php</code></td><td class="mono">933</td><td class="mono">true</td><td>PHP injection</td></tr>
+          <tr><td class="name"><code>generic</code></td><td class="mono">934</td><td class="mono">true</td><td>Generic / node / SSRF</td></tr>
+          <tr><td class="name"><code>xss</code></td><td class="mono">941</td><td class="mono">true</td><td>Cross-site scripting</td></tr>
+          <tr><td class="name"><code>sqli</code></td><td class="mono">942</td><td class="mono">true</td><td>SQL injection</td></tr>
+          <tr><td class="name"><code>session_fixation</code></td><td class="mono">943</td><td class="mono">true</td><td>Session fixation</td></tr>
+          <tr><td class="name"><code>java</code></td><td class="mono">944</td><td class="mono">true</td><td>Java attacks</td></tr>
+        </tbody>
+      </table>
+      <div class="note"><span class="lbl">Note</span>Only the request-side attack categories are exposed. Anomaly scoring (949/959/980), response rules (95x), init (901), and the common-exception files (905/999, which other rules depend on for false-positive handling) are not toggleable.</div>
+    </section>
+
+    <section id="optimizations">
+      <h2>Engine optimizations</h2>
+      <p>Performance switches. All default <code>on</code> and are detection-neutral. Each degrades gracefully: if a native library is missing, the engine falls back to the pure-Lua path and never silently drops a check.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="name"><code>engine_re2_match</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
+            <td>Run the <code>@rx</code> operator's match via RE2 (linear-time, ReDoS-safe by construction) instead of PCRE. Patterns RE2 rejects (lookaround/backref) fall back to <code>ngx.re</code>. Needs <code>libka_re2.so</code>.</td>
+          </tr>
+          <tr>
+            <td class="name"><code>engine_re2_scan</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
+            <td>Gate per-rule <code>@rx</code> evaluation with a single RE2::Set scan per request value; rules whose <code>@rx</code> matched nothing are skipped. Roughly 2&times; benign throughput. Needs <code>libka_re2.so</code>.</td>
+          </tr>
+          <tr>
+            <td class="name"><code>engine_ac_pm</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
+            <td>Replace the Lua <code>@pm</code> / <code>@pmFromFile</code> keyword loops with a C Aho-Corasick one-pass match. Needs <code>libka_ac.so</code>.</td>
+          </tr>
+          <tr>
+            <td class="name"><code>engine_fast_path</code></td>
+            <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
+            <td>Skip the per-rule ARGS deep-copy when no <code>rule_control</code> mutation is pending.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note"><span class="lbl">Note</span>Three further engine optimizations are unconditional (no toggle) because each is proven detection-neutral by a CRS regression empty-diff: skip body-requiring rules on a bodyless request, per-request transform-cache hoist, and skip multipart-namespace scans on non-multipart bodies.</div>
+    </section>
+
+    <section id="gates">
+      <h2>Validation gates &amp; limits</h2>
+      <p>Request-shape limits. Four of these run as <strong>always-on gates</strong> before the rule loops and fire regardless of <code>engine_blocking_mode</code> and the CRS toggles: allowed methods, path character limits, denied headers, and content-type/charset. Treat them as hard limits — to loosen, raise the value or extend the allow-list.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>request_methods_allowed</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-gate">gate</span></td><td>Allowed HTTP methods. Default: <code>GET, HEAD, PUT, POST, DELETE, OPTIONS, PATCH, PROPFIND</code>. A request with any other method is rejected.</td></tr>
+          <tr><td class="name"><code>check_special_chars_in_path</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Enforce a cap on special characters in the URL path.</td></tr>
+          <tr><td class="name"><code>limit_special_chars_in_path</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">3</span></td><td>Maximum special characters allowed in the path when the check is on.</td></tr>
+          <tr><td class="name"><code>check_invalid_chars_in_path</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Enforce a cap on invalid characters in the URL path.</td></tr>
+          <tr><td class="name"><code>limit_invalid_chars_in_path</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">1</span></td><td>Maximum invalid characters allowed in the path when the check is on.</td></tr>
+          <tr><td class="name"><code>request_headers_denied</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-gate">gate</span></td><td>Header names that cause rejection if present. Default: <code>content-encoding, proxy, lock-token, content-range, if</code>.</td></tr>
+          <tr><td class="name"><code>request_content_type_allowed</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-gate">gate</span></td><td>Allowed request <code>Content-Type</code> values (urlencoded, multipart, the XML family, JSON and CloudEvents variants by default).</td></tr>
+          <tr><td class="name"><code>request_content_type_charset_allowed</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-gate">gate</span></td><td>Allowed charsets. Default: <code>utf-8, iso-8859-1, iso-8859-15, windows-1252</code>.</td></tr>
+          <tr><td class="name"><code>limit_arg_num</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">255</span></td><td>Maximum number of arguments (query + body). Enforced as a gate before the rule loop — protects against a (rules &times; args) blow-up DoS.</td></tr>
+          <tr><td class="name"><code>limit_arg_name_length</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">100</span></td><td>Maximum length of a single argument name.</td></tr>
+          <tr><td class="name"><code>limit_arg_value_length</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">400</span></td><td>Maximum length of a single argument value.</td></tr>
+          <tr><td class="name"><code>total_arg_value_length</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">64000</span></td><td>Maximum combined length of all argument values.</td></tr>
+          <tr><td class="name"><code>restricted_extensions</code></td><td><span class="badge badge-type">array</span></td><td>File extensions blocked in the URL path (secret keys, configs, backups, scripts, …). Aligned with the CRS 4.x <code>tx.restricted_extensions</code> default set. Shrink it per deployment if too strict.</td></tr>
+          <tr><td class="name"><code>ignore_from_local_ips</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Skip the WAF for requests from local/private source IPs.</td></tr>
+        </tbody>
+      </table>
+      <div class="warn"><span class="lbl">Gotcha</span>With <code>ignore_from_local_ips: true</code> (the default), attacks sourced from localhost / private ranges are not evaluated. When testing from the same host it can look like "the CRS is not loading" — set it to <code>false</code> for local testing.</div>
+    </section>
+
+    <section id="crs-setup">
+      <h2>CRS-setup knobs</h2>
+      <p>CRS-setup-style values, mapped at access-phase start into the <code>tx.*</code> variables CRS rules expect, so rules written against ModSecurity's <code>TX:&lt;name&gt;</code> resolve without a <code>crs-setup.conf</code>.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>paranoia_level</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">1</span></td><td>OWASP CRS paranoia level (1–4). Higher levels add stricter rules and more potential false positives.</td></tr>
+          <tr><td class="name"><code>validate_utf8_encoding</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Maps to <code>TX:CRS_VALIDATE_UTF8_ENCODING</code> so the CRS UTF-8 validation rules (e.g. 920250) behave correctly. Defaults to the CRS strict posture.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="body">
+      <h2>Body parsing</h2>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>try_bas64decode_if_possible</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Attempt to base64-decode values during body parsing so an attacker cannot hide a payload behind base64.</td></tr>
+          <tr><td class="name"><code>inspection_table_convert</code></td><td><span class="badge badge-type">array</span></td><td>Advanced. Additional value namespaces to convert into the inspection table for rule evaluation. Rarely needed; leave unset unless you know you need it.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="mcp">
+      <h2>MCP (AI / Model Context Protocol)</h2>
+      <p>Request- and response-side detection for the Model Context Protocol. Everything is off by default; Karna behaves identically to non-MCP traffic until <code>mcp_enabled</code> is set on a route.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>mcp_enabled</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Turn on MCP parsing and the <code>mcp.*</code> variable namespace for the route.</td></tr>
+          <tr><td class="name"><code>mcp_routes</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Route paths treated as MCP endpoints.</td></tr>
+          <tr><td class="name"><code>mcp_detection_heuristic</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Heuristically detect MCP traffic even on non-listed routes.</td></tr>
+          <tr><td class="name"><code>mcp_protocol_versions_allowed</code></td><td><span class="badge badge-type">array</span></td><td>Accepted MCP protocol versions. Default: <code>2025-11-25, 2025-06-18, 2025-03-26</code>.</td></tr>
+          <tr><td class="name"><code>mcp_block_legacy_sse_transport</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Reject the legacy HTTP+SSE transport, allowing only Streamable HTTP.</td></tr>
+          <tr><td class="name"><code>mcp_origin_check_enabled</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Validate the <code>Origin</code> header against <code>mcp_origins_allowed</code> (DNS-rebinding defense).</td></tr>
+          <tr><td class="name"><code>mcp_origins_allowed</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Allowed origins when the origin check is on.</td></tr>
+          <tr><td class="name"><code>mcp_max_event_size_bytes</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">1048576</span></td><td>Maximum size of a single reassembled SSE event (1 MiB).</td></tr>
+          <tr><td class="name"><code>mcp_max_stream_buffer_bytes</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">8388608</span></td><td>Maximum SSE reassembly buffer per stream (8 MiB).</td></tr>
+          <tr><td class="name"><code>mcp_redact_session_id_in_audit</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Redact the MCP session id in audit logs.</td></tr>
+          <tr><td class="name"><code>mcp_redact_authorization_in_audit</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Redact the <code>Authorization</code> header in audit logs.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="crs-plugins">
+      <h2>CRS exclusion plugins</h2>
+      <p>The OWASP project ships rule-exclusion plugins for specific apps (WordPress, Drupal, Nextcloud, phpBB, …). Karna reuses those upstream plugin repos verbatim — clone them into <code>crs_plugins_path</code> and list the ones to load.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>crs_plugins_path</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">/opt/coreruleset-plugins/</span></td><td>Directory containing the cloned CRS plugin repos.</td></tr>
+          <tr><td class="name"><code>crs_plugins_enabled</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Plugin directory names to load (e.g. <code>wordpress-rule-exclusions-plugin</code>). The <code>.conf</code> files under <code>&lt;path&gt;/&lt;name&gt;/plugins/</code> are parsed alongside the CRS pack.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="custom-rules">
+      <h2>Custom rules</h2>
+      <p>Three ways to add your own detection. See <a class="link" href="rules.html">Writing rules</a> for the full format.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>rules_request</code></td><td><span class="badge badge-type">array</span></td><td>Per-service request-phase rules, each a JSON string in Karna's rule format.</td></tr>
+          <tr><td class="name"><code>rules_response</code></td><td><span class="badge badge-type">array</span></td><td>Per-service response-phase rules (header / body filter), each a JSON string.</td></tr>
+          <tr><td class="name"><code>custom_secrules</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Inline SecLang rule strings (ModSecurity syntax). Parsed at worker start and added to the global pool. Good for one-off exclusions without dropping a <code>.conf</code> on disk.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="overrides">
+      <h2>Action &amp; response overrides</h2>
+      <p>Change what an <em>existing</em> rule does at match time without editing the rule pack. Each entry is a JSON string with a <code>selector</code> (any of <code>ids</code>, <code>id_ranges</code>, <code>tags</code>, <code>except_ids</code>, <code>except_tags</code>, <code>any</code>) and a payload. First matching entry wins; the cached rule pack is never mutated.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>rule_action_overrides</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Change <em>what</em> a rule does. Action types: <code>fix</code> (switch to sanitize, with <code>remove_chars_pattern</code>), <code>passthrough</code> (drop the terminal action), <code>block</code> (force a block).</td></tr>
+          <tr><td class="name"><code>rule_response_overrides</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Customise the block response: <code>status_code</code>, <code>body</code> (supports <code>%{var}</code> macros), and merged <code>headers</code>.</td></tr>
+        </tbody>
+      </table>
+      <div class="code-card">
+        <div class="code-head"><span>rule_action_overrides — entry</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"selector"</span>: { <span class="prm">"tags"</span>: [<span class="str">"attack-xss"</span>] },
+  <span class="prm">"action"</span>:   { <span class="prm">"type"</span>: <span class="str">"fix"</span>, <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span> } }</pre></div>
+      </div>
+    </section>
+
+    <section id="audit">
+      <h2>Audit logging</h2>
+      <p>Karna writes JSON audit logs to disk asynchronously. The log directory must be writable by the Kong worker user.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>auditlog_enabled</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Write audit logs.</td></tr>
+          <tr><td class="name"><code>auditlog_path</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">/usr/local/openresty/nginx/logs</span></td><td>Directory for the JSON log files. Must be <code>chown</code>ed to the Kong worker user.</td></tr>
+          <tr><td class="name"><code>auditlog_format</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">v2</span></td><td>One of <code>v1</code> / <code>v2</code>. <code>v2</code> writes one entry per request with all matches in a <code>matches</code> array; <code>v1</code> is last-match-wins (ModSecurity-compatible when <code>auditlog_modsec</code> is on).</td></tr>
+          <tr><td class="name"><code>auditlog_only_on_match</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Only write a log entry when at least one rule matched.</td></tr>
+          <tr><td class="name"><code>auditlog_modsec</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Emit the ModSecurity-compatible audit format (with <code>v1</code>).</td></tr>
+          <tr><td class="name"><code>auditlog_error_log_on_match</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Also emit a line to the nginx error log on a match.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="redis">
+      <h2>Redis</h2>
+      <p>Used by the <code>rate_limit</code> and <code>redis_incr_key</code> rule actions and by <code>redis.key:</code> rule variables. The rest of the WAF works without Redis.</p>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>redis_host</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">localhost</span></td><td>Redis host.</td></tr>
+          <tr><td class="name"><code>redis_port</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">6379</span></td><td>Redis port.</td></tr>
+          <tr><td class="name"><code>redis_password</code></td><td><span class="badge badge-type">string</span></td><td>Redis password (optional).</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="debug">
+      <h2>Debug</h2>
+      <table class="doc-table">
+        <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>private_debug</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Verbose internal debug output. Off in production.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="env">
+      <h2>Environment variables</h2>
+      <p>A few paths are read once at worker start via <code>os.getenv()</code>. Because nginx wipes the environment by default, any variable you set must be declared in the nginx main context with an <code>env NAME;</code> directive — point <code>KONG_NGINX_MAIN_INCLUDE</code> at a snippet like <code>docker/main-env.conf</code>.</p>
+      <table class="doc-table">
+        <thead><tr><th>Variable</th><th class="mono">Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>KARNA_CRS_PATH</code></td><td class="mono">/opt/coreruleset/rules/</td><td>Path to the OWASP CoreRuleSet <code>rules/</code> directory (trailing slash auto-normalized).</td></tr>
+          <tr><td class="name"><code>KARNA_LIBINJECTION_SO</code></td><td class="mono">/usr/local/lib/libinjection.so</td><td>Path to the compiled libinjection shared library.</td></tr>
+          <tr><td class="name"><code>KARNA_LIBKA_RE2_SO</code></td><td class="mono">/usr/local/lib/libka_re2.so</td><td>Path to the RE2 scanner. Missing &rarr; pure-Lua <code>@rx</code> fallback.</td></tr>
+          <tr><td class="name"><code>KARNA_LIBKA_AC_SO</code></td><td class="mono">/usr/local/lib/libka_ac.so</td><td>Path to the Aho-Corasick scanner. Missing &rarr; pure-Lua <code>@pm</code> fallback.</td></tr>
+          <tr><td class="name"><code>KARNA_PROFILE</code></td><td class="mono">unset</td><td>If set, enables LuaJIT profiling. Diagnostics only.</td></tr>
+        </tbody>
+      </table>
+      <div class="code-card">
+        <div class="code-head"><span>main-env.conf</span><span class="lang">nginx</span></div>
+        <div class="code-body"><pre><span class="cmt"># included via KONG_NGINX_MAIN_INCLUDE so workers can see these</span>
+env KARNA_CRS_PATH;
+env KARNA_LIBINJECTION_SO;
+env KARNA_LIBKA_RE2_SO;
+env KARNA_PROFILE;</pre></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <div>
+      <div class="foot-brand-row">
+        <img src="assets/karna-mark-dark.png" width="40" height="39" alt=""/>
+        <span class="word">Karna</span>
+      </div>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. <span style="color: var(--inchworm)">Cybersecurity for everyone.</span></p>
+    </div>
+    <div>
+      <h5>Project</h5>
+      <a href="https://github.com/sicuranext/karna">GitHub repository</a>
+      <a href="https://github.com/sicuranext/karna/releases">Releases</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/LICENSE">License</a>
+    </div>
+    <div>
+      <h5>Docs</h5>
+      <a href="./#install">Installation</a>
+      <a href="configuration.html">Configuration</a>
+      <a href="rules.html">Writing rules</a>
+    </div>
+    <div>
+      <h5>SicuraNext</h5>
+      <a href="https://sicuranext.com">sicuranext.com</a>
+      <a href="https://sicuranext.com/contatti">Contact</a>
+      <a href="mailto:karna@sicuranext.com">karna@sicuranext.com</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
+    <span>karna v1.x · built on OpenResty</span>
+  </div>
+</footer>
+
+<script src="assets/docs.js"></script>
+</body>
+</html>
