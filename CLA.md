@@ -139,7 +139,7 @@ You can accept this Agreement in either of these ways:
   confirmation, together with your version control identity, is recorded as your
   signature.
 - **In writing**, by filling in and signing the block below and sending it to
-  andrea.menin@sicuranext.com.
+  karna@sicuranext.com.
 
 ```
 Full name:        ______________________________________________

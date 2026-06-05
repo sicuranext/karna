@@ -1294,7 +1294,7 @@ for free. You can use it to protect your own applications and the applications
 of your clients, including as part of a paid service you provide to them. The
 one thing you cannot do is take Karna and offer it to third parties as a hosted
 or managed service where Karna itself is the product. For that, a separate
-commercial license is available — write to andrea.menin@sicuranext.com.
+commercial license is available — write to karna@sicuranext.com.
 
 Want to contribute? Please read [CLA.md](CLA.md). You keep the copyright to your
 work; the agreement just lets us keep Karna both source-available and
@@ -1323,3 +1323,33 @@ it. That is the whole bargain.
 
 This project is here to protect web apps. It is not here to make the people who
 are already rich any richer. Thanks for being part of it.
+
+## What you can and can't do with Karna
+
+Licenses are hard to read, so here it is in plain English. The one question that
+decides everything: **are you running Karna, or is your customer running it through
+you?** If you run it, you're free to go. If your customer signs up to run their own
+Karna through a service you sell them, that needs a commercial license.
+
+✅ **You can**
+
+- Protect your own sites, APIs, and MCP servers — on your own hardware or in your own cloud.
+- Set up and run Karna for your clients, on their servers or in their cloud.
+- Run Karna on your own infrastructure to protect your clients, as long as you're the one operating it for them.
+- Get paid for it: sell your managed service, your consulting, your time keeping clients safe with Karna.
+- Read the source, change it, fork it, and share your changes — just keep the license notice and say what you changed.
+
+❌ **You can't**
+
+- Turn Karna into a self-service product where customers sign up and manage their own Karna through you.
+- Expose Kong's Admin API (or a custom API) to your customers so they run Karna as a service themselves.
+
+If you want to do something on the red list, that's exactly what the commercial
+license is for.
+
+This is a plain-English summary to help you decide, not the license itself. The
+[LICENSE](LICENSE) file is what legally counts, and if the two ever disagree, the
+LICENSE wins.
+
+**Still not sure which side of the line you're on? Just ask — write to
+karna@sicuranext.com and we'll help you figure it out.**

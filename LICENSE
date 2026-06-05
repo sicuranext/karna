@@ -6,7 +6,7 @@ terms.
 
 For uses not permitted under this license — in particular, providing Karna to
 third parties as a hosted or managed service — a separate commercial license is
-available from SicuraNext s.r.l. Contact: andrea.menin@sicuranext.com
+available from SicuraNext s.r.l. Contact: karna@sicuranext.com
 
 This repository also bundles third-party components under their own licenses
 (for example, kong/plugins/karna/modules/slaxml.lua is MIT-licensed). Those
