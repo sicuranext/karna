@@ -13,7 +13,7 @@ source = {
 description = {
   summary = "Karna — OWASP CRS-compatible WAF engine for Kong Gateway",
   homepage = "https://github.com/sicuranext/karna",
-  license = "Apache-2.0"
+  license = "Elastic-2.0"
 }
 
 dependencies = {

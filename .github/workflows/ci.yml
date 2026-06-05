@@ -74,7 +74,7 @@ jobs:
           #  - blog.sicuranext.com — public bypass-research URL
           #  - github.com/sicuranext/karna — this repo's own GitHub URL
           #    (CI badge, clone instruction, link text)
-          #  - "SicuraNext s.r.l" — Apache-2.0 license attribution
+          #  - "SicuraNext s.r.l" — Elastic License 2.0 attribution / licensor
           if grep -rni 'sicuranext' $PATHS \
               --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
               2>/dev/null \

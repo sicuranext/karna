@@ -82,7 +82,7 @@ entry, only through macro substitution.
 ## Performance
 
 On identical hardware (Hetzner CCX, 2 vCPU each), OWASP CRS PL1, driven by
-k6 at 20 virtual users, Karna is the fastest of the common open-source WAF
+k6 at 20 virtual users, Karna outperforms the common open-source WAF
 stacks at the job a WAF exists for: blocking attacks. Every WAF returns the
 same HTTP status on every request, so the numbers compare throughput, not
 leniency.
@@ -1287,4 +1287,39 @@ applied normally. `value` is only treated as missing when it is `nil`
 
 ## License
 
-Apache-2.0 © SicuraNext s.r.l.
+Karna is source-available under the [Elastic License 2.0](LICENSE) © SicuraNext s.r.l.
+
+In plain terms: you can read the source, run it, modify it, and redistribute it
+for free. You can use it to protect your own applications and the applications
+of your clients, including as part of a paid service you provide to them. The
+one thing you cannot do is take Karna and offer it to third parties as a hosted
+or managed service where Karna itself is the product. For that, a separate
+commercial license is available — write to andrea.menin@sicuranext.com.
+
+Want to contribute? Please read [CLA.md](CLA.md). You keep the copyright to your
+work; the agreement just lets us keep Karna both source-available and
+commercially sustainable.
+
+## A note to the community
+
+Karna exists to protect web applications. All of them, not only the ones behind
+an expensive enterprise WAF. A small team should be able to put a serious
+firewall in front of their app, or in front of their customers' apps, without
+asking anyone for permission and without paying a toll.
+
+So why not a plain permissive license? Because we have watched it happen too
+many times. A project is given away for free, a handful of maintainers pour
+years into it, and then a company with near-infinite resources wraps it in a
+console, sells it as a managed service, and sends nothing back. The maintainers
+burn out, the project stalls, and everyone who depended on it is left holding
+the bag. The Elastic License 2.0 closes exactly that one door and leaves every
+other door open.
+
+If you run Karna for yourself or for the people who trust you to keep them safe,
+this license was written for you and you owe us nothing. If you are large enough
+to want to resell Karna as a service, then talk to us and pay for a commercial
+license, so that the money goes back into the project and the people who build
+it. That is the whole bargain.
+
+This project is here to protect web apps. It is not here to make the people who
+are already rich any richer. Thanks for being part of it.
