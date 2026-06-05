@@ -208,8 +208,12 @@
       <p>Every binary operator can be negated. The canonical form is a separate boolean field, not a <code>!</code> prefix:</p>
       <div class="code-card">
         <div class="code-head"><span>negated condition</span><span class="lang">json</span></div>
-        <div class="code-body"><pre>{ <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"value"</span>: <span class="str">""</span>,
-  <span class="prm">"variables"</span>: [<span class="str">"request.header.value:content-type"</span>] }</pre></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"op"</span>: <span class="str">"isSet"</span>,
+  <span class="prm">"negated"</span>: <span class="kw">true</span>,
+  <span class="prm">"value"</span>: <span class="str">""</span>,
+  <span class="prm">"variables"</span>: [<span class="str">"request.header.value:content-type"</span>]
+}</pre></div>
       </div>
       <p>Semantics: a negated condition fires when the positive match fails <strong>and</strong> the value is present. A missing variable does not satisfy a negated condition. The one exception is <code>isSet</code> with <code>negated: true</code>, which is the way to spell "variable is absent" and so fires on a missing variable.</p>
       <p>For back-compat the engine still accepts <code>"op": "!rx"</code>, but new rules should use <code>negated</code>.</p>
@@ -277,7 +281,9 @@
       <p>Strips <code>remove_chars_pattern</code> from every matched target and forwards upstream. The audit log marks the entry <code>action: "sanitized"</code>.</p>
       <div class="code-card">
         <div class="code-head"><span>action</span><span class="lang">json</span></div>
-        <div class="code-body"><pre><span class="prm">"action"</span>: { <span class="prm">"fix_matched_parts"</span>: { <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[\"';&amp;|`]*"</span> } }</pre></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: {
+  <span class="prm">"fix_matched_parts"</span>: { <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[\"';&amp;|`]*"</span> }
+}</pre></div>
       </div>
 
       <h3 id="a-ratelimit">rate_limit</h3>
@@ -304,7 +310,11 @@
       <div class="code-card">
         <div class="code-head"><span>ban the client IP for 10 minutes</span><span class="lang">json</span></div>
         <div class="code-body"><pre><span class="prm">"action"</span>: {
-  <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>, <span class="prm">"value"</span>: <span class="str">"1"</span>, <span class="prm">"expire"</span>: <span class="num">600</span> }
+  <span class="prm">"redis_set"</span>: {
+    <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>,
+    <span class="prm">"value"</span>: <span class="str">"1"</span>,
+    <span class="prm">"expire"</span>: <span class="num">600</span>
+  }
 }</pre></div>
       </div>
 
@@ -313,7 +323,11 @@
       <div class="code-card">
         <div class="code-head"><span>action</span><span class="lang">json</span></div>
         <div class="code-body"><pre><span class="prm">"action"</span>: {
-  <span class="prm">"set_variable"</span>: { <span class="prm">"name"</span>: <span class="str">"skip_js_challenge"</span>, <span class="prm">"value"</span>: <span class="kw">true</span>, <span class="prm">"type"</span>: <span class="str">"shared"</span> }
+  <span class="prm">"set_variable"</span>: {
+    <span class="prm">"name"</span>: <span class="str">"skip_js_challenge"</span>,
+    <span class="prm">"value"</span>: <span class="kw">true</span>,
+    <span class="prm">"type"</span>: <span class="str">"shared"</span>
+  }
 }</pre></div>
       </div>
 
@@ -321,7 +335,9 @@
       <div class="code-card">
         <div class="code-head"><span>action</span><span class="lang">json</span></div>
         <div class="code-body"><pre><span class="prm">"action"</span>: {
-  <span class="prm">"set_log_fields"</span>: [ { <span class="prm">"name"</span>: <span class="str">"username"</span>, <span class="prm">"value"</span>: <span class="str">"%{request.body.urlencode.value:username}"</span> } ]
+  <span class="prm">"set_log_fields"</span>: [
+    { <span class="prm">"name"</span>: <span class="str">"username"</span>, <span class="prm">"value"</span>: <span class="str">"%{request.body.urlencode.value:username}"</span> }
+  ]
 }</pre></div>
       </div>
     </section>
@@ -342,12 +358,19 @@
       <p>The key macros are <code>%{remote_addr}</code>, <code>%{request.method|host|scheme|path}</code>, and <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
       <div class="code-card">
         <div class="code-head"><span>block IPs present in a banlist key</span><span class="lang">json</span></div>
-        <div class="code-body"><pre>{ <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>] }</pre></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"op"</span>: <span class="str">"isSet"</span>,
+  <span class="prm">"value"</span>: <span class="str">""</span>,
+  <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>]
+}</pre></div>
       </div>
       <div class="code-card">
         <div class="code-head"><span>reject a token found in a revoked-tokens set</span><span class="lang">json</span></div>
-        <div class="code-body"><pre>{ <span class="prm">"op"</span>: <span class="str">"redis_sismember"</span>, <span class="prm">"value"</span>: <span class="str">"%{request_headers.authorization}"</span>,
-  <span class="prm">"variables"</span>: [<span class="str">"redis.revoked_tokens"</span>] }</pre></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"op"</span>: <span class="str">"redis_sismember"</span>,
+  <span class="prm">"value"</span>: <span class="str">"%{request_headers.authorization}"</span>,
+  <span class="prm">"variables"</span>: [<span class="str">"redis.revoked_tokens"</span>]
+}</pre></div>
       </div>
     </section>
 
@@ -372,9 +395,12 @@
       <div class="code-card">
         <div class="code-head"><span>carve out libinjection header false positives</span><span class="lang">json</span></div>
         <div class="code-body"><pre><span class="prm">"rule_control"</span>: [
-  { <span class="prm">"remove_variable_rx"</span>: {
+  {
+    <span class="prm">"remove_variable_rx"</span>: {
       <span class="prm">"name"</span>: <span class="str">"request.header.value"</span>,
-      <span class="prm">"rx"</span>: <span class="str">".*(?:[Uu]ser\\-[Aa]gent|[Rr]eferer|[Aa]uthorization).*"</span> } }
+      <span class="prm">"rx"</span>: <span class="str">".*(?:[Uu]ser\\-[Aa]gent|[Rr]eferer|[Aa]uthorization).*"</span>
+    }
+  }
 ]</pre></div>
       </div>
     </section>
@@ -394,8 +420,10 @@
       </table>
       <div class="code-card">
         <div class="code-head"><span>switch the XSS family to sanitize</span><span class="lang">json</span></div>
-        <div class="code-body"><pre>{ <span class="prm">"selector"</span>: { <span class="prm">"tags"</span>: [<span class="str">"attack-xss"</span>] },
-  <span class="prm">"action"</span>:   { <span class="prm">"type"</span>: <span class="str">"fix"</span>, <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span> } }</pre></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"selector"</span>: { <span class="prm">"tags"</span>: [<span class="str">"attack-xss"</span>] },
+  <span class="prm">"action"</span>: { <span class="prm">"type"</span>: <span class="str">"fix"</span>, <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span> }
+}</pre></div>
       </div>
     </section>
 
@@ -419,14 +447,22 @@
   <span class="prm">"id"</span>: <span class="str">"2201"</span>,
   <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>, <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
-      <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"request.header.value"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>,
+      <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
+      <span class="prm">"value"</span>: <span class="str">""</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.header.value"</span>]
+    }
   ],
   <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
   <span class="prm">"message"</span>: <span class="str">"SQL Injection: header-borne"</span>,
   <span class="prm">"rule_control"</span>: [
-    { <span class="prm">"remove_variable_rx"</span>: { <span class="prm">"name"</span>: <span class="str">"request.header.value"</span>,
-        <span class="prm">"rx"</span>: <span class="str">".*(?:[Uu]ser\\-[Aa]gent|[Rr]eferer|[Aa]uthorization).*"</span> } }
+    {
+      <span class="prm">"remove_variable_rx"</span>: {
+        <span class="prm">"name"</span>: <span class="str">"request.header.value"</span>,
+        <span class="prm">"rx"</span>: <span class="str">".*(?:[Uu]ser\\-[Aa]gent|[Rr]eferer|[Aa]uthorization).*"</span>
+      }
+    }
   ],
   <span class="prm">"tags"</span>: [<span class="str">"injection"</span>, <span class="str">"attack-sqli"</span>]
 }</pre></div>
@@ -443,8 +479,12 @@
   <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"log"</span>: <span class="kw">true</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"rx"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"value"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span>,
-      <span class="prm">"variables"</span>: [<span class="str">"request.arg.value:name"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"rx"</span>,
+      <span class="prm">"transform"</span>: [],
+      <span class="prm">"value"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.arg.value:name"</span>]
+    }
   ],
   <span class="prm">"action"</span>: { <span class="prm">"fix_matched_parts"</span>: { <span class="prm">"remove_chars_pattern"</span>: <span class="str">"[&lt;&gt;\"'&amp;;]"</span> } },
   <span class="prm">"tags"</span>: [<span class="str">"sanitize"</span>],
@@ -462,16 +502,23 @@
   <span class="prm">"id"</span>: <span class="str">"rl-login-per-ip"</span>,
   <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"value"</span>: <span class="str">"/api/login"</span>,
-      <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>,
+      <span class="prm">"transform"</span>: [],
+      <span class="prm">"value"</span>: <span class="str">"/api/login"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>]
+    }
   ],
   <span class="prm">"action"</span>: {
     <span class="prm">"rate_limit"</span>: {
-      <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>, <span class="prm">"limit"</span>: <span class="num">5</span>, <span class="prm">"window_seconds"</span>: <span class="num">60</span>,
+      <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>,
+      <span class="prm">"limit"</span>: <span class="num">5</span>,
+      <span class="prm">"window_seconds"</span>: <span class="num">60</span>,
       <span class="prm">"response"</span>: { <span class="prm">"status_code"</span>: <span class="num">429</span>, <span class="prm">"body"</span>: <span class="str">"Too many login attempts.\r\n"</span> }
     }
   },
-  <span class="prm">"message"</span>: <span class="str">"login rate limit"</span>, <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>, <span class="str">"auth"</span>]
+  <span class="prm">"message"</span>: <span class="str">"login rate limit"</span>,
+  <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>, <span class="str">"auth"</span>]
 }</pre></div>
       </div>
     </section>
@@ -482,12 +529,25 @@
       <div class="code-card">
         <div class="code-head"><span>1 — count failed logins</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
-  <span class="prm">"id"</span>: <span class="str">"count-failed-login"</span>, <span class="prm">"phase"</span>: <span class="str">"header_filter"</span>,
+  <span class="prm">"id"</span>: <span class="str">"count-failed-login"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"header_filter"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/login"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] },
-    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"POST"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.method"</span>] },
-    { <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"value"</span>: <span class="str">""</span>,
-      <span class="prm">"variables"</span>: [<span class="str">"response.set_cookie.name:session"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>,
+      <span class="prm">"value"</span>: <span class="str">"/login"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>]
+    },
+    {
+      <span class="prm">"op"</span>: <span class="str">"eq"</span>,
+      <span class="prm">"value"</span>: <span class="str">"POST"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.method"</span>]
+    },
+    {
+      <span class="prm">"op"</span>: <span class="str">"isSet"</span>,
+      <span class="prm">"negated"</span>: <span class="kw">true</span>,
+      <span class="prm">"value"</span>: <span class="str">""</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"response.set_cookie.name:session"</span>]
+    }
   ],
   <span class="prm">"action"</span>: {
     <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"failed_login:%{remote_addr}"</span>, <span class="prm">"expire"</span>: <span class="num">300</span> }
@@ -498,10 +558,14 @@
       <div class="code-card">
         <div class="code-head"><span>2 — block over threshold</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
-  <span class="prm">"id"</span>: <span class="str">"block-failed-login"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"id"</span>: <span class="str">"block-failed-login"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"ge"</span>, <span class="prm">"value"</span>: <span class="str">"5"</span>,
-      <span class="prm">"variables"</span>: [<span class="str">"redis.failed_login:%{remote_addr}"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"ge"</span>,
+      <span class="prm">"value"</span>: <span class="str">"5"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"redis.failed_login:%{remote_addr}"</span>]
+    }
   ],
   <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Too many login attempts.\r\n"</span> } },
   <span class="prm">"log"</span>: <span class="kw">false</span>
@@ -515,27 +579,43 @@
       <div class="code-card">
         <div class="code-head"><span>1 — ban on SQLi (any node)</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
-  <span class="prm">"id"</span>: <span class="str">"ban-on-sqli"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"id"</span>: <span class="str">"ban-on-sqli"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>, <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
-      <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"request.arg.value"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>,
+      <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
+      <span class="prm">"value"</span>: <span class="str">""</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.arg.value"</span>]
+    }
   ],
   <span class="prm">"action"</span>: {
-    <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>, <span class="prm">"value"</span>: <span class="str">"1"</span>, <span class="prm">"expire"</span>: <span class="num">600</span> },
+    <span class="prm">"redis_set"</span>: {
+      <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>,
+      <span class="prm">"value"</span>: <span class="str">"1"</span>,
+      <span class="prm">"expire"</span>: <span class="num">600</span>
+    },
     <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> }
   },
-  <span class="prm">"message"</span>: <span class="str">"SQLi — ban source for 10 min"</span>, <span class="prm">"tags"</span>: [<span class="str">"attack-sqli"</span>]
+  <span class="prm">"message"</span>: <span class="str">"SQLi — ban source for 10 min"</span>,
+  <span class="prm">"tags"</span>: [<span class="str">"attack-sqli"</span>]
 }</pre></div>
       </div>
       <div class="code-card">
         <div class="code-head"><span>2 — block banned IPs (every node)</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
-  <span class="prm">"id"</span>: <span class="str">"block-banned"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"id"</span>: <span class="str">"block-banned"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"isSet"</span>,
+      <span class="prm">"value"</span>: <span class="str">""</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>]
+    }
   ],
   <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
-  <span class="prm">"message"</span>: <span class="str">"source is banned"</span>, <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
+  <span class="prm">"message"</span>: <span class="str">"source is banned"</span>,
+  <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
 }</pre></div>
       </div>
     </section>
@@ -546,15 +626,29 @@
       <div class="code-card">
         <div class="code-head"><span>rules_request entry</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
-  <span class="prm">"id"</span>: <span class="str">"block-script-upload"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"id"</span>: <span class="str">"block-script-upload"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
-    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"POST"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.method"</span>] },
-    { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/upload"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] },
-    { <span class="prm">"op"</span>: <span class="str">"rx"</span>, <span class="prm">"transform"</span>: [<span class="str">"lowercase"</span>], <span class="prm">"value"</span>: <span class="str">"\\.(php|phtml|jsp|asp)$"</span>,
-      <span class="prm">"variables"</span>: [<span class="str">"request.file"</span>] }
+    {
+      <span class="prm">"op"</span>: <span class="str">"eq"</span>,
+      <span class="prm">"value"</span>: <span class="str">"POST"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.method"</span>]
+    },
+    {
+      <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>,
+      <span class="prm">"value"</span>: <span class="str">"/upload"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>]
+    },
+    {
+      <span class="prm">"op"</span>: <span class="str">"rx"</span>,
+      <span class="prm">"transform"</span>: [<span class="str">"lowercase"</span>],
+      <span class="prm">"value"</span>: <span class="str">"\\.(php|phtml|jsp|asp)$"</span>,
+      <span class="prm">"variables"</span>: [<span class="str">"request.file"</span>]
+    }
   ],
   <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
-  <span class="prm">"message"</span>: <span class="str">"script upload blocked"</span>, <span class="prm">"tags"</span>: [<span class="str">"upload"</span>]
+  <span class="prm">"message"</span>: <span class="str">"script upload blocked"</span>,
+  <span class="prm">"tags"</span>: [<span class="str">"upload"</span>]
 }</pre></div>
       </div>
     </section>
