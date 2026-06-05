@@ -44,10 +44,11 @@ Conditions are AND-ed (a chain). Later conditions can read `matched.value` and c
 - `response.set_cookie.value` / `.name`, `response.header.name:<name>` (response phases).
 - `matched.value`, `group:<n>` (chain refs).
 - `tx:<name>` / `var:<name>` (CRS TX vars, e.g. `var:paranoia_level`).
-- `redis.key:<macro>` (Redis value), `geoip.*` / `asn.*` (enrichment), `mcp.*` (when mcp_enabled).
+- `redis.<key>` — inspect a Redis key (read-only). Everything after `redis.` is the key name (macros allowed: `%{remote_addr}`, `%{request.method|host|scheme|path}`, `%{request_headers.X}`). The **operator picks the command**: `isSet`→EXISTS (ban/existence check; `negated:true`→absent), `eq`/`rx`/`contains`/`beginsWith`→GET+compare, `gt`/`lt`/`ge`/`le`→GET+numeric, `redis_sismember`→SISMEMBER, `redis_hexists`→HEXISTS. Needs `redis_inspect_enabled`. (Legacy `redis.key:<macro>` GET form is dead — use `redis.<key>`.)
+- `geoip.*` / `asn.*` (enrichment), `mcp.*` (when mcp_enabled).
 
 ## Operators (`op`)
-`rx` (regex), `eq`, `ge`/`gt`/`lt`/`le` (numeric, non-numeric fails closed), `beginsWith`/`endsWith`, `contains`, `within` (token list), `isSet`, `pm`/`pmFromFile` (phrase match), `ipMatch` (CIDR list), `libinjection_sqli`/`libinjection_xss`, `validateUrlEncoding`, `validateUtf8Encoding`, `validateByteRange` (`"32-126,9,10,13"`), `unconditionalMatch`, `mcp_method_in`, `mcp_jsonrpc_valid`.
+`rx` (regex), `eq`, `ge`/`gt`/`lt`/`le` (numeric, non-numeric fails closed), `beginsWith`/`endsWith`, `contains`, `within` (token list), `isSet`, `pm`/`pmFromFile` (phrase match), `ipMatch` (CIDR list), `libinjection_sqli`/`libinjection_xss`, `validateUrlEncoding`, `validateUtf8Encoding`, `validateByteRange` (`"32-126,9,10,13"`), `unconditionalMatch`, `mcp_method_in`, `mcp_jsonrpc_valid`, `redis_sismember` (value ∈ Redis SET named by the `redis.<key>` var; negatable=not-a-member/allowlist), `redis_hexists` (Redis HASH named by `redis.<key>` has field=value; negatable). The two `redis_*` ops need `redis_inspect_enabled`.
 Use `value: ""` for operators that take no argument (`isSet`, `libinjection_*`).
 Not implemented (rules skipped with WARN at parse): `@ipMatchFromFile`, `@verifyCC`, `@verifySSN`, `@geoLookup`, `@inspectFile`.
 
@@ -63,9 +64,14 @@ A negated condition fires when the positive fails AND the value is present. Exce
 - `fix_matched_parts`: `{ remove_chars_pattern }` — strip chars from matched targets in place, forward upstream; logs `action:"sanitized"`. **Takes precedence over `fixed_response`.**
 - `rate_limit`: `{ key (macro, default %{remote_addr}), limit, window_seconds, response{} }` — Redis fixed-window, 429 + auto Retry-After over limit. Counter increments even in detection-only.
 - `redis_incr_key`: `{ key (macro), expire }` — increment a Redis key with TTL.
+- `redis_set` / `redis_sadd` / `redis_del`: write cluster-wide state on a match (auto-ban primitive). Fire-and-forget (sync in `access`, timer-deferred later; never blocks). Keys/values/members are macro-resolved.
+  - `redis_set`: `{ key, value (default "1"), expire }` → `SET key value [EX expire]`.
+  - `redis_sadd`: `{ key, member, expire }` → `SADD key member` [+ `EXPIRE key expire`].
+  - `redis_del`: `{ key }` → `DEL key` (manual unban/clear).
+  - Close the auto-ban loop: `redis_set ban:%{remote_addr} EX 600` (write) + a rule with `isSet` on `redis.ban:%{remote_addr}` (read) blocks every node.
 - `set_variable`: `{ name, value, type }` — `type` required: `shared` → `kong.ctx.shared`, `plugin` → `kong.ctx.plugin`. String values support `%{var}` macros. `value:false` is valid; only `nil` means "absent".
 - `set_log_fields`: `[ { name, value } ]` — add fields to the audit log (value supports `%{var}`).
-Macros for `key`/templates: `%{remote_addr}`, `%{request.method|host|scheme|path}`, plus any inspection-table var in `set_variable`/`set_log_fields`.
+Macros for `key`/templates: `%{remote_addr}`, `%{request.method|host|scheme|path}`, plus any inspection-table var in `set_variable`/`set_log_fields`. Redis `redis.<key>` variables and `redis_set/sadd/del` keys/values also resolve `%{request_headers.X}`; the `redis_sismember`/`redis_hexists` needle (condition.value) resolves `%{remote_addr}`/`%{request.*}`/`%{request_headers.X}`.
 
 ## Rule controls (`rule_control[]` — modify this/other rules by id or tag)
 - `remove_rule` `{rule_id}` (range ok: `"920100-920199"`), `remove_rules_by_tag` `{tag}`.

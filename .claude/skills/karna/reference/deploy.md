@@ -8,7 +8,8 @@ stack, use **existing Kong** when the operator already runs Kong.
 The production Dockerfile builds one image: Kong + OWASP CoreRuleSet + libinjection
 + the native RE2 / Aho-Corasick scanners + Karna. Kong runs DB-less; the
 declarative config in `docker/kong.yml` puts Karna in front of the backend. Redis
-is only used by `rate_limit` / `redis_incr_key` rules.
+is optional — used by `rate_limit` / `redis_incr_key`, the `redis.<key>` inspection
+rules, and the `redis_set` / `redis_sadd` / `redis_del` write actions (auto-ban).
 
 ```sh
 git clone https://github.com/sicuranext/karna.git

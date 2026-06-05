@@ -62,8 +62,14 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 ## Audit logging
 - `auditlog_enabled` (bool, `true`), `auditlog_path` (str, `/usr/local/openresty/nginx/logs`, must be kong:kong-writable), `auditlog_format` (`v2`|`v1`, default `v2`), `auditlog_only_on_match` (bool, `false`), `auditlog_modsec` (bool, `false`), `auditlog_error_log_on_match` (bool, `false`).
 
-## Redis (only for rate_limit / redis_incr_key / redis.key: vars)
+## Redis (optional; backs rate_limit, redis_incr_key, redis.<key> inspection, redis_sismember/redis_hexists ops, redis_set/sadd/del write actions)
 - `redis_host` (str, `localhost`), `redis_port` (num, `6379`), `redis_password` (str, optional).
+- `redis_database` (num, `0`) — DB index; `SELECT` issued only when > 0.
+- `redis_inspect_enabled` (bool, `false`) — master switch for `redis.<key>` reads + `redis_sismember`/`redis_hexists`. Off by default (no rule opens a Redis connection unless you ask). Does NOT gate the write actions or rate_limit/redis_incr_key.
+- `redis_timeout_ms` (num, `50`) — connect/send/read timeout for inspection reads (kept short so a slow Redis can't stall the request path).
+- `redis_keepalive_pool_size` (num, `64`), `redis_keepalive_idle_ms` (num, `60000`) — inspection client connection pool.
+- `redis_on_error` (str, `skip`; one_of skip/fail_open/fail_closed) — inspection read when Redis is down: `skip`/`fail_open` = no match (traffic flows), `fail_closed` = match (deny on unreadable shared state). Default `skip` keeps a Redis outage from blocking traffic.
+- Read-only boundary: the inspection client enforces a deny-by-default command whitelist (GET/EXISTS/SISMEMBER/HEXISTS/TTL/… only). A `redis.<key>` variable can never run a write/admin/scripting/scan command; mutations go only through the write actions.
 
 ## Debug
 - `private_debug` (bool, `false`) — verbose internal output, off in prod.

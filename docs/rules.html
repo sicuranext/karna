@@ -54,6 +54,7 @@
     <a href="#negation">Negation</a>
     <a href="#transforms">Transformations</a>
     <a href="#actions">Actions</a>
+    <a href="#redis-inspect">Redis inspection</a>
     <a href="#rule-controls">Rule controls</a>
     <a href="#overrides">CRS overrides</a>
     <a href="#seclang">SecLang rules</a>
@@ -62,6 +63,7 @@
     <a href="#ex-sanitize">Sanitize, don't block</a>
     <a href="#ex-ratelimit">Rate limit</a>
     <a href="#ex-counter">Counter + threshold</a>
+    <a href="#ex-autoban">Distributed auto-ban</a>
     <a href="#ex-chain">Chained rule</a>
     <h5>Reference</h5>
     <a href="configuration.html">Configuration</a>
@@ -164,7 +166,7 @@
           <tr><td class="name"><code>matched.value</code></td><td>The value matched by an earlier condition in the chain.</td></tr>
           <tr><td class="name"><code>group:&lt;n&gt;</code></td><td>Capture group <code>n</code> from an earlier <code>rx</code> match (<code>group:0</code> = full match).</td></tr>
           <tr><td class="name"><code>tx:&lt;name&gt;</code> / <code>var:&lt;name&gt;</code></td><td>Transaction variables (CRS <code>TX:</code>), e.g. <code>var:paranoia_level</code>.</td></tr>
-          <tr><td class="name"><code>redis.key:&lt;macro&gt;</code></td><td>Value of a Redis key (macro-resolved). See <a class="link" href="#ex-counter">Counter example</a>.</td></tr>
+          <tr><td class="name"><code>redis.&lt;key&gt;</code></td><td>Inspect a Redis key (read-only). Everything after <code>redis.</code> is the key name, with macros allowed (<code>redis.ban:%{remote_addr}</code>). The operator picks the command — see <a class="link" href="#redis-inspect">Redis inspection</a>. Needs <code>redis_inspect_enabled</code>.</td></tr>
           <tr><td class="name"><code>geoip.*</code> / <code>asn.*</code></td><td>Enrichment from a sibling plugin (<code>geoip.country_code</code>, <code>asn.org</code>, …), when present.</td></tr>
           <tr><td class="name"><code>mcp.*</code></td><td>MCP fields (<code>mcp.method</code>, <code>mcp.tool.name</code>, …) when <code>mcp_enabled</code>.</td></tr>
         </tbody>
@@ -194,6 +196,8 @@
           <tr><td class="name"><code>unconditionalMatch</code></td><td class="mono">n/a</td><td>Always true. Used as the predicate of chains gated by other conditions' side-effects.</td></tr>
           <tr><td class="name"><code>mcp_method_in</code></td><td class="mono">n/a</td><td>The JSON-RPC <code>method</code> is in <code>value</code> (MCP).</td></tr>
           <tr><td class="name"><code>mcp_jsonrpc_valid</code></td><td class="mono">n/a</td><td>The body is a valid JSON-RPC 2.0 envelope (MCP).</td></tr>
+          <tr><td class="name"><code>redis_sismember</code></td><td class="mono">yes</td><td>The <code>value</code> is a member of the Redis SET named by the <code>redis.&lt;key&gt;</code> variable. Negated = not a member (allowlist). Needs <code>redis_inspect_enabled</code>.</td></tr>
+          <tr><td class="name"><code>redis_hexists</code></td><td class="mono">yes</td><td>The Redis HASH named by the <code>redis.&lt;key&gt;</code> variable has a field equal to <code>value</code>. Negated = field absent. Needs <code>redis_inspect_enabled</code>.</td></tr>
         </tbody>
       </table>
       <div class="note"><span class="lbl">Not implemented</span>Some CRS operators have no equivalent: <code>@ipMatchFromFile</code>, <code>@verifyCC</code>, <code>@verifySSN</code>, <code>@geoLookup</code>, <code>@inspectFile</code>. Rules that need them are skipped at parse time with a <code>WARN</code> line in the Kong error log.</div>
@@ -243,7 +247,7 @@
 
     <section id="actions">
       <h2>Actions</h2>
-      <p>The <code>action</code> object decides what happens on a match. Side-effect actions (<code>set_variable</code>, <code>set_log_fields</code>, <code>redis_incr_key</code>) fire whether or not the request is blocked. Terminal actions only block when <code>engine_blocking_mode</code> is on.</p>
+      <p>The <code>action</code> object decides what happens on a match. Side-effect actions (<code>set_variable</code>, <code>set_log_fields</code>, <code>redis_incr_key</code>, <code>redis_set</code>, <code>redis_sadd</code>, <code>redis_del</code>) fire whether or not the request is blocked. Terminal actions only block when <code>engine_blocking_mode</code> is on.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Action</th><th>What it does</th></tr></thead>
         <tbody>
@@ -251,6 +255,7 @@
           <tr><td class="name"><code>fix_matched_parts</code></td><td>Sanitize the matched targets in place and let the request through. Takes precedence over <code>fixed_response</code> if both are present.</td></tr>
           <tr><td class="name"><code>rate_limit</code></td><td>Redis fixed-window counter; returns 429 when the limit is exceeded.</td></tr>
           <tr><td class="name"><code>redis_incr_key</code></td><td>Increment a Redis key with a TTL (no terminal effect).</td></tr>
+          <tr><td class="name"><code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code></td><td>Write cluster-wide state on a match: set a key (with optional TTL), add a member to a set, or delete a key. The auto-ban primitive.</td></tr>
           <tr><td class="name"><code>set_variable</code></td><td>Write a value into <code>kong.ctx.shared</code> or <code>kong.ctx.plugin</code> for sibling plugins / later phases.</td></tr>
           <tr><td class="name"><code>set_log_fields</code></td><td>Add custom fields to the audit log entry.</td></tr>
         </tbody>
@@ -286,6 +291,23 @@
         </tbody>
       </table>
 
+      <h3 id="a-rediswrite">redis_set / redis_sadd / redis_del</h3>
+      <p>Write cluster-wide state on a match. These are fire-and-forget side effects: synchronous in the <code>access</code> phase, deferred to a timer in later phases, and they never block the request themselves. Keys, values, and members are macro-resolved (<code>%{remote_addr}</code>, <code>%{request.method|host|scheme|path}</code>, <code>%{request_headers.X}</code>). Pair them with a <code>redis.&lt;key&gt;</code> inspection rule to close an auto-ban loop — see the <a class="link" href="#ex-autoban">auto-ban example</a>.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Action</th><th class="mono">Fields</th><th>Redis command</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>redis_set</code></td><td class="mono">key, value (default "1"), expire</td><td><code>SET key value</code>, plus <code>EX expire</code> when <code>expire</code> is set.</td></tr>
+          <tr><td class="name"><code>redis_sadd</code></td><td class="mono">key, member, expire</td><td><code>SADD key member</code>, plus <code>EXPIRE key expire</code> when <code>expire</code> is set.</td></tr>
+          <tr><td class="name"><code>redis_del</code></td><td class="mono">key</td><td><code>DEL key</code> (manual unban / clear).</td></tr>
+        </tbody>
+      </table>
+      <div class="code-card">
+        <div class="code-head"><span>ban the client IP for 10 minutes</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: {
+  <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>, <span class="prm">"value"</span>: <span class="str">"1"</span>, <span class="prm">"expire"</span>: <span class="num">600</span> }
+}</pre></div>
+      </div>
+
       <h3 id="a-setvar">set_variable</h3>
       <p><code>type</code> is required (<code>shared</code> &rarr; <code>kong.ctx.shared</code>, <code>plugin</code> &rarr; <code>kong.ctx.plugin</code>). String values support <code>%{var}</code> macros resolved against the request.</p>
       <div class="code-card">
@@ -301,6 +323,31 @@
         <div class="code-body"><pre><span class="prm">"action"</span>: {
   <span class="prm">"set_log_fields"</span>: [ { <span class="prm">"name"</span>: <span class="str">"username"</span>, <span class="prm">"value"</span>: <span class="str">"%{request.body.urlencode.value:username}"</span> } ]
 }</pre></div>
+      </div>
+    </section>
+
+    <section id="redis-inspect">
+      <h2>Redis inspection</h2>
+      <p>A <code>redis.&lt;key&gt;</code> variable reads shared state from Redis at request time. The variable names the key (everything after <code>redis.</code>, macros allowed), and the operator is the test — it decides which read command runs. Reads are off unless <code>redis_inspect_enabled</code> is on, and the client is locked to a read-only command whitelist.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Operator</th><th class="mono">Redis command</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>isSet</code></td><td class="mono">EXISTS</td><td>Key exists. <code>negated: true</code> fires on absence (allowlist). The canonical ban / ACL-TTL check.</td></tr>
+          <tr><td class="name"><code>eq</code> / <code>rx</code> / <code>contains</code> / <code>beginsWith</code></td><td class="mono">GET</td><td>Read the value, then compare with the operator. An absent key never matches.</td></tr>
+          <tr><td class="name"><code>gt</code> / <code>lt</code> / <code>ge</code> / <code>le</code></td><td class="mono">GET</td><td>Read the value and compare numerically (counters / scores stored as strings).</td></tr>
+          <tr><td class="name"><code>redis_sismember</code></td><td class="mono">SISMEMBER</td><td><code>value</code> is a member of the set. Negatable.</td></tr>
+          <tr><td class="name"><code>redis_hexists</code></td><td class="mono">HEXISTS</td><td>The hash has a field named <code>value</code>. Negatable.</td></tr>
+        </tbody>
+      </table>
+      <p>The key macros are <code>%{remote_addr}</code>, <code>%{request.method|host|scheme|path}</code>, and <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
+      <div class="code-card">
+        <div class="code-head"><span>block IPs present in a banlist key</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>] }</pre></div>
+      </div>
+      <div class="code-card">
+        <div class="code-head"><span>reject a token found in a revoked-tokens set</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"op"</span>: <span class="str">"redis_sismember"</span>, <span class="prm">"value"</span>: <span class="str">"%{request_headers.authorization}"</span>,
+  <span class="prm">"variables"</span>: [<span class="str">"redis.revoked_tokens"</span>] }</pre></div>
       </div>
     </section>
 
@@ -431,7 +478,7 @@
 
     <section id="ex-counter">
       <h2>Example: counter + threshold</h2>
-      <p>Two rules: the first increments a Redis counter on a failed login (no session cookie set on a login POST); the second blocks once the counter is high.</p>
+      <p>Two rules: the first increments a Redis counter on a failed login (no session cookie set on a login POST); the second blocks once the counter is high. The read needs <code>redis_inspect_enabled</code>, and both rules key on the same Redis key so the write and read line up.</p>
       <div class="code-card">
         <div class="code-head"><span>1 — count failed logins</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
@@ -443,8 +490,7 @@
       <span class="prm">"variables"</span>: [<span class="str">"response.set_cookie.name:session"</span>] }
   ],
   <span class="prm">"action"</span>: {
-    <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"failed_login_%{request.header.value:host}_%{remote_addr}"</span>,
-                       <span class="prm">"expire"</span>: <span class="num">300</span> }
+    <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"failed_login:%{remote_addr}"</span>, <span class="prm">"expire"</span>: <span class="num">300</span> }
   },
   <span class="prm">"log"</span>: <span class="kw">false</span>
 }</pre></div>
@@ -455,10 +501,41 @@
   <span class="prm">"id"</span>: <span class="str">"block-failed-login"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
   <span class="prm">"conditions"</span>: [
     { <span class="prm">"op"</span>: <span class="str">"ge"</span>, <span class="prm">"value"</span>: <span class="str">"5"</span>,
-      <span class="prm">"variables"</span>: [<span class="str">"redis.key:failed_login_%{request.header.value:host}_%{remote_addr}"</span>] }
+      <span class="prm">"variables"</span>: [<span class="str">"redis.failed_login:%{remote_addr}"</span>] }
   ],
   <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Too many login attempts.\r\n"</span> } },
   <span class="prm">"log"</span>: <span class="kw">false</span>
+}</pre></div>
+      </div>
+    </section>
+
+    <section id="ex-autoban">
+      <h2>Example: distributed auto-ban</h2>
+      <p>Two rules close the loop across every Kong node. The first writes a ban with a TTL when it catches an attack; the second blocks any request from a banned IP. Needs <code>redis_inspect_enabled</code> for the read and a shared Redis so all nodes see the same ban.</p>
+      <div class="code-card">
+        <div class="code-head"><span>1 — ban on SQLi (any node)</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"ban-on-sqli"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>, <span class="prm">"transform"</span>: [<span class="str">"urlDecodeUni"</span>],
+      <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"request.arg.value"</span>] }
+  ],
+  <span class="prm">"action"</span>: {
+    <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>, <span class="prm">"value"</span>: <span class="str">"1"</span>, <span class="prm">"expire"</span>: <span class="num">600</span> },
+    <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> }
+  },
+  <span class="prm">"message"</span>: <span class="str">"SQLi — ban source for 10 min"</span>, <span class="prm">"tags"</span>: [<span class="str">"attack-sqli"</span>]
+}</pre></div>
+      </div>
+      <div class="code-card">
+        <div class="code-head"><span>2 — block banned IPs (every node)</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"id"</span>: <span class="str">"block-banned"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
+  <span class="prm">"message"</span>: <span class="str">"source is banned"</span>, <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
 }</pre></div>
       </div>
     </section>
@@ -515,7 +592,6 @@
   </div>
   <div class="foot-bottom">
     <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
-    <span>karna v1.x · built on OpenResty</span>
   </div>
 </footer>
 

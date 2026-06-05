@@ -42,6 +42,36 @@ Needs Redis (`redis_host`/`redis_port`). Caps per source IP:
   "tags": ["ratelimit"] }
 ```
 
+## Distributed auto-ban (write + inspect, cluster-wide)
+Needs Redis and `redis_inspect_enabled=true`. One rule bans the source on an attack;
+a second blocks every request from a banned IP, on every node. Ban write is
+fire-and-forget; the read fails open (`redis_on_error=skip`) if Redis is down.
+```json
+{ "id": "ban-on-sqli", "phase": "access",
+  "conditions": [ { "op": "libinjection_sqli", "value": "", "transform": ["urlDecodeUni"],
+                    "variables": ["request.arg.value"] } ],
+  "action": { "redis_set": { "key": "ban:%{remote_addr}", "value": "1", "expire": 600 },
+              "fixed_response": { "status_code": 403, "body": "Forbidden\r\n" } },
+  "message": "SQLi — ban 10 min", "tags": ["attack-sqli"] }
+```
+```json
+{ "id": "block-banned", "phase": "access",
+  "conditions": [ { "op": "isSet", "value": "", "variables": ["redis.ban:%{remote_addr}"] } ],
+  "action": { "fixed_response": { "status_code": 403, "body": "Forbidden\r\n" } },
+  "message": "source is banned", "tags": ["banlist"] }
+```
+
+## Reject a revoked credential from a shared set
+Needs `redis_inspect_enabled=true`. A sibling plugin (or your auth service) keeps a
+Redis SET `revoked_tokens`; this blocks any request whose `Authorization` header is in it:
+```json
+{ "id": "blk-revoked", "phase": "access",
+  "conditions": [ { "op": "redis_sismember", "value": "%{request_headers.authorization}",
+                    "variables": ["redis.revoked_tokens"] } ],
+  "action": { "fixed_response": { "status_code": 401, "body": "Token revoked\r\n" } },
+  "tags": ["auth"] }
+```
+
 ## Tame a CRS false positive — three escalating options
 
 1. **Sanitize the whole family instead of blocking** (best when the rules are right

@@ -87,7 +87,7 @@
 
     <section id="docker">
       <h3>Docker (production)</h3>
-      <p>The production Dockerfile builds one self-contained image: Kong, the OWASP CoreRuleSet, libinjection, the native RE2 / Aho-Corasick scanners, and Karna. Kong runs DB-less; the declarative config in <code>docker/kong.yml</code> puts Karna in front of your backend. Redis is only used by <code>rate_limit</code> rules.</p>
+      <p>The production Dockerfile builds one self-contained image: Kong, the OWASP CoreRuleSet, libinjection, the native RE2 / Aho-Corasick scanners, and Karna. Kong runs DB-less; the declarative config in <code>docker/kong.yml</code> puts Karna in front of your backend. Redis is optional — it backs rate limiting, Redis inspection rules, and the auto-ban write actions.</p>
       <div class="code-card">
         <div class="code-head"><span>shell</span><span class="lang">docker</span></div>
         <div class="code-body"><pre><span class="cmt"># 1. get the source (the production Dockerfile ships with it)</span>
@@ -215,7 +215,6 @@ gcc -shared -fPIC -O2 -o /usr/local/lib/libka_ac.so src/libka_ac/ka_ac.c &amp;&a
   </div>
   <div class="foot-bottom">
     <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
-    <span>karna v1.x · built on OpenResty</span>
   </div>
 </footer>
 

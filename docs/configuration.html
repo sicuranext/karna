@@ -281,15 +281,22 @@
 
     <section id="redis">
       <h2>Redis</h2>
-      <p>Used by the <code>rate_limit</code> and <code>redis_incr_key</code> rule actions and by <code>redis.key:</code> rule variables. The rest of the WAF works without Redis.</p>
+      <p>Redis is optional. It backs the <code>rate_limit</code> and <code>redis_incr_key</code> rule actions, the <code>redis.&lt;key&gt;</code> inspection variables, the <code>redis_sismember</code> / <code>redis_hexists</code> operators, and the <code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code> write actions. The rest of the WAF works without it. With a shared Redis, these turn per-request, single-node state into cluster-wide state: a ban written on one node is seen by every node.</p>
       <table class="doc-table">
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td class="name"><code>redis_host</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">localhost</span></td><td>Redis host.</td></tr>
           <tr><td class="name"><code>redis_port</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">6379</span></td><td>Redis port.</td></tr>
           <tr><td class="name"><code>redis_password</code></td><td><span class="badge badge-type">string</span></td><td>Redis password (optional).</td></tr>
+          <tr><td class="name"><code>redis_database</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">0</span></td><td>Database index. A <code>SELECT</code> is issued only when this is greater than 0.</td></tr>
+          <tr><td class="name"><code>redis_inspect_enabled</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Master switch for the <code>redis.&lt;key&gt;</code> inspection variables and the <code>redis_sismember</code> / <code>redis_hexists</code> operators. Off by default so a rule never opens a Redis connection you did not ask for. The write actions and <code>rate_limit</code> / <code>redis_incr_key</code> are not gated by this.</td></tr>
+          <tr><td class="name"><code>redis_timeout_ms</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">50</span></td><td>Connect / send / read timeout for inspection reads, in milliseconds. Kept short so a slow Redis cannot stall the request path.</td></tr>
+          <tr><td class="name"><code>redis_keepalive_pool_size</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">64</span></td><td>Connection pool size for the inspection client.</td></tr>
+          <tr><td class="name"><code>redis_keepalive_idle_ms</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">60000</span></td><td>How long an idle pooled connection is kept, in milliseconds.</td></tr>
+          <tr><td class="name"><code>redis_on_error</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">skip</span></td><td>What an inspection read does when Redis is unreachable or errors: <code>skip</code> (condition does not match, traffic flows), <code>fail_open</code> (same effect, explicit), or <code>fail_closed</code> (treat as a match — deny when shared state cannot be read). Default <code>skip</code> keeps a Redis outage from blocking traffic.</td></tr>
         </tbody>
       </table>
+      <div class="note"><span class="lbl">Read-only boundary</span>The inspection client enforces a deny-by-default command whitelist (only read commands such as <code>GET</code>, <code>EXISTS</code>, <code>SISMEMBER</code>, <code>HEXISTS</code>, <code>TTL</code>). A rule can never run a write, admin, scripting, or key-scan command through an inspection variable. Mutations go only through the dedicated write actions.</div>
     </section>
 
     <section id="debug">
@@ -358,7 +365,6 @@ env KARNA_PROFILE;</pre></div>
   </div>
   <div class="foot-bottom">
     <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
-    <span>karna v1.x · built on OpenResty</span>
   </div>
 </footer>
 
