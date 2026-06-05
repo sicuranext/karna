@@ -103,19 +103,21 @@ _M.urlencoded = function(self, prefix, raw_body, try_base64decode_if_possible)
                     kong.log.debug("Error inserting keyname: " .. err)
                     return nil, err
                 end
-                if string_match(value, "^[%{%[]") and pcall(cjson.decode, value) then
+                if string_match(value, "^[%{%[]") then
+                    -- self:json returns a flat dict { [label] = stringvalue }
+                    -- and already does pcall(cjson.decode) internally, returning
+                    -- nil when the value isn't valid JSON. Calling it directly
+                    -- (instead of a separate pcall(cjson.decode) guard) avoids
+                    -- decoding the value twice.
                     local nested_prefix = prefix .. ".json:" .. key:lower()
                     local body_json_flat = self:json(nested_prefix, value, try_base64decode_if_possible)
-                    for _, vv in pairs(body_json_flat or {}) do
-                        if type(vv) == "table" then
-                            for k_inner, v_inner in pairs(vv) do
-                                -- Best-effort: skip on dup. JSON parses
-                                -- may emit the same key path multiple
-                                -- times (mixed-shape lists); tolerate
-                                -- those rather than aborting the parse.
-                                if not values[k_inner] then
-                                    values[k_inner] = v_inner
-                                end
+                    if body_json_flat then
+                        for k_inner, v_inner in pairs(body_json_flat) do
+                            -- Best-effort: skip on dup. JSON parses may emit the
+                            -- same key path multiple times (mixed-shape lists);
+                            -- tolerate those rather than aborting the parse.
+                            if not values[k_inner] then
+                                values[k_inner] = v_inner
                             end
                         end
                     end
