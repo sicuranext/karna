@@ -77,10 +77,11 @@ jobs:
           #  - github.com/sicuranext/karna — this repo's own GitHub URL
           #    (CI badge, clone instruction, link text)
           #  - "SicuraNext s.r.l" — Elastic License 2.0 attribution / licensor
+          #  - karna@sicuranext.com — public project contact / commercial-license email
           if grep -rni 'sicuranext' $PATHS \
               --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
               2>/dev/null \
-              | grep -v 'blog\.sicuranext\.com\|github\.com/sicuranext/karna\|SicuraNext s\.r\.l'; then
+              | grep -v 'blog\.sicuranext\.com\|github\.com/sicuranext/karna\|SicuraNext s\.r\.l\|karna@sicuranext\.com'; then
             echo "::error::unexpected sicuranext reference in code"
             fail=1
           fi
