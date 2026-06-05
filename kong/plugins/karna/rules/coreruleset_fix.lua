@@ -89,9 +89,7 @@ _M.global_fps = {
 
     -- CRS-compatibility bridges: rewrite CRS rules that depend on ModSec
     -- TX-side-effect variables (TX:/MULTIPART_HEADERS_*/, etc.) to target
-    -- Karna's native multipart namespace instead. See
-    -- ~/.claude/projects/.../memory/project_implementation_decisions.md
-    -- and FINDINGS.md for the rationale: Karna's engine stays
+    -- Karna's native multipart namespace instead. Karna's engine stays
     -- ModSec-generic; CRS-specific compatibility patches live here, in
     -- this file, where every override is auditable and versioned with
     -- each CRS release.
