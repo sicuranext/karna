@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/karna-hero.png" alt="Karna: a WAF built for AI, built for speed (by SicuraNext)" width="760">
+  <img src="docs/assets/karna-hero.png" alt="Karna: a WAF built for AI, built for speed" width="760">
 </p>
 
 <p align="center">
