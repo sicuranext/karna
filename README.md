@@ -1347,7 +1347,7 @@ Fields: `redis_set` `{ key, value (default "1"), expire }` → `SET key value [E
 
 ## Community
 
-- Chat and questions: the `#karna` channel on the [SicuraNext Discord](https://discord.gg/FaHMZfmqty).
+- Chat and questions: the `#karna` channel on our [Discord](https://discord.gg/FaHMZfmqty).
 - Bugs and feature requests: [GitHub issues](https://github.com/sicuranext/karna/issues).
 - Security reports: see [SECURITY.md](SECURITY.md) (email, not a public issue).
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) and the [CLA](CLA.md).
