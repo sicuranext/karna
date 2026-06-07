@@ -35,4 +35,56 @@
     a.setAttribute('aria-label', 'Link to this section');
     h.appendChild(a);
   });
+
+  // Copy the given text to the clipboard, with a fallback for non-secure
+  // contexts / older browsers. Calls done() on success.
+  function copyText(text, done) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text, done); });
+    } else {
+      legacyCopy(text, done);
+    }
+  }
+  function legacyCopy(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'absolute';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { /* no-op */ }
+    document.body.removeChild(ta);
+  }
+
+  // Add a copy-to-clipboard button to every code block.
+  document.querySelectorAll('.code-card').forEach(function (card) {
+    var pre = card.querySelector('.code-body pre') || card.querySelector('pre');
+    if (!pre) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    btn.setAttribute('aria-label', 'Copy code to clipboard');
+    var reset;
+    btn.addEventListener('click', function () {
+      copyText(pre.textContent, function () {
+        btn.textContent = 'Copied';
+        btn.classList.add('copied');
+        clearTimeout(reset);
+        reset = setTimeout(function () {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1500);
+      });
+    });
+    var head = card.querySelector('.code-head');
+    if (head) {
+      head.appendChild(btn);
+    } else {
+      card.style.position = 'relative';
+      btn.classList.add('copy-btn-float');
+      card.appendChild(btn);
+    }
+  });
 })();

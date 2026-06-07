@@ -175,12 +175,28 @@ h2:hover .anchor, h3:hover .anchor { opacity: 1; }
   box-shadow: 0 12px 32px rgba(29,29,27,0.08); margin: 0 0 18px;
 }
 .code-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: #161614; border-bottom: 1px solid rgba(255,252,250,0.08);
   padding: 10px 16px; font-family: var(--font-mono); font-size: 11px;
   letter-spacing: 0.10em; text-transform: uppercase; color: rgba(255,252,250,0.55);
 }
+.code-head > :first-child { margin-right: auto; }
 .code-head .lang { color: var(--gold); }
+
+/* Copy-to-clipboard button, injected into each .code-head by docs.js. */
+.copy-btn {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.10em;
+  text-transform: uppercase; color: rgba(255,252,250,0.55);
+  background: rgba(255,252,250,0.06); border: 1px solid rgba(255,252,250,0.14);
+  border-radius: 6px; padding: 4px 9px; cursor: pointer; line-height: 1;
+  flex: none; -webkit-appearance: none; appearance: none;
+  transition: color 120ms var(--ease-out), background 120ms var(--ease-out), border-color 120ms var(--ease-out);
+}
+.copy-btn:hover { color: var(--lotion); background: rgba(255,252,250,0.12); border-color: rgba(255,252,250,0.24); }
+.copy-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.copy-btn.copied { color: var(--inchworm); border-color: rgba(154,205,50,0.45); background: rgba(154,205,50,0.10); }
+/* Fallback when a card has no .code-head: float the button over the card. */
+.copy-btn.copy-btn-float { position: absolute; top: 10px; right: 12px; z-index: 2; }
 .code-body { padding: 18px 22px 20px; font-family: var(--font-mono); font-size: 13px; line-height: 1.65; overflow-x: auto; }
 .code-body pre { margin: 0; color: rgba(255,252,250,0.92); white-space: pre; }
 .code-body .cmt { color: rgba(255,252,250,0.42); }
