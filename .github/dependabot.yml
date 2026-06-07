@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keep the GitHub Actions used in CI up to date. Karna's runtime is Lua with
+  # no package manager to track, so Actions are the main moving dependency.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
