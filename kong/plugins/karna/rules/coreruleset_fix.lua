@@ -113,8 +113,7 @@ _M.global_fps = {
             { remove_rule = { rule_id = "911100" } },
 
             -- 920360..920410 — CRS-config-gate rules that duplicate
-            -- Karna's schema-level limit knobs. Architectural principle
-            -- (memory: project_principle_config_vs_rules, 2026-05-24):
+            -- Karna's schema-level limit knobs. Architectural principle:
             -- limits and configuration live in the plugin schema,
             -- changeable on-the-fly via the Kong admin API. Detection
             -- rules detect attacks. The two never mix.

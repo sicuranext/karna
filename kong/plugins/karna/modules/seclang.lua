@@ -80,7 +80,7 @@ function seclang.collect_crs_conf_files(filter_conf_file_name)
             if string.find(filename, "^REQUEST.+%.conf$") then
                 -- we're not going to support anomaly score
                 if filename ~= "REQUEST-949-BLOCKING-EVALUATION.conf" and filename ~= "REQUEST-901-INITIALIZATION.conf" then
-                    print("found conf file: " .. filename)
+                    --print("found conf file: " .. filename)
                     table.insert(conf_files, filename)
                 end
             end
@@ -241,7 +241,7 @@ function seclang.__get_variable_name(varname)
     if variable_map[varname] then
         return variable_map[varname]
     else
-        print("----------> Unknown variable: " .. varname)
+        --print("----------> Unknown variable: " .. varname)
         return nil
     end
 
@@ -366,8 +366,7 @@ function seclang.__variables_to_conditions(variables)
             -- ModSec semantics, NOT the `filename=` value. Karna kept
             -- the historic `.filename` mapping for a long time because
             -- the semantically-correct `.name` mapping triggered FPs
-            -- in some 920120 negative tests (memory:
-            -- project_implementation_decisions). Approach B (2026-05-24):
+            -- in some 920120 negative tests. Approach B:
             -- emit BOTH targets when FILES_NAMES is referenced. The
             -- 920120 rule's `!@rx` pattern then evaluates against
             -- every multipart name AND every multipart filename — a
@@ -508,7 +507,7 @@ function seclang.__operator(op_line)
     elseif op == "@validateByteRange" then
         op_translated = "validateByteRange"
     else
-        print("----------> Unknown operator: " .. op)
+        --print("----------> Unknown operator: " .. op)
         return
     end
 
@@ -757,7 +756,7 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
 
     id = seclang.__get_rule_id(actions)
     if not id and not chained then
-        print("----------> ERROR: Rule without id")
+        --print("----------> ERROR: Rule without id")
         return
     end
 

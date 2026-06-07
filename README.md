@@ -4,6 +4,8 @@
 
 <p align="center">
   <a href="https://github.com/sicuranext/karna/actions/workflows/ci.yml"><img src="https://github.com/sicuranext/karna/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Elastic--2.0-blue" alt="License: Elastic-2.0"></a>
+  <a href="https://discord.gg/FaHMZfmqty"><img src="https://img.shields.io/badge/Discord-join%20%23karna-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -570,15 +572,15 @@ docker build -f docker/Dockerfile -t karna .
 
 Point Kong at your backend with a DB-less declarative config. `docker/kong.yml`
 is a template: set the service `url` to your app. Then bring it up with
-`docker/docker-compose.prod.yml`, which runs Karna plus Redis (Redis is only
-used by `rate_limit` rules):
+`docker/docker-compose.prod.yml`, which runs Karna plus Redis (Redis backs rate
+limiting, counters, the `redis.<key>` inspection rules, and the write actions):
 
 ```sh
 # edit docker/kong.yml -> set the service url to your app, then:
 docker compose -f docker/docker-compose.prod.yml up -d
 ```
 
-Or run the image on its own (rate-limit rules then need an external Redis):
+Or run the image on its own (the Redis-backed rules then need an external Redis):
 
 ```sh
 docker run -d --name karna -p 8000:8000 \
@@ -659,9 +661,15 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `auditlog_only_on_match` | bool | `false` | Only write audit log when at least one rule matched. |
 | `auditlog_modsec` | bool | `false` | v1 only, emit ModSecurity-compatible format. |
 | `auditlog_error_log_on_match` | bool | `false` | Mirror matched rules to nginx error log. |
-| `redis_host` | string | `localhost` | Redis host for counter-based rules. |
+| `redis_host` | string | `localhost` | Redis host (rate limiting, counters, inspection reads, write actions). |
 | `redis_port` | number | `6379` | Redis port. |
 | `redis_password` | string | n/a | Redis AUTH (optional). |
+| `redis_database` | number | `0` | Redis DB index (`SELECT` is issued only when > 0). |
+| `redis_inspect_enabled` | bool | `false` | Enable the `redis.<key>` inspection variables and the `redis_sismember` / `redis_hexists` operators. Off by default; does not gate the write actions or `rate_limit` / `redis_incr_key`. |
+| `redis_timeout_ms` | number | `50` | Connect/send/read timeout for inspection reads (kept short so a slow Redis can't stall the request path). |
+| `redis_keepalive_pool_size` | number | `64` | Inspection client connection-pool size. |
+| `redis_keepalive_idle_ms` | number | `60000` | Idle time (ms) before a pooled connection is closed. |
+| `redis_on_error` | string | `skip` | Inspection read when Redis is unreachable: `skip` / `fail_open` (no match, traffic flows) or `fail_closed` (treat as a match). |
 | `private_debug` | bool | `false` | Verbose debug output. |
 
 ### Environment variables
@@ -1250,7 +1258,7 @@ applied normally. `value` is only treated as missing when it is `nil`
     ],
     "action": {
         "redis_incr_key": {
-            "key": "failed_login_attempts_%{request.header.value:host}_%{remote_addr}",
+            "key": "failed_login_attempts:%{remote_addr}",
             "expire": 300
         }
     },
@@ -1260,6 +1268,10 @@ applied normally. `value` is only treated as missing when it is `nil`
 
 ### Block when the counter exceeds a threshold
 
+Reading a Redis key from a rule needs `redis_inspect_enabled: true`. The
+variable is the Redis key (everything after `redis.`, macros allowed); the
+operator picks the command — here `ge` does a `GET` and compares numerically.
+
 ```json
 {
     "id": "local_124",
@@ -1268,7 +1280,7 @@ applied normally. `value` is only treated as missing when it is `nil`
         {
             "op": "ge",
             "value": "2",
-            "variables": ["redis.key:failed_login_attempts_%{request.header.value:host}_%{remote_addr}"]
+            "variables": ["redis.failed_login_attempts:%{remote_addr}"]
         }
     ],
     "action": {
@@ -1284,6 +1296,61 @@ applied normally. `value` is only treated as missing when it is `nil`
     "log": false
 }
 ```
+
+### Inspect Redis state from a rule
+
+With `redis_inspect_enabled`, a `redis.<key>` variable reads shared state at
+request time and the operator selects the Redis command: `isSet` → `EXISTS`,
+`eq` / `rx` / `gt` / … → `GET` then compare, `redis_sismember` → `SISMEMBER`,
+`redis_hexists` → `HEXISTS`. Keys and the `value` needle accept the
+`%{remote_addr}`, `%{request.method|host|scheme|path}`, and
+`%{request_headers.X}` macros. The inspection client is locked to a read-only
+command whitelist, so a rule can never mutate Redis through a variable.
+
+```json
+{
+    "id": "block-banned-ip",
+    "phase": "access",
+    "conditions": [
+        { "op": "isSet", "value": "", "variables": ["redis.ban:%{remote_addr}"] }
+    ],
+    "action": { "fixed_response": { "status_code": 403, "body": "Forbidden\r\n" } }
+}
+```
+
+### Write to Redis: distributed auto-ban
+
+The `redis_set` / `redis_sadd` / `redis_del` actions write cluster-wide state on
+a match (fire-and-forget; they never block the request themselves). Pair a write
+with the inspection read above to close an auto-ban loop across every Kong node:
+detect an attack, `SET ban:<ip>` with a TTL, and a second rule blocks any request
+from a banned IP.
+
+```json
+{
+    "id": "ban-on-sqli",
+    "phase": "access",
+    "conditions": [
+        { "op": "libinjection_sqli", "transform": ["urlDecodeUni"], "value": "", "variables": ["request.arg.value"] }
+    ],
+    "action": {
+        "redis_set": { "key": "ban:%{remote_addr}", "value": "1", "expire": 600 },
+        "fixed_response": { "status_code": 403, "body": "Forbidden\r\n" }
+    },
+    "tags": ["attack-sqli"]
+}
+```
+
+Fields: `redis_set` `{ key, value (default "1"), expire }` → `SET key value [EX expire]`;
+`redis_sadd` `{ key, member, expire }` → `SADD key member` (+ `EXPIRE` when set);
+`redis_del` `{ key }` → `DEL key` (manual unban).
+
+## Community
+
+- Chat and questions: the `#karna` channel on the [SicuraNext Discord](https://discord.gg/FaHMZfmqty).
+- Bugs and feature requests: [GitHub issues](https://github.com/sicuranext/karna/issues).
+- Security reports: see [SECURITY.md](SECURITY.md) (email, not a public issue).
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) and the [CLA](CLA.md).
 
 ## License
 

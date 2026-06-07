@@ -66,7 +66,7 @@ jobs:
           # workflow itself is excluded — it references these tokens as
           # part of its own scanning regex and would trip on itself.
           PATHS="kong/ docker/ README.md crs-regression-test/ ka-unittest/"
-          if grep -rni 'octofence\|kong-armor\|waap-private' $PATHS \
+          if grep -rni 'octofence\|kong-armor\|waap-private\|\.claude/plans' $PATHS \
               --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
               2>/dev/null; then
             echo "::error::internal naming leak found"

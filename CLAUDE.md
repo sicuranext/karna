@@ -120,7 +120,9 @@ all guarded — when no sibling plugin sets them, Karna works fine in isolation.
 - `ka-stress-test/` — Python load test
 - `crs-regression-test/` — official OWASP CRS regression suite runner
 
-CI is not yet wired up.
+CI runs on GitHub Actions (`.github/workflows/ci.yml`): a Lua syntax check,
+the unit tests, an anti-leak audit, and the OWASP CRS PL1 regression with a
+pass-rate floor.
 
 ## Versioning
 SemVer + LuaRocks revision (`MAJOR.MINOR.PATCH-REV`). **Don't forget**: the

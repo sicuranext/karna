@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Community chat (Discord)
+    url: https://discord.gg/FaHMZfmqty
+    about: Questions, help, and general discussion in the #karna channel.
+  - name: Security vulnerability
+    url: https://github.com/sicuranext/karna/blob/main/SECURITY.md
+    about: Please report vulnerabilities privately, not as a public issue.
