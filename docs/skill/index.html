@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Install the Karna skill — for AI agents</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="Install the Karna Claude Code skill into your own AI agent with one command. Teaches the agent to deploy, configure, and write rules for the Karna WAF plugin for Kong Gateway."/>
+<link rel="canonical" href="https://karna.sicuranext.com/skill/"/>
+<link rel="icon" type="image/png" href="/docs/assets/karna-mark-gold.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"/>
+<link rel="stylesheet" href="/docs/assets/karna.css"/>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" aria-label="Karna home">
+      <img src="/docs/assets/karna-mark-light.png" width="34" height="33" alt=""/>
+      <span class="brand-word">Karna</span>
+      <span class="brand-by">by SicuraNext</span>
+    </a>
+    <div class="nav-links">
+      <a href="/#why">Why Karna</a>
+      <a href="/#features">Features</a>
+      <a href="/#install">Install</a>
+      <a href="/docs/">Docs</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn btn-secondary" href="/docs/">Docs home</a>
+      <a class="btn btn-gold" href="https://github.com/sicuranext/karna">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-head">
+  <div class="doc-head-inner">
+    <div class="doc-crumbs"><a href="/docs/">Docs</a> / Skill for AI agents</div>
+    <span class="doc-eyebrow">For AI agents</span>
+    <h1>Install the Karna skill</h1>
+    <p>Karna ships a <strong>Claude Code skill</strong>: a small bundle that teaches an AI coding agent how to deploy, configure, and write rules for Karna. Install it into your agent and it will know how to operate the WAF without you explaining it each time.</p>
+  </div>
+</header>
+
+<div class="doc-layout">
+  <main class="doc-main">
+
+    <section id="agent">
+      <h2>Tell your agent to install it</h2>
+      <p>If you run an agent with shell access (Claude Code, or any agent that can fetch a URL and run a command), just say:</p>
+      <div class="code-card">
+        <div class="code-head"><span>say this to your agent</span><span class="lang">prompt</span></div>
+        <div class="code-body"><pre>Go to https://karna.sicuranext.com/skill and install the Karna
+skill into my Claude Code skills directory.</pre></div>
+      </div>
+      <p>The agent reads this page, finds the command below, and installs the skill for you.</p>
+    </section>
+
+    <section id="oneliner">
+      <h2>One-line install</h2>
+      <p>Installs as a <strong>personal skill</strong> in <code>~/.claude/skills/karna/</code>, available in every Claude Code session:</p>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre>mkdir -p ~/.claude/skills
+curl -fsSL https://karna.sicuranext.com/skill/karna-skill.tar.gz \
+  | tar -xz -C ~/.claude/skills/</pre></div>
+      </div>
+      <p>That is all. Open Claude Code and the <code>karna</code> skill is active — it loads itself whenever you ask to install, configure, or write rules for Karna.</p>
+    </section>
+
+    <section id="transparent">
+      <h2>Prefer to inspect first?</h2>
+      <p>Download, look at what is inside, then extract:</p>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre><span class="cmt"># 1. download</span>
+curl -fsSL -O https://karna.sicuranext.com/skill/karna-skill.tar.gz
+
+<span class="cmt"># 2. see exactly what it contains (just Markdown — no code runs)</span>
+tar -tzf karna-skill.tar.gz
+
+<span class="cmt"># 3. install</span>
+mkdir -p ~/.claude/skills
+tar -xzf karna-skill.tar.gz -C ~/.claude/skills/</pre></div>
+      </div>
+      <p>The bundle is plain Markdown: <code>SKILL.md</code> plus a <code>reference/</code> folder (deploy, configuration, rules, recipes). Nothing executes on install.</p>
+    </section>
+
+    <section id="verify">
+      <h2>Verify</h2>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre>ls ~/.claude/skills/karna
+<span class="cmt"># SKILL.md  reference/</span></pre></div>
+      </div>
+      <p>To check it works, ask your agent something like <em>"configure the Karna plugin to block in blocking mode"</em> and watch it follow the skill's guidance.</p>
+    </section>
+
+    <section id="full">
+      <h2>For the full experience, clone the repo too</h2>
+      <p>The skill is self-sufficient for operating Karna. For deep work it also tells the agent to read the authoritative source (<code>schema.lua</code>, <code>ka_engine.lua</code>) — which only resolves when you run the agent inside a checkout of the repo. If you clone Karna and run the agent there, the skill is picked up automatically as a project skill, no install needed:</p>
+      <div class="code-card">
+        <div class="code-head"><span>shell</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre>git clone https://github.com/sicuranext/karna.git
+cd karna   <span class="cmt"># the karna skill is now available in this session</span></pre></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <div>
+      <div class="foot-brand-row">
+        <img src="/docs/assets/karna-mark-dark.png" width="40" height="39" alt=""/>
+        <span class="word">Karna</span>
+      </div>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. <span style="color: var(--inchworm)">Cybersecurity for everyone.</span></p>
+    </div>
+    <div>
+      <h5>Project</h5>
+      <a href="https://github.com/sicuranext/karna">GitHub repository</a>
+      <a href="https://github.com/sicuranext/karna/releases">Releases</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/LICENSE">License</a>
+    </div>
+    <div>
+      <h5>Docs</h5>
+      <a href="/docs/#install">Installation</a>
+      <a href="/docs/configuration.html">Configuration</a>
+      <a href="/docs/rules.html">Writing rules</a>
+    </div>
+    <div>
+      <h5>SicuraNext</h5>
+      <a href="https://sicuranext.com">sicuranext.com</a>
+      <a href="https://sicuranext.com/contatti">Contact</a>
+      <a href="mailto:karna@sicuranext.com">karna@sicuranext.com</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
+    <span>karna v1.x · built on OpenResty</span>
+  </div>
+</footer>
+
+</body>
+</html>
