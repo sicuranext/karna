@@ -7,22 +7,6 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-### Added
-
-- Self-identification endpoint `GET /.well-known/karna` (always on): returns
-  `{engine, version, commit, commit_short, built_at}` so a deployment can be
-  confirmed and its build identified. The version and commit are also recorded
-  in the `engine` block of every audit-log v2 entry. The build stamps
-  `version.lua` (Docker build arg, or `scripts/install.sh` for source installs);
-  an unstamped `luarocks make` reports `commit: "unknown"`.
-
-### Changed
-
-- `ignore_from_local_ips` now defaults to `false` (previously `true`). Karna
-  inspects requests from loopback / RFC1918 source IPs by default instead of
-  skipping them — the secure-by-default posture for a WAF. Set it to `true` to
-  bypass trusted internal ranges (e.g. a load balancer's private egress IP).
-
 ## [1.0.0] - 2026-06-08
 
 First public release. Karna is a self-contained Web Application Firewall that
@@ -62,6 +46,10 @@ Core Rule Set. It needs no other plugin to work.
 - Tooling: `scripts/install.sh` (one-command install into an existing Kong),
   `scripts/karna-rules` (push rules and overrides via the Admin API), and a
   self-contained Docker dev/prod stack.
+- Self-identification endpoint `GET /.well-known/karna` returning
+  `{engine, version, commit, commit_short, built_at}`; the same version + commit
+  are recorded in the `engine` block of every audit-log v2 entry. The build
+  stamps `version.lua` (Docker build arg / `scripts/install.sh`).
 
 ### Performance
 
@@ -77,6 +65,8 @@ Core Rule Set. It needs no other plugin to work.
 
 - `protocol_enforcement` (CRS 920) ships disabled by default: nginx and Karna's
   always-on gates already enforce request well-formedness.
+- `ignore_from_local_ips` defaults to `false`: loopback / RFC1918 source IPs are
+  inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
 [Unreleased]: https://github.com/sicuranext/karna/compare/v1.0.0...HEAD
