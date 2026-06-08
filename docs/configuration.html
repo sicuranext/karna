@@ -59,6 +59,7 @@
     <a href="#audit">Audit logging</a>
     <a href="#redis">Redis</a>
     <a href="#debug">Debug</a>
+    <a href="#identify">Identification</a>
     <a href="#env">Environment variables</a>
     <h5>Reference</h5>
     <a href="rules.html">Writing rules</a>
@@ -309,6 +310,17 @@
           <tr><td class="name"><code>private_debug</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Verbose internal debug output. Off in production.</td></tr>
         </tbody>
       </table>
+    </section>
+
+    <section id="identify">
+      <h2>Identification endpoint</h2>
+      <p>Karna answers a reserved path so you can confirm it is running in front of a service and read its build (version + git commit). It is always on — there is no config flag — and the reserved path never reaches the upstream.</p>
+      <div class="code-card">
+        <div class="code-head"><span>probe</span><span class="lang">sh</span></div>
+        <div class="code-body"><pre>curl -s https://your-host/.well-known/karna
+<span class="cmt"># {"engine":"karna","version":"1.0.0","commit":"&lt;sha&gt;","commit_short":"&lt;short&gt;","built_at":"&lt;iso8601&gt;"}</span></pre></div>
+      </div>
+      <p>The same <code>version</code> and <code>commit</code> appear in the <code>engine</code> block of every audit-log v2 entry. The commit is stamped at build time (the Docker image via a build arg, source installs via <code>scripts/install.sh</code>); an unstamped build reports <code>commit: "unknown"</code>.</p>
     </section>
 
     <section id="env">

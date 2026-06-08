@@ -15,6 +15,7 @@ plugin with no required dependency on other plugins.
   - On `init_worker`: loads and caches CRS rules (parsed from SecLang `.conf` files) into an LRU cache.
   - On `access`: evaluates rules against the incoming request (rule controls first, then local rules, then global CRS rules).
   - On `log`: writes JSON audit logs to disk asynchronously.
+  - **Self-identification** (always on, no toggle): a request to the reserved path `GET /.well-known/karna` short-circuits in `access` and returns `{engine, version, commit, commit_short, built_at}` (build identity from `version.lua`). The same `version`/`commit` are also embedded in the `engine` block of audit log v2 (`ka_utils.lua:get_auditlog_v2`). This is a transparent license-compliance watermark — passive (no phone-home), reserved path does not reach the upstream.
 
 ### Schema
 - `kong/plugins/karna/schema.lua` — Plugin configuration schema. Key settings:
@@ -125,6 +126,10 @@ the unit tests, an anti-leak audit, and the OWASP CRS PL1 regression with a
 pass-rate floor.
 
 ## Versioning
-SemVer + LuaRocks revision (`MAJOR.MINOR.PATCH-REV`). **Don't forget**: the
-`VERSION` constant in `handler.lua` must match the rockspec on every release
-(rockspec carries the `-REV` suffix, the handler `VERSION` is SemVer pure).
+SemVer + LuaRocks revision (`MAJOR.MINOR.PATCH-REV`). **Don't forget**: on every
+release keep three things in sync — `version` in `kong/plugins/karna/version.lua`
+(the source of truth; `handler.lua` sets `plugin.VERSION = ka_version.version`),
+the rockspec `version` (carries the `-REV` suffix), and the rockspec filename.
+`version.lua` is committed with placeholder `commit`/`built_at`; the build stamps
+the real commit (Docker build arg `KARNA_COMMIT`, or `scripts/install.sh` via
+`git rev-parse`). `scripts/build.sh` wraps the stamped Docker build.

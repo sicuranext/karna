@@ -15,9 +15,14 @@ local seclang           = require "kong.plugins.karna.ka_seclang"
 local ka_mcp            = require "kong.plugins.karna.ka_mcp"
 local ka_compile        = require "kong.plugins.karna.ka_compile"
 local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
+local ka_version        = require "kong.plugins.karna.version"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
 local ipmatcher         = require "resty.ipmatcher"
+
+-- Keep the plugin VERSION constant and the build-stamped version module in
+-- lockstep — version.lua is the single source of truth.
+plugin.VERSION = ka_version.version
 
 local ka_rules, err = lrucache.new(10000)
 
@@ -684,6 +689,21 @@ function plugin:access(plugin_conf)
   -- skip access phase if response sent from cache
   if kong.ctx.shared.response_from_cache then
     return
+  end
+
+  -- Self-identification endpoint. A reserved well-known path that any caller
+  -- can probe to confirm Karna is in the request path and read its build
+  -- (version + git commit). Always on (no config flag), short-circuits before
+  -- upstream like the block/rate-limit paths. This is a transparent watermark:
+  -- the path is reserved, so it does not reach the upstream service.
+  if kong.request.get_path() == "/.well-known/karna" then
+    return response_exit(200, cjson.encode({
+      engine       = "karna",
+      version      = ka_version.version,
+      commit       = ka_version.commit,
+      commit_short = ka_version.commit_short,
+      built_at     = ka_version.built_at,
+    }), { ["content-type"] = "application/json" })
   end
 
   -- jit.p profiling trigger — only active when KARNA_PROFILE env is

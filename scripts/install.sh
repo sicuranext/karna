@@ -74,6 +74,20 @@ have gcc      || die "gcc not found (apt-get install build-essential, or --skip-
 # --- 1. the plugin -----------------------------------------------------------
 log "Installing lua-zlib (direct rockspec; the luarocks.org manifest is too big for LuaJIT)"
 luarocks install "$LUA_ZLIB_ROCKSPEC"
+
+# Stamp the build identity (version + git commit) into version.lua so the
+# running plugin reports it on /.well-known/karna and in the audit log. git is
+# available here (it's the repo); if it isn't, the committed placeholder
+# ("unknown") is left in place and install still succeeds.
+if have git && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+  KA_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  KA_SHORT="$(printf '%s' "$KA_COMMIT" | cut -c1-7)"
+  KA_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  log "Stamping version.lua (commit ${KA_SHORT})"
+  printf 'return {\n  version      = "1.0.0",\n  commit       = "%s",\n  commit_short = "%s",\n  built_at     = "%s",\n}\n' \
+    "$KA_COMMIT" "$KA_SHORT" "$KA_DATE" > "$REPO_ROOT/kong/plugins/karna/version.lua"
+fi
+
 log "luarocks make (Karna plugin)"
 ( cd "$REPO_ROOT" && luarocks make "$ROCKSPEC" )
 

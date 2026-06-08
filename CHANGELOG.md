@@ -7,6 +7,15 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Self-identification endpoint `GET /.well-known/karna` (always on): returns
+  `{engine, version, commit, commit_short, built_at}` so a deployment can be
+  confirmed and its build identified. The version and commit are also recorded
+  in the `engine` block of every audit-log v2 entry. The build stamps
+  `version.lua` (Docker build arg, or `scripts/install.sh` for source installs);
+  an unstamped `luarocks make` reports `commit: "unknown"`.
+
 ### Changed
 
 - `ignore_from_local_ips` now defaults to `false` (previously `true`). Karna

@@ -73,3 +73,6 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 
 ## Debug
 - `private_debug` (bool, `false`) — verbose internal output, off in prod.
+
+## Identification (always on, no config flag)
+- `GET /.well-known/karna` → JSON `{engine, version, commit, commit_short, built_at}`. Confirms Karna is in the request path and reports the build. Same `version`/`commit` in the audit-log v2 `engine` block. Commit is stamped at build (Docker build arg `KARNA_COMMIT` / `scripts/install.sh`); an unstamped `luarocks make` reports `commit:"unknown"`. Reserved path — never reaches the upstream. Transparent watermark, passive (no phone-home).

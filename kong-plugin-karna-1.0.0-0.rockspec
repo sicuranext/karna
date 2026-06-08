@@ -26,6 +26,7 @@ build = {
   modules = {
     ["kong.plugins."..pluginName..".handler"]         = "kong/plugins/"..pluginName.."/handler.lua",
     ["kong.plugins."..pluginName..".schema"]          = "kong/plugins/"..pluginName.."/schema.lua",
+    ["kong.plugins."..pluginName..".version"]         = "kong/plugins/"..pluginName.."/version.lua",
     ["kong.plugins."..pluginName..".ka_engine"]       = "kong/plugins/"..pluginName.."/modules/ka_engine.lua",
     ["kong.plugins."..pluginName..".ka_body_parser"]  = "kong/plugins/"..pluginName.."/modules/ka_body_parser.lua",
     ["kong.plugins."..pluginName..".ka_multipart"]    = "kong/plugins/"..pluginName.."/modules/ka_multipart.lua",

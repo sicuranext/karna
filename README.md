@@ -682,6 +682,26 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 Both are read at `init_worker` time and must be exposed to nginx workers
 via `env <NAME>;` directives in the main context.
 
+## Identifying a running Karna
+
+Karna answers a reserved path so you can confirm it is in front of an endpoint
+and read its build:
+
+```sh
+curl -s https://your-host/.well-known/karna
+# {"engine":"karna","version":"1.0.0","commit":"<sha>","commit_short":"<short>","built_at":"<iso8601>"}
+```
+
+The endpoint is always on (no config flag), returns JSON, and short-circuits
+before the upstream — the reserved `/.well-known/karna` path never reaches your
+backend. The same `version` and `commit` are recorded in the `engine` block of
+every audit-log v2 entry.
+
+The commit is stamped at build time: the Docker image takes it from a build arg
+(`scripts/build.sh` passes `git rev-parse HEAD`), and `scripts/install.sh` stamps
+it for source installs. A plain `luarocks make` with no stamping reports
+`commit: "unknown"`.
+
 ## Rule Variables
 
 | Variable name | Description | Example |

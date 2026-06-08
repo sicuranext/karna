@@ -28,6 +28,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: prod
+      args:
+        # Stamp the build identity. Export these before `docker compose build`
+        # (scripts/build.sh does it), or they default to "unknown".
+        KARNA_COMMIT: ${KARNA_COMMIT:-unknown}
+        KARNA_BUILD_DATE: ${KARNA_BUILD_DATE:-unknown}
     image: karna:latest
     container_name: karna
     depends_on:

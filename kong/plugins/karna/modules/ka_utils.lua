@@ -13,6 +13,8 @@ local request_get_http_version      = kong.request.get_http_version
 
 local string_match                  = string.match
 
+local ka_version            = require "kong.plugins.karna.version"
+
 local internal_dev_host     = "karna-test"
 
 local _M = {}
@@ -585,6 +587,9 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             latency_ms = latency_ms
         },
         engine = {
+            name = "karna",
+            version = ka_version.version,
+            commit = ka_version.commit,
             mode = plugin_conf.engine_blocking_mode and "blocking" or "detection",
             paranoia_level = tonumber(plugin_conf.paranoia_level) or 1
         },
