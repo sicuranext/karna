@@ -38,9 +38,10 @@ the code, not your memory.
    A rule or engine edit that drops the pass count is a regression — investigate
    before shipping. See `reference/recipes.md`.
 
-3. **`ignore_from_local_ips` defaults to `true`.** Requests from localhost /
-   private ranges are skipped. When testing from the same host, set it to `false`
-   or it will look like "the CRS is not loading".
+3. **`ignore_from_local_ips` defaults to `false`** (everything is inspected). If
+   someone set it to `true`, requests from localhost / RFC1918 ranges — including a
+   load balancer's private egress IP — are skipped, and a local-sourced attack will
+   look like it "isn't being blocked". Check this first when blocking seems dead.
 
 4. **Never benchmark or run load tests at `debug` log level.** Per-rule log spam
    tanks throughput. Keep `KONG_LOG_LEVEL=warn`.

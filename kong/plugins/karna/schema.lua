@@ -99,7 +99,7 @@ local schema = {
           { mcp_max_stream_buffer_bytes = { type = "number", default = 8388608 } },
           { mcp_redact_session_id_in_audit = { type = "boolean", default = true } },
           { mcp_redact_authorization_in_audit = { type = "boolean", default = true } },
-          { ignore_from_local_ips = { type = "boolean", default = true } },
+          { ignore_from_local_ips = { type = "boolean", default = false } },
           
           { check_invalid_chars_in_path = { type = "boolean", default = false } },
           { limit_invalid_chars_in_path = { type = "number", default = 1 } },

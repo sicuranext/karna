@@ -30,7 +30,7 @@ Not toggleable: anomaly scoring (949/959/980), response rules (95x), init (901),
 - `limit_arg_num` (num, `255`) — **gate** (DoS protection against rules×args blow-up).
 - `limit_arg_name_length` (num, `100`), `limit_arg_value_length` (num, `400`), `total_arg_value_length` (num, `64000`).
 - `restricted_extensions` (array) — blocked path extensions, aligned with CRS `tx.restricted_extensions`.
-- `ignore_from_local_ips` (bool, `true`) — skip WAF for local/private IPs. **Set false for local testing or attacks no-op.**
+- `ignore_from_local_ips` (bool, `false`) — when `true`, skip WAF for loopback/RFC1918 source IPs. Default `false` = inspect everything. **If set `true`, local-sourced attacks (incl. from an LB's private egress IP) no-op.**
 
 To loosen a gate, raise its value / extend its allow-list. They cannot be turned off short of removing the plugin.
 

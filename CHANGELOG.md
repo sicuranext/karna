@@ -7,6 +7,13 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- `ignore_from_local_ips` now defaults to `false` (previously `true`). Karna
+  inspects requests from loopback / RFC1918 source IPs by default instead of
+  skipping them — the secure-by-default posture for a WAF. Set it to `true` to
+  bypass trusted internal ranges (e.g. a load balancer's private egress IP).
+
 ## [1.0.0] - 2026-06-08
 
 First public release. Karna is a self-contained Web Application Firewall that

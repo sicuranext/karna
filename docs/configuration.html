@@ -171,10 +171,10 @@
           <tr><td class="name"><code>limit_arg_value_length</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">400</span></td><td>Maximum length of a single argument value.</td></tr>
           <tr><td class="name"><code>total_arg_value_length</code></td><td><span class="badge badge-type">number</span> <span class="badge badge-def">64000</span></td><td>Maximum combined length of all argument values.</td></tr>
           <tr><td class="name"><code>restricted_extensions</code></td><td><span class="badge badge-type">array</span></td><td>File extensions blocked in the URL path (secret keys, configs, backups, scripts, …). Aligned with the CRS 4.x <code>tx.restricted_extensions</code> default set. Shrink it per deployment if too strict.</td></tr>
-          <tr><td class="name"><code>ignore_from_local_ips</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Skip the WAF for requests from local/private source IPs.</td></tr>
+          <tr><td class="name"><code>ignore_from_local_ips</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>When <code>true</code>, skip the WAF for requests from loopback / RFC1918 ranges. Default <code>false</code>: everything is inspected.</td></tr>
         </tbody>
       </table>
-      <div class="warn"><span class="lbl">Gotcha</span>With <code>ignore_from_local_ips: true</code> (the default), attacks sourced from localhost / private ranges are not evaluated. When testing from the same host it can look like "the CRS is not loading" — set it to <code>false</code> for local testing.</div>
+      <div class="warn"><span class="lbl">Gotcha</span>Default is <code>false</code>, so local/private-range traffic is inspected like everything else. If you set it to <code>true</code>, requests from localhost and RFC1918 ranges — including a load balancer's private egress IP — are skipped entirely. Convenient for trusted internal traffic, but then a local-sourced attack will look like it "isn't being blocked".</div>
     </section>
 
     <section id="crs-setup">
