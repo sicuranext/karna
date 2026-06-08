@@ -73,7 +73,9 @@ code, pre, .mono { font-family: var(--font-mono); }
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.10em;
   color: var(--fg-3); text-transform: uppercase; margin-left: 10px; padding-left: 10px;
   border-left: 1px solid var(--border-1); line-height: 1;
+  display: inline-flex; align-items: center; gap: 7px;
 }
+.brand-by-logo { height: 28px; width: auto; display: block; }
 .nav-links { display: flex; gap: 26px; margin-left: 16px; }
 .nav-links a {
   font-size: 14px; font-weight: 500; color: var(--fg-2);
@@ -285,6 +287,8 @@ footer.foot {
   color: rgba(255,252,250,0.40); text-transform: uppercase;
 }
 .foot-bottom a:hover { color: var(--gold); }
+.foot-logo { height: 22px; width: auto; display: block; opacity: 0.85; transition: opacity 140ms var(--ease-out); }
+.foot-logo:hover { opacity: 1; }
 
 /* ============================================================ RESPONSIVE */
 @media (max-width: 960px) {
