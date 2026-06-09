@@ -117,7 +117,7 @@ docker compose -f docker/docker-compose.prod.yml up -d --build
         <div class="code-head"><span>shell</span><span class="lang">bash</span></div>
         <div class="code-body"><pre><span class="cmt"># lua-zlib must come from the direct rockspec URL — the full</span>
 <span class="cmt"># luarocks.org manifest is too large for LuaJIT to parse.</span>
-luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.2-2.rockspec
+luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.4-0.rockspec
 
 <span class="cmt"># the plugin itself (from the cloned repo)</span>
 cd /path/to/karna &amp;&amp; luarocks make

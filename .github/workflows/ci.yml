@@ -5,12 +5,25 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege. GitHub's default GITHUB_TOKEN can be read/write; these jobs
+# only need to read the repo. (The real guard against PR abuse is the repo
+# setting "Require approval for all external contributors" — no untrusted PR
+# workflow runs until a maintainer approves it after reviewing the diff.)
+permissions:
+  contents: read
+
+# One run per ref; cancel superseded runs so PR spam can't pile up compute.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   syntax:
     name: Lua syntax check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
       - name: Install Lua 5.4
         run: |
           sudo apt-get update
@@ -27,9 +40,10 @@ jobs:
   unit:
     name: Unit tests (no luaunit, plain assertions)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: syntax
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
       - name: Install Lua 5.4
         run: |
           sudo apt-get update
@@ -54,8 +68,9 @@ jobs:
   leak-audit:
     name: Anti-leak audit (internal naming)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
       - name: Scan source for internal references
         run: |
           set -e
@@ -90,12 +105,13 @@ jobs:
   regression:
     name: CRS PL1 regression (floor 2500/2757)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [syntax, unit]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
 
       - name: Build & bring up the dev stack
         run: |
@@ -114,8 +130,8 @@ jobs:
           done
           curl -fs http://127.0.0.1:28001/status >/dev/null
 
-      - name: Install Python deps for the test runner
-        run: pip install --quiet pyyaml
+      - name: Install Python deps (pinned + hashed)
+        run: pip install --quiet --require-hashes --no-binary pyyaml -r crs-regression-test/requirements.txt
 
       - name: Fetch CRS PL1 regression YAMLs
         run: |
@@ -126,6 +142,19 @@ jobs:
         run: |
           cd crs-regression-test
           PARANOIA=1 ./configure-kong.sh
+
+      - name: Wait for Karna to activate (Postgres config propagation)
+        run: |
+          set -e
+          attack='http://localhost:28000/?q=1%27%20OR%20%271%27=%271'
+          for i in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: karna-test' "$attack")" = "403" ]; then
+              echo "Karna active after ${i} polls"; break
+            fi
+            sleep 2
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: karna-test' "$attack")" = "403" \
+            || { echo "::error::Karna did not activate (config propagation); WAF not blocking"; exit 1; }
 
       - name: Run CRS PL1 regression with pass-rate floor
         run: |

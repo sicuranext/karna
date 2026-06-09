@@ -29,7 +29,7 @@ CRS_VERSION="${CRS_VERSION:-4.26.0}"
 CRS_PATH="${CRS_PATH:-/opt/coreruleset}"
 LIBINJECTION_REF="${LIBINJECTION_REF:-v3.10.0}"
 LIB_PREFIX="${LIB_PREFIX:-/usr/local/lib}"
-LUA_ZLIB_ROCKSPEC="https://luarocks.org/manifests/brimworks/lua-zlib-1.2-2.rockspec"
+LUA_ZLIB_ROCKSPEC="https://luarocks.org/manifests/brimworks/lua-zlib-1.4-0.rockspec"
 
 SKIP_DEPS=0; SKIP_LIBINJECTION=0; SKIP_CRS=0; SKIP_NATIVE=0
 for arg in "$@"; do

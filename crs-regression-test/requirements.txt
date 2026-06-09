@@ -1,0 +1,4 @@
+# Pinned + hashed Python deps for the CRS regression runner (start.py).
+# Installed in CI with: pip install --require-hashes --no-binary pyyaml -r requirements.txt
+# Regenerate with `pip-compile --generate-hashes` (or update the hash) on a bump.
+pyyaml==6.0.2 --hash=sha256:d584d9ec91ad65861cc08d42e834324ef890a082e591037abe114850ff7bbc3e

@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- Hardened CI and the build supply chain: pinned every GitHub Action, the Docker
+  base image, libinjection, and the CRS tarball by commit SHA / digest / sha256;
+  added least-privilege `permissions: contents: read`, per-job timeouts, and a
+  concurrency guard to the Actions workflow; pinned and hashed the Python test
+  dependency. (Pair with the repo setting "Require approval for all external
+  contributors".)
+
+### Changed
+
+- Updated the base image and dev stack: Kong 3.9.2, Postgres 17, lua-zlib 1.4.
+
 ## [1.0.0] - 2026-06-08
 
 First public release. Karna is a self-contained Web Application Firewall that

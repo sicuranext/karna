@@ -506,7 +506,7 @@ first, because the full luarocks.org manifest is too large for LuaJIT to load
 ```sh
 git clone https://github.com/sicuranext/karna.git
 cd karna
-luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.2-2.rockspec
+luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.4-0.rockspec
 luarocks make
 ```
 

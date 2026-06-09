@@ -21,6 +21,9 @@
 set -euo pipefail
 
 CRS_VERSION="${CRS_VERSION:-4.26.0}"
+# sha256 of the v4.26.0 source tarball. If you bump CRS_VERSION, set CRS_SHA256
+# to the new tarball's hash (the assert below fails closed on a mismatch).
+CRS_SHA256="${CRS_SHA256:-d923e991e671d2665cd73758b8dc3df6c3b0a9df96d798e98f088d5a81a76dc0}"
 CRS_MAX_PL="${CRS_MAX_PL:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${SCRIPT_DIR}/tests"
@@ -34,7 +37,9 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT
 
 curl -fsSL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz" \
-    | tar -xz -C "${TMPDIR}"
+    -o "${TMPDIR}/crs.tar.gz"
+echo "${CRS_SHA256}  ${TMPDIR}/crs.tar.gz" | shasum -a 256 -c -
+tar -xz -C "${TMPDIR}" -f "${TMPDIR}/crs.tar.gz"
 
 CRS_ROOT="${TMPDIR}/coreruleset-${CRS_VERSION}"
 SRC="${CRS_ROOT}/tests/regression/tests"

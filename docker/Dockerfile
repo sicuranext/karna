@@ -15,12 +15,14 @@
 #   CRS_VERSION       OWASP CoreRuleSet release
 
 # ---------------------------------------------------------------- base --------
-FROM kong:3.9.1 AS base
+FROM kong:3.9.2@sha256:bcc27182e9bd2e696aee55ec6cb83f64ec0bfba2143914489dadb44f4f839b19 AS base
 
 USER root
 
 ARG LIBINJECTION_REF=v3.10.0
+ARG LIBINJECTION_SHA=bf234eb2f385b969c4f803b35fda53cffdd93922
 ARG CRS_VERSION=4.26.0
+ARG CRS_SHA256=d923e991e671d2665cd73758b8dc3df6c3b0a9df96d798e98f088d5a81a76dc0
 
 RUN set -eux; \
     apt-get update; \
@@ -31,6 +33,9 @@ RUN set -eux; \
     # libinjection: build .so from official source.
     git clone --depth 1 --branch "${LIBINJECTION_REF}" \
         https://github.com/client9/libinjection.git /tmp/libinjection; \
+    # Tags are mutable pointers: verify the cloned commit is the expected one.
+    test "$(git -C /tmp/libinjection rev-parse HEAD)" = "${LIBINJECTION_SHA}" \
+        || { echo "FATAL: libinjection ${LIBINJECTION_REF} resolved to an unexpected commit (tag moved?)"; exit 1; }; \
     gcc -shared -fPIC -O2 \
         -o /usr/local/lib/libinjection.so \
         /tmp/libinjection/src/libinjection_sqli.c \
@@ -44,6 +49,7 @@ RUN set -eux; \
     mkdir -p /opt/coreruleset; \
     curl -fsSL --retry 5 --retry-delay 2 -o /tmp/crs.tar.gz \
         "https://github.com/coreruleset/coreruleset/archive/refs/tags/v${CRS_VERSION}.tar.gz"; \
+    echo "${CRS_SHA256}  /tmp/crs.tar.gz" | sha256sum -c -; \
     tar -xz --strip-components=1 -C /opt/coreruleset -f /tmp/crs.tar.gz; \
     rm -f /tmp/crs.tar.gz; \
     crs_conf_count="$(find /opt/coreruleset/rules -name '*.conf' 2>/dev/null | wc -l)"; \
@@ -53,7 +59,7 @@ RUN set -eux; \
     \
     # lua-zlib (gzip bodies). Direct rockspec URL: the luarocks.org manifest is
     # too large for LuaJIT to load (main function > 65536 constants).
-    luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.2-2.rockspec; \
+    luarocks install https://luarocks.org/manifests/brimworks/lua-zlib-1.4-0.rockspec; \
     \
     rm -rf /tmp/libinjection
 
