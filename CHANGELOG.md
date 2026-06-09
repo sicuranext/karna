@@ -9,6 +9,13 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+- Fixed a request-body inspection bypass with `Transfer-Encoding: chunked`. A
+  chunked request carries no `Content-Length`, and the engine keyed body
+  inspection (and the "skip body rules" fast path) off `Content-Length`, so an
+  attack payload sent in a chunked body skipped inspection entirely and reached
+  the upstream. Body presence is now derived from `Content-Length` OR
+  `Transfer-Encoding`, and the buffered-to-disk path no longer requires
+  `Content-Length`. Reported externally; reproduced and fixed.
 - Hardened CI and the build supply chain: pinned every GitHub Action, the Docker
   base image, libinjection, and the CRS tarball by commit SHA / digest / sha256;
   added least-privilege `permissions: contents: read`, per-job timeouts, and a

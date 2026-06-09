@@ -84,6 +84,18 @@ local request_get_headers               = kong.request.get_headers
 local request_get_header                = kong.request.get_header
 local request_get_raw_body              = kong.request.get_raw_body
 
+-- Request-body presence. A body exists when Content-Length > 0 OR a
+-- Transfer-Encoding header is set: chunked requests carry a body with NO
+-- Content-Length, and gating inspection on Content-Length alone let a
+-- chunked-encoded body skip the engine entirely (WAF bypass). nginx dechunks
+-- the body before the access phase, so request_get_raw_body() still returns it.
+local function request_has_body()
+    local cl = tonumber(request_get_header("content-length") or "")
+    if cl and cl > 0 then return true end
+    if request_get_header("transfer-encoding") then return true end
+    return false
+end
+
 local response_get_headers              = kong.service.response.get_headers
 local response_get_status               = kong.service.response.get_status
 local response_exit                     = kong.response.exit
@@ -513,8 +525,7 @@ _M.__get_values_request_body = function(try_b64)
     local result_values = values
     local result_err = nil
 
-    local content_length_header = kong.request.get_header("content-length")
-    if content_length_header and tonumber(content_length_header) > 0 then
+    if request_has_body() then
 
         -- get request body
         local request_body = request_get_raw_body()
@@ -644,8 +655,7 @@ _M.__get_values_request_body_scalars = function()
             end
         end
     end
-    local content_length_header = kong.request.get_header("content-length")
-    if content_length_header and tonumber(content_length_header) > 0 then
+    if request_has_body() then
         local request_body = request_get_raw_body()
         if not request_body then
             local body_file = ngx_req_get_body_file()
@@ -1065,7 +1075,7 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
     -- Body presence, resolved once: Content-Length > 0 mirrors the body
     -- parser's gate, so a _needs_body rule skipped here is behaviour-identical
     -- to letting it resolve an empty values-table and bail.
-    local has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
+    local has_body = request_has_body()
 
     -- ctl:ruleEngine=Off short-circuit: a previously-applied control
     -- in this same evaluator pass could have flipped this on. Respect
@@ -1144,7 +1154,7 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
         -- parser's own gate (`__get_values_request_body`), so skipping such a
         -- rule here is behaviour-identical to letting it resolve an empty
         -- values-table and bail (CRS regression empty-diff confirmed).
-        local has_body = (tonumber(kong.request.get_header("content-length")) or 0) > 0
+        local has_body = request_has_body()
 
         -- Per-service CRS ruleset-type switches (coreruleset_rulesets): a set of
         -- disabled category codes for THIS service, or nil when all enabled
@@ -4304,16 +4314,15 @@ _M.get_inspection_table = function(self, plugin_conf)
         -- if not request_body, but content-length is set, then try to use ngx.req.get_body_file
         -- ngx.req.get_body_file: Retrieves the file name for the in-file request body data. Returns nil if the request body has not been read or has been read into memory.
         if not request_body then
-            local content_length = request_get_headers()["content-length"]
-            if content_length then
-                local body_file = ngx_req_get_body_file()
-                if body_file then
-                    debug("-> Reading request body from file")
-                    local file = io.open(body_file, "r")
-                    if file then
-                        request_body = file:read("*a")
-                        file:close()
-                    end
+            -- body buffered to disk (large body, incl. large chunked with no
+            -- Content-Length): read it from the temp file so it's still inspected.
+            local body_file = ngx_req_get_body_file()
+            if body_file then
+                debug("-> Reading request body from file")
+                local file = io.open(body_file, "r")
+                if file then
+                    request_body = file:read("*a")
+                    file:close()
                 end
             end
         end
@@ -5213,18 +5222,15 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
         -- sanitisation currently covers urlencoded only.
         elseif string_match(mp.matched_on, '^request%.body') then
             local body = request_get_raw_body()
-            -- if not body, but content-length is set, then try to use ngx.req.get_body_file
-            -- ngx.req.get_body_file: Retrieves the file name for the in-file request body data. Returns nil if the request body has not been read or has been read into memory.
+            -- body buffered to disk (large body, incl. large chunked): read it
+            -- from the temp file so the sanitiser still sees it.
             if not body then
-                local content_length = request_get_headers()["content-length"]
-                if content_length then
-                    local body_file = ngx_req_get_body_file()
-                    if body_file then
-                        local file = io.open(body_file, "r")
-                        if file then
-                            body = file:read("*a")
-                            file:close()
-                        end
+                local body_file = ngx_req_get_body_file()
+                if body_file then
+                    local file = io.open(body_file, "r")
+                    if file then
+                        body = file:read("*a")
+                        file:close()
                     end
                 end
             end
