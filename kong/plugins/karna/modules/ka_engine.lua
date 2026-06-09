@@ -603,6 +603,26 @@ _M.__get_values_request_body = function(try_b64)
                 if mp_err then
                     result_err = mp_err
                 end
+            elseif request_body_type == "text" then
+                -- Content-sniff bodies that arrived without a structured
+                -- content-type (header absent, or a non-structured type like
+                -- text/plain). A lax upstream may parse a JSON payload
+                -- regardless of the declared content-type, so an attacker can
+                -- hide a structured-arg attack behind text/plain (or no
+                -- content-type at all) to skip ARGS inspection — a WAF bypass
+                -- of the same shape as the content-type case-sensitivity one.
+                -- If the raw body is well-formed JSON, fold it into ARGS
+                -- exactly like the json content-type path does. urlencoded is
+                -- intentionally NOT sniffed: the `a=b&c=d` shape is too weak a
+                -- signal and would fold arbitrary prose into ARGS.
+                local first = string_match(request_body, "^%s*(.)")
+                if first == "{" or first == "[" then
+                    local json_flattened = body_parser:json("request.body.json", request_body, try_b64)
+                    if json_flattened then
+                        flatten_into(values, json_flattened)
+                        result_values = values
+                    end
+                end
             end
         end
     end

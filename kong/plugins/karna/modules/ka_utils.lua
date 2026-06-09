@@ -106,6 +106,11 @@ _M.request_body_parser_type = function(self)
     local content_type = request_get_header("content-type")
 
     if content_type then
+        -- HTTP content-type is case-insensitive: lowercase before matching so
+        -- e.g. "application/JSON" or "APPLICATION/X-WWW-FORM-URLENCODED" parse
+        -- as their real type instead of falling through to raw "text" (which
+        -- let structured-arg attacks skip inspection — WAF bypass).
+        content_type = content_type:lower()
         if string.match(content_type, "json") then
             request_body_type = "json"
         end

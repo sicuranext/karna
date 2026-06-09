@@ -16,6 +16,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the upstream. Body presence is now derived from `Content-Length` OR
   `Transfer-Encoding`, and the buffered-to-disk path no longer requires
   `Content-Length`. Reported externally; reproduced and fixed.
+- Fixed two more request-body inspection bypasses of the same shape, found while
+  auditing the chunked fix. The body-parser dispatch matched the `Content-Type`
+  header case-sensitively, so `application/JSON` or
+  `APPLICATION/X-WWW-FORM-URLENCODED` fell through to the raw "text" path and
+  the structured arguments were never inspected; the header is now lowercased
+  before matching, per its case-insensitive definition. Separately, a JSON body
+  sent with `text/plain` or with no `Content-Type` at all also fell through to
+  the raw path, so a lax upstream that parses it as JSON anyway would process an
+  attack that the WAF had skipped; bodies without a structured content-type are
+  now content-sniffed and, when they are well-formed JSON, inspected as JSON
+  (matched arguments fold into ARGS exactly like the declared-JSON path).
 - Hardened CI and the build supply chain: pinned every GitHub Action, the Docker
   base image, libinjection, and the CRS tarball by commit SHA / digest / sha256;
   added least-privilege `permissions: contents: read`, per-job timeouts, and a
