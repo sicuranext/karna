@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-09
+
 ### Security
 
 - Fixed a request-body inspection bypass with `Transfer-Encoding: chunked`. A
@@ -100,5 +102,6 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/sicuranext/karna/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/sicuranext/karna/releases/tag/v1.0.0
