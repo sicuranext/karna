@@ -7,6 +7,16 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- Wired the `@validateUrlEncoding` and `@validateUtf8Encoding` operators into
+  the SecLang parser. The engine already implemented both, but the parser's
+  operator map was missing them, so any rule using them (CRS 920220 / 920250,
+  in the default-off 920 protocol-enforcement family) loaded with a nil
+  operator and silently never matched. No effect on the default configuration;
+  enabling the 920 family now actually enforces these checks. Found during a
+  white-box bypass audit.
+
 ## [1.1.1] - 2026-06-09
 
 ### Security

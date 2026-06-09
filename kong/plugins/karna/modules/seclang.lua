@@ -514,6 +514,16 @@ function seclang.__operator(op_line)
         op_translated = "le"
     elseif op == "@validateByteRange" then
         op_translated = "validateByteRange"
+    elseif op == "@validateUrlEncoding" then
+        -- Engine implements this operator (run_operator dispatch), but the
+        -- SecLang map was missing it, so any CRS rule using it (920220 et al.,
+        -- in the default-off 920 family) loaded with a nil operator and silently
+        -- never matched. Wire it through so enabling 920 actually enforces it.
+        op_translated = "validateUrlEncoding"
+    elseif op == "@validateUtf8Encoding" then
+        -- Same as above for 920250 (UTF-8 validity). Engine implements it; the
+        -- map was missing it.
+        op_translated = "validateUtf8Encoding"
     else
         --print("----------> Unknown operator: " .. op)
         return
