@@ -7,6 +7,22 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-09
+
+### Security
+
+- Fixed a path-confusion inspection bypass (CVE-2024-1019 class). A payload
+  hidden in the request path — after an encoded `?` (`%3f`), e.g.
+  `/1%3f' OR '1'='1`, or inside a `;key=value` path parameter (matrix params,
+  jsessionid-style) — never entered the query string, so the ARGS-targeted
+  rules (libinjection SQLi / XSS, …) never saw it, even though a backend that
+  decodes `%3f` or parses path parameters would. That hidden path material is
+  now surfaced into ARGS and inspected, the same way a real query argument is.
+  Additive — nothing is removed from existing path inspection, and benign
+  paths (matrix params, `jsessionid`, encoded filenames) are unaffected. Found
+  while reviewing public path-confusion bypass research; verified locally with
+  CRS PL1 regression at 2757/2757.
+
 ## [1.1.0] - 2026-06-09
 
 Continues the request-body inspection bypass hunt started in 1.0.1, guided by
@@ -145,7 +161,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/sicuranext/karna/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/sicuranext/karna/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/sicuranext/karna/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/sicuranext/karna/releases/tag/v1.0.0

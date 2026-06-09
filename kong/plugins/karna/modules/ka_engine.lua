@@ -745,6 +745,35 @@ _M.__get_values_request_query_value = function(try_b64)
         return nil, err
     end
 
+    -- Phantom-query / path-confusion defence (CVE-2024-1019 class). A backend
+    -- may treat an encoded `?` (%3f) in the path as a real query separator, or
+    -- parse `;key=value` path parameters (matrix params, jsessionid-style),
+    -- so an attacker can hide a payload in the path that Kong never split into
+    -- the query string — and the ARGS-targeted rules (libinjection SQLi/XSS,
+    -- …) never see it. Surface that hidden material as extra query values so it
+    -- is inspected too. Additive: nothing is removed from existing inspection,
+    -- and each fragment is added whole (one value) so libinjection scans the
+    -- full payload even when it isn't shaped like key=value.
+    local raw_path = request_get_raw_path()
+    if raw_path then
+        local fragments = {}
+        -- everything after the first encoded `?` (%3f / %3F)
+        local after_q = string_match(raw_path, "%%3[fF](.+)$")
+        if after_q then
+            fragments[#fragments + 1] = after_q
+        end
+        -- each `;<segment>` path parameter
+        for seg in string_gmatch(raw_path, ";([^;/?]+)") do
+            fragments[#fragments + 1] = seg
+        end
+        for i = 1, #fragments do
+            local ok, decoded = pcall(ngx.unescape_uri, fragments[i])
+            if ok and decoded and decoded ~= "" then
+                values["request.query.value:__ka_path_confusion_" .. i] = decoded
+            end
+        end
+    end
+
     if kong.ctx.plugin then
         kong.ctx.plugin.query_values_cache[cache_key] = values
     end

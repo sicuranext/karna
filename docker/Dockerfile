@@ -95,11 +95,11 @@ ARG KARNA_COMMIT=unknown
 ARG KARNA_BUILD_DATE=unknown
 
 COPY kong/ /tmp/karna/kong/
-COPY kong-plugin-karna-1.1.0-0.rockspec /tmp/karna/
+COPY kong-plugin-karna-1.1.1-0.rockspec /tmp/karna/
 RUN set -eux; \
     cd /tmp/karna; \
     short="$(printf '%s' "$KARNA_COMMIT" | cut -c1-7)"; \
-    printf 'return {\n  version      = "1.1.0",\n  commit       = "%s",\n  commit_short = "%s",\n  built_at     = "%s",\n}\n' \
+    printf 'return {\n  version      = "1.1.1",\n  commit       = "%s",\n  commit_short = "%s",\n  built_at     = "%s",\n}\n' \
         "$KARNA_COMMIT" "$short" "$KARNA_BUILD_DATE" > kong/plugins/karna/version.lua; \
     luarocks make; \
     cd /; \
