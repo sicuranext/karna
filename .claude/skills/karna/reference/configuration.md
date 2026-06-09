@@ -27,6 +27,7 @@ Not toggleable: anomaly scoring (949/959/980), response rules (95x), init (901),
 - `check_invalid_chars_in_path` (bool, `false`) + `limit_invalid_chars_in_path` (num, `1`) — **gate**.
 - `request_headers_denied` (array; default content-encoding/proxy/lock-token/content-range/if) — **gate**.
 - `request_content_type_allowed` (array) / `request_content_type_charset_allowed` (array; utf-8/iso-8859-1/iso-8859-15/windows-1252) — **gate**.
+- `request_content_type_enforce` (bool, `true`) — **gate**. A body-bearing request must declare a `Content-Type` present in `request_content_type_allowed`; bodies with no/unknown CT (text/plain, octet-stream, image/*, …) can't be parsed into args, so they're blocked by default ("deny what you can't inspect"). Set `false` to accept arbitrary body content types.
 - `limit_arg_num` (num, `255`) — **gate** (DoS protection against rules×args blow-up).
 - `limit_arg_name_length` (num, `100`), `limit_arg_value_length` (num, `400`), `total_arg_value_length` (num, `64000`).
 - `restricted_extensions` (array) — blocked path extensions, aligned with CRS `tx.restricted_extensions`.

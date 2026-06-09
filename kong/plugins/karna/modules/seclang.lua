@@ -347,7 +347,15 @@ function seclang.__variables_to_conditions(variables)
                     if variable_arg == "//@*" then
                         table.insert(variable_list, "request.body.xml.attr.value")
                     else
+                        -- `/*` (and any other xpath): scan element values AND
+                        -- attribute values. Attribute values are a real
+                        -- injection surface — scanning only element text let an
+                        -- attacker hide SQLi/XSS in an attribute (`<x q="..."/>`)
+                        -- and skip inspection (WAF bypass). Element/attribute
+                        -- NAMES are intentionally NOT added: folding names into
+                        -- the scan is the 944120-class false-positive vector.
                         table.insert(variable_list, "request.body.xml.value")
+                        table.insert(variable_list, "request.body.xml.attr.value")
                     end
                 else
                     local vname = seclang.__get_variable_name(variable_name)

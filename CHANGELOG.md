@@ -7,6 +7,49 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-09
+
+Continues the request-body inspection bypass hunt started in 1.0.1, guided by
+public WAF-bypass research on parser discrepancies. Closes the remaining
+content-type and structured-body evasion classes.
+
+### Security
+
+- Block body-bearing requests Karna cannot inspect. A request body with no
+  `Content-Type`, or one that maps to the raw "text" fallback (`text/plain`,
+  `application/octet-stream`, `image/*`, `application/foo`, …), was never
+  flattened into arguments, so a structured attack smuggled inside it skipped
+  the rule engine entirely. A body's base `Content-Type` must now be present and
+  in `request_content_type_allowed`, else the request is blocked. "Deny what you
+  can't inspect."
+- Block structured bodies that fail to parse. A body declared as JSON but
+  carrying a lone NUL byte, trailing junk after the object, a duplicate key, or
+  a truncated object — and a body declared as XML with a raw `<` inside an
+  attribute value — could not be parsed, so it slipped past every rule with an
+  empty argument set. These parser-discrepancy evasions (different parser on the
+  WAF vs the backend) are now rejected by the always-on body-parser gate, the
+  same way malformed multipart already was.
+- Inspect XML attribute values. Attack rules targeting `XML:/*` only scanned
+  element text, so SQLi / XSS hidden in an XML *attribute*
+  (`<x q="1' OR '1'='1"/>`) was never inspected. `XML:/*` now scans element
+  values and attribute values (names are still excluded — folding names in is
+  the 944120-class false-positive vector).
+
+### Added
+
+- `request_content_type_enforce` (boolean, default `true`) — the toggle for the
+  uninspectable-body gate above. Set it `false` to restore the permissive
+  behaviour for deployments that legitimately accept arbitrary body content
+  types.
+
+### Changed
+
+- Default behaviour change: requests carrying a body with a missing or
+  non-allow-listed `Content-Type` are now blocked by default. Review
+  `request_content_type_allowed` (or set `request_content_type_enforce=false`)
+  if your services accept `text/plain`, `application/octet-stream`, or other
+  unparsed body types.
+
 ## [1.0.1] - 2026-06-09
 
 ### Security
@@ -102,6 +145,7 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/sicuranext/karna/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/sicuranext/karna/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/sicuranext/karna/releases/tag/v1.0.0

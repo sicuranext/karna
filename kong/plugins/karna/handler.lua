@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.0.1",
+  VERSION = "1.1.0",
 }
 
 local ngx                 = ngx
@@ -771,6 +771,11 @@ function plugin:access(plugin_conf)
 
   -- check if content-type charset is allowed
   engine:check_request_content_type_charset(plugin_conf)
+
+  -- block body-bearing requests whose content-type Karna cannot parse into
+  -- ARGS (no content-type / text/plain / octet-stream / …) — closes the
+  -- uninspectable-body bypass class. Gated by request_content_type_enforce.
+  engine:check_request_content_type_enforce(plugin_conf)
 
   -- pre-validate request body parser (multipart hardening flags reject
   -- malformed payloads upstream of rule evaluation; without this gate

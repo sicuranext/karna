@@ -582,9 +582,15 @@ _M.__get_values_request_body = function(try_b64)
                 -- previously the parser was called and its return value
                 -- discarded, so rules targeting XML attribute / element
                 -- content never saw the data.
-                local xml_flattened = body_parser:xml("request.body.xml", request_body)
+                local xml_flattened, xml_err = body_parser:xml("request.body.xml", request_body)
                 flatten_into(values, xml_flattened)
                 result_values = values
+                if xml_err then
+                    -- malformed XML: surface to check_request_body_parser so a
+                    -- broken-structure body (attack hidden in unparseable XML)
+                    -- is blocked rather than slipping through with empty values.
+                    result_err = xml_err
+                end
             elseif request_body_type == "urlencoded" then
                 local urlencoded_flattened = body_parser:urlencoded("request.body.urlencode", request_body, try_b64)
                 flatten_into(values, urlencoded_flattened)
@@ -3411,7 +3417,18 @@ end
 -- Eager parse means the cost is paid once; subsequent lazy body lookups
 -- inside rule evaluation hit kong.ctx.plugin.body_values_cache.
 _M.check_request_body_parser = function(self, plugin_conf)
-    if utils:request_body_parser_type() ~= "multipart" then
+    -- multipart hardening rejects malformed parts; the JSON parser rejects
+    -- bodies that aren't well-formed JSON (lone NUL bytes, trailing junk after
+    -- the object, duplicate keys — all parser-discrepancy evasion vectors). In
+    -- both cases the declared structure could not be parsed, so the body was
+    -- never flattened into ARGS and an attack hidden inside it would skip
+    -- inspection. XML is the same: slaxml throws on genuinely broken structure
+    -- (a raw `<` inside an attribute value, which conformant backends reject).
+    -- "Deny what you can't inspect": when a body declared as multipart, JSON or
+    -- XML fails to parse, block it (same as the always-on content-type and
+    -- multipart gates).
+    local body_type = utils:request_body_parser_type()
+    if body_type ~= "multipart" and body_type ~= "json" and body_type ~= "xml" then
         return
     end
     local _values, err = self.__get_values_request_body(plugin_conf.try_bas64decode_if_possible)
@@ -3423,14 +3440,14 @@ _M.check_request_body_parser = function(self, plugin_conf)
             id = "request_body_parser_violation",
             log = true,
             logdata = "",
-            message = "Multipart parser rejected request: " .. tostring(err),
+            message = "Request body parser rejected request (" .. body_type .. "): " .. tostring(err),
             phase = "access",
-            tags = { "karna", "access", "paranoia-level/1", "body-parser/multipart" },
+            tags = { "karna", "access", "paranoia-level/1", "body-parser/" .. body_type },
             response_status_override = 403
         },
         part = {
             {
-                matched_on = "request.body.multipart",
+                matched_on = "request.body." .. body_type,
                 matched_value = tostring(err)
             }
         }
@@ -5802,6 +5819,86 @@ _M.check_request_content_type_charset = function(self, plugin_conf)
                     )
                 end
             end
+        end
+    end
+end
+
+-- Block body-bearing requests whose Content-Type Karna cannot structurally
+-- parse. A body with no Content-Type, or one that maps to the raw "text"
+-- fallback (text/plain, application/octet-stream, image/*, application/foo,
+-- …), is never flattened into ARGS, so a structured attack smuggled inside it
+-- would skip inspection — the same bypass class as the Content-Type
+-- case-sensitivity and Transfer-Encoding: chunked issues. "Deny what you can't
+-- inspect": require a body's base Content-Type (parameters stripped) to be in
+-- request_content_type_allowed, else block. Gated by
+-- request_content_type_enforce (default true); set it false to restore the
+-- permissive behaviour. Bodyless requests (GET, empty body) are never blocked.
+_M.check_request_content_type_enforce = function(self, plugin_conf)
+    if plugin_conf.request_content_type_enforce == false then
+        return
+    end
+
+    -- Only bodies are subject to this gate. request_has_body() keys off
+    -- Content-Length OR Transfer-Encoding, so a chunked body with no
+    -- Content-Length is still caught.
+    if not request_has_body() then
+        return
+    end
+
+    local request_content_type = request_get_header("content-type")
+    -- Base type only: strip parameters (";charset=…", ";boundary=…") and
+    -- leading whitespace, lowercase. HTTP content-type is case-insensitive and
+    -- multipart always carries a boundary parameter. [^;%s]+ stops at the
+    -- first space or semicolon, so the base type comes out clean.
+    local base
+    if request_content_type then
+        base = string_match(request_content_type:lower(), "^%s*([^;%s]+)")
+    end
+
+    local allowed = false
+    if base then
+        for _, c in pairs(plugin_conf.request_content_type_allowed) do
+            if base == c then
+                allowed = true
+                break
+            end
+        end
+    end
+
+    if not allowed then
+        local response_status_override = 200
+        if plugin_conf.engine_blocking_mode then
+            response_status_override = 403
+        end
+
+        table_insert(kong.ctx.plugin.ka_matched_rules, {
+            rule = {
+                id = "check_request_content_type_enforce",
+                log = true,
+                logdata = "",
+                message = "Request body Content-Type not allowed (uninspectable body blocked)",
+                phase = "access",
+                tags = { "karna", "access", "paranoia-level/1" },
+                response_status_override = response_status_override
+            },
+            part = {
+                {
+                    matched_on = "request.header.value:content-type",
+                    matched_value = request_content_type or "(missing)"
+                }
+            }
+        })
+
+        if plugin_conf.engine_blocking_mode then
+            return kong.response.exit(
+                403,
+                "Request body Content-Type not allowed",
+                {
+                    ["content-type"] = "text/plain",
+                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+                    ["x-karna-rule-id"] = "check_request_content_type_enforce"
+                }
+            )
         end
     end
 end

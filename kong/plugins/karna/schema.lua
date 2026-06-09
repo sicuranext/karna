@@ -130,6 +130,19 @@ local schema = {
           -- |application/x-www-form-urlencoded| |multipart/form-data| |multipart/related| |text/xml| |application/xml| |application/soap+xml| |application/json| |application/cloudevents+json| |application/cloudevents-batch+json|
           { request_content_type_allowed = { type = "array", elements = { type = "string" }, default = { "application/x-www-form-urlencoded", "multipart/form-data", "multipart/related", "text/xml", "application/xml", "application/soap+xml", "application/json", "application/cloudevents+json", "application/cloudevents-batch+json" } } },
 
+          -- request_content_type_enforce (default: true)
+          -- When a request carries a non-empty body, require its
+          -- Content-Type to be present and its base type (parameters
+          -- stripped) to appear in request_content_type_allowed. A body
+          -- with no Content-Type, or one Karna cannot structurally parse
+          -- (text/plain, application/octet-stream, image/*, …) cannot be
+          -- flattened into ARGS, so an attack smuggled inside it would skip
+          -- inspection — a WAF bypass. "Deny what you can't inspect": block
+          -- such bodies by default. Set false to restore the permissive
+          -- behaviour for deployments that legitimately accept arbitrary
+          -- body content types.
+          { request_content_type_enforce = { type = "boolean", default = true } },
+
           -- arg_name_length (limit_arg_name_length)
           -- default: 100
           { limit_arg_name_length = { type = "number", default = 100 } },

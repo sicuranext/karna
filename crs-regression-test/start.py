@@ -627,6 +627,7 @@ def send_request(test, rule_id):
                             # `uri_path_check_violation`,
                             # `check_request_headers_allowed`,
                             # `check_request_content_type_charset`,
+                            # `check_request_content_type_enforce`,
                             # `check_arg_len`,
                             # `request_body_parser_violation`) are
                             # carried in the `x-karna-rule-id`

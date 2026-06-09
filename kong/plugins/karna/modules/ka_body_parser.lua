@@ -611,10 +611,17 @@ _M.xml = function(self, prefix, raw_body, try_base64decode_if_possible)
 
     --parser:parse(raw_body,{stripWhitespace=true})
 
-    if pcall(function() parser:parse(raw_body,{stripWhitespace=true}) end) then
+    local parse_ok = pcall(function() parser:parse(raw_body,{stripWhitespace=true}) end)
+    if parse_ok then
         self.debug("XML: parsing successful")
     else
+        -- Malformed XML declared as application/xml. slaxml only throws on
+        -- genuinely broken structure (e.g. a raw `<` inside an attribute
+        -- value, which conformant backends reject too). Surface it as an
+        -- error so check_request_body_parser can block — same "deny what you
+        -- can't inspect" treatment as malformed JSON / multipart.
         self.debug("XML: parsing failed")
+        return values, "xml parsing failed"
     end
 
     self.inspect(values)

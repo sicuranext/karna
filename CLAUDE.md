@@ -95,9 +95,21 @@ loops, and they fire regardless of `coreruleset_enabled` /
 - `engine:uri_path_check_violation(plugin_conf)` — special-char / invalid-char limits in path
 - `engine:check_request_headers_allowed(plugin_conf)` — vs `request_headers_denied`
 - `engine:check_request_content_type_charset(plugin_conf)` — vs `request_content_type_*`
+- `engine:check_request_body_parser(plugin_conf)` — blocks a body whose declared structured type (multipart / JSON / XML) fails to parse. Malformed structure (multipart hardening rejections, JSON with lone NUL / trailing junk / duplicate keys, XML with a raw `<` in an attribute) means the body was never flattened into ARGS, so an attack hidden in it would skip inspection. "Deny what you can't inspect."
+
+A fifth gate, `engine:check_request_content_type_enforce(plugin_conf)`,
+runs in the same pre-rule block but IS toggle-gated by
+`request_content_type_enforce` (default `true`): a body-bearing request
+must declare a `Content-Type` whose base type is in
+`request_content_type_allowed`, else it's blocked. This is the
+"uninspectable body" gate — it closes the text/plain & missing-CT body
+bypass class (the body would otherwise fall to the raw "text" path and
+never reach ARGS). Set the flag `false` for deployments that legitimately
+accept arbitrary body content types.
 
 Treat these as hard limits — they cannot be turned off short of removing
-the plugin. To loosen them, raise the relevant numeric limits or
+the plugin (except `check_request_content_type_enforce`, which honours its
+flag). To loosen them, raise the relevant numeric limits or
 allow-lists (`limit_special_chars_in_path`, `request_methods_allowed`,
 …). When debugging "why was this blocked with all toggles off?", these
 are usually the answer.
