@@ -7,6 +7,39 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- Fixed a body-parser content-type desync bypass. `request_body_parser_type`
+  selected the parser with a case-insensitive *substring* match over the whole
+  `Content-Type` header, using sequential `if` blocks where the last match won.
+  A parser keyword smuggled into a parameter — e.g.
+  `application/json;charset=myxml` — matched "json" and then "xml" (inside
+  "myxml"), so Karna XML-parsed a JSON body while a backend read the base type
+  `application/json` and parsed it as JSON. The parser desync left the
+  arguments un-flattened, so a body attack (SQLi/XSS/…) skipped the rule
+  engine. On current code the exact payload was already blocked by the
+  always-on "deny what you can't inspect" body-parser gate (the misparse
+  errors out → 403), but the misclassification itself remained: it could
+  misroute legitimate bodies (false-positive 403s) and still desync via a
+  parser that never errors (urlencoded). Classification now keys off the base
+  media type only (the token before the first `;`/space), mirroring
+  `check_request_content_type_enforce`, with `elseif` ordering instead of
+  last-match-wins. Structured subtype suffixes (`+json`, `+xml`) are still
+  honoured. Reported by Davide Virruso (z3er01 @ zeronvll).
+- Deny XML-declared bodies that contain no XML elements. The SAX parser
+  (slaxml) accepts a tag-less payload — a JSON or plain-text body with no
+  `<...>` element — as a "successful" parse of an empty document: zero
+  elements, no error. The body-parser gate keys off a parse *error*, so such a
+  body slipped through with an empty argument set and was never inspected,
+  while a lenient backend (e.g. one that force-parses the body as JSON
+  regardless of `Content-Type`) still acted on it. A request with a valid
+  `Content-Type: application/xml` / `text/xml` and a JSON SQLi body was a full
+  bypass even after the content-type classification fix above. A non-whitespace
+  body declared as XML that yields no element is now treated as a parse failure
+  and blocked by the always-on body-parser gate. Genuine XML (including
+  attribute-only and self-closing elements) and empty/whitespace bodies are
+  unaffected. Verified with CRS PL1 regression at 2757/2757. Same report.
+
 ### Fixed
 
 - Wired the `@validateUrlEncoding` and `@validateUtf8Encoding` operators into
