@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-06-10
+
 ### Security
 
 - Inspect top-level JSON scalar request bodies. A body that decodes to a bare
@@ -219,7 +221,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.3...HEAD
+[1.1.3]: https://github.com/sicuranext/karna/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/sicuranext/karna/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/sicuranext/karna/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/sicuranext/karna/compare/v1.0.1...v1.1.0
