@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-06-10
+
 ### Security
 
 - Fixed a body-parser content-type desync bypass. `request_body_parser_type`
@@ -17,11 +19,11 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   "myxml"), so Karna XML-parsed a JSON body while a backend read the base type
   `application/json` and parsed it as JSON. The parser desync left the
   arguments un-flattened, so a body attack (SQLi/XSS/…) skipped the rule
-  engine. On current code the exact payload was already blocked by the
-  always-on "deny what you can't inspect" body-parser gate (the misparse
-  errors out → 403), but the misclassification itself remained: it could
-  misroute legitimate bodies (false-positive 403s) and still desync via a
-  parser that never errors (urlencoded). Classification now keys off the base
+  engine. Combined with the XML empty-parse gap fixed below, the misclassified
+  body reached the backend uninspected — a working bypass at every paranoia
+  level. The selector fix also stops a keyword inside a parameter from
+  misrouting a legitimate body, and closes a related desync via a parser that
+  never errors (urlencoded). Classification now keys off the base
   media type only (the token before the first `;`/space), mirroring
   `check_request_content_type_enforce`, with `elseif` ordering instead of
   last-match-wins. Structured subtype suffixes (`+json`, `+xml`) are still
@@ -204,7 +206,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/sicuranext/karna/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/sicuranext/karna/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/sicuranext/karna/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/sicuranext/karna/compare/v1.0.0...v1.0.1

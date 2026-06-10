@@ -122,7 +122,7 @@ services:
       # RE2 spike: C source compiled to libka_re2.so at start (memory karna-re2-spike).
       - ../src:/usr/local/kong/custom-plugins/karna/src:ro
       - ../tests:/usr/local/kong/custom-plugins/karna/tests:ro
-      - ../kong-plugin-karna-1.1.1-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.1.1-0.rockspec:ro
+      - ../kong-plugin-karna-1.1.2-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.1.2-0.rockspec:ro
       - ./main-env.conf:/etc/kong/nginx/main-env.conf:ro
 
     command: >
