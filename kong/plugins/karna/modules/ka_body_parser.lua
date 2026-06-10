@@ -614,6 +614,21 @@ _M.xml = function(self, prefix, raw_body, try_base64decode_if_possible)
     local parse_ok = pcall(function() parser:parse(raw_body,{stripWhitespace=true}) end)
     if parse_ok then
         self.debug("XML: parsing successful")
+        -- slaxml accepts a tag-less body (a JSON or plain-text payload with no
+        -- `<...>` element) as a "successful" parse of an empty document: it
+        -- opens zero elements and raises no error. That body yields an empty
+        -- argument set, so an attack hidden in it skips the rule engine — yet
+        -- a lenient backend (e.g. one that force-parses the body as JSON
+        -- regardless of Content-Type) still acts on it. That is the exact
+        -- parser desync the body-parser gate exists to stop. Treat a
+        -- non-whitespace body that produced no XML element as a parse failure
+        -- so check_request_body_parser blocks it — "deny what you can't
+        -- inspect". Whitespace-only / empty bodies carry no attack surface and
+        -- are left alone (slaxml already errors on a truly empty body).
+        if number_of_opened_elements == 0 and string_match(raw_body, "%S") then
+            self.debug("XML: parsed but found no elements — treating as unparseable")
+            return values, "xml parsing produced no elements"
+        end
     else
         -- Malformed XML declared as application/xml. slaxml only throws on
         -- genuinely broken structure (e.g. a raw `<` inside an attribute

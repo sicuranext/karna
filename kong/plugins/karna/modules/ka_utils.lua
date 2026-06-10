@@ -111,20 +111,33 @@ _M.request_body_parser_type = function(self)
         -- as their real type instead of falling through to raw "text" (which
         -- let structured-arg attacks skip inspection — WAF bypass).
         content_type = content_type:lower()
-        if string.match(content_type, "json") then
-            request_body_type = "json"
-        end
 
-        if string.match(content_type, "multipart") then
-            request_body_type = "multipart"
-        end
-
-        if string.match(content_type, "www%-form%-urlencoded") then
-            request_body_type = "urlencoded"
-        end
-
-        if string.match(content_type, "xml") then
-            request_body_type = "xml"
+        -- Classify on the BASE media type only — the token before the first
+        -- `;` or whitespace — NOT a substring of the whole header. Substring
+        -- matching on the full value let a parser keyword smuggled into a
+        -- parameter reclassify the body: with sequential `if` blocks the LAST
+        -- match won, so `application/json;charset=myxml` matched "json" and
+        -- then "xml" (inside "myxml") and was XML-parsed. The XML parser
+        -- choked on the JSON body while the backend read base type
+        -- `application/json` and parsed it as JSON — a parser desync that
+        -- skipped argument inspection (body-parser bypass). Extracting the
+        -- base type mirrors check_request_content_type_enforce, and `elseif`
+        -- removes the "last match wins" footgun. Permissive structured
+        -- subtype suffixes (`+json`, `+xml`) are still honoured so
+        -- application/cloudevents+json, application/soap+xml et al. classify
+        -- correctly.
+        local base = string.match(content_type, "^%s*([^;%s]+)")
+        if base then
+            if base == "application/json" or string.match(base, "%+json$") then
+                request_body_type = "json"
+            elseif base == "text/xml" or base == "application/xml"
+                   or string.match(base, "%+xml$") then
+                request_body_type = "xml"
+            elseif base == "application/x-www-form-urlencoded" then
+                request_body_type = "urlencoded"
+            elseif string.match(base, "^multipart/") then
+                request_body_type = "multipart"
+            end
         end
     end
 
