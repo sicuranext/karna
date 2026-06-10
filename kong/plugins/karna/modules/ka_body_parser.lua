@@ -278,6 +278,15 @@ _M.json = function(self, prefix, raw_json, try_base64decode_if_possible)
             end
         else
             flatTable[parentKey] = t
+            -- Top-level JSON scalar (body is a bare `"..."`, number, or bool,
+            -- e.g. `"' OR '1'='1"`): there is no object/array to flatten, so
+            -- the value never reached ARGS and slipped past the rule engine —
+            -- while a lenient backend that re-parses the body as form data acts
+            -- on it (terjanq JSON content-type-confusion bypass). The body
+            -- parsed cleanly, so the "deny what you can't inspect" gate didn't
+            -- fire either. Surface the scalar as a single ARGS value (mirroring
+            -- the XML empty-document fix) so detection rules inspect it.
+            insert_new_value((prefix .. ".value:0"):lower(), tostring(t))
         end
 
         return true, nil

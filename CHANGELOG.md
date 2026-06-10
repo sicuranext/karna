@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- Inspect top-level JSON scalar request bodies. A body that decodes to a bare
+  JSON scalar — a string, number, or boolean (e.g. `"' OR '1'='1"`) — has no
+  object or array to flatten, so the value never reached ARGS and slipped past
+  the rule engine, while a lenient backend that re-parses the body as form data
+  still acted on it (the JSON content-type-confusion bypass from terjanq's
+  WAF-bypass write-up). The body parsed cleanly, so the always-on body-parser
+  gate didn't catch it either — the JSON twin of the XML empty-document gap
+  closed in 1.1.2. The scalar is now surfaced as a single argument value and
+  inspected like any other parameter. Benign scalar bodies (`"hello"`, `123`)
+  are unaffected. Verified with CRS PL1 regression at 2757/2757.
+
 ## [1.1.2] - 2026-06-10
 
 ### Security
