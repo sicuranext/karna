@@ -7,6 +7,22 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- Reject malformed multipart parts with no body section. A part whose boundary
+  is glued directly onto the headers terminator (`...name="x"\r\n\r\n--boundary`
+  — two CRLFs) instead of the well-formed empty-field form
+  (`...name="x"\r\n\r\n\r\n--boundary` — three CRLFs) is malformed: RFC 2046
+  delimits a part body with `CRLF--boundary`, so even an empty field carries
+  its body's trailing CRLF. A backend that honours that delimiter reads the
+  following boundary line as this part's body and swallows the next part, while
+  a line-based WAF sees an empty part — the multipart empty-part desync from
+  terjanq's WAF-bypass write-up (#3), which let an attack hidden in a file part
+  reach the backend as a regular field value. Such a body is now rejected by
+  the always-on body-parser gate (403). Legitimate empty fields (curl and
+  browsers emit the full three-CRLF form) are unaffected. Verified with CRS PL1
+  regression at 2757/2757.
+
 ## [1.1.3] - 2026-06-10
 
 ### Security

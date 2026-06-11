@@ -75,6 +75,16 @@ _M.strict_crlf = true
 -- Require the explicit closing `--<boundary>--` line. PHP accepts
 -- incomplete bodies; strict WAFs must reject. Closes Bypass #4.
 _M.require_closing_boundary = true
+-- Reject a part whose boundary is glued directly onto the headers terminator
+-- with no body section: `...name="x"\r\n\r\n--boundary` instead of the
+-- well-formed `...name="x"\r\n\r\n\r\n--boundary`. RFC 2046 delimits a part
+-- body with `CRLF--boundary`, so even an empty field carries its body's
+-- trailing CRLF — a missing one is malformed and parsed differently by the
+-- backend (which reads the following boundary line as this part's body) than
+-- by a line-based WAF (the multipart empty-part desync; terjanq WAF-bypass
+-- #3). Legitimate empty fields (curl / browsers emit the full `\r\n\r\n\r\n`
+-- form) are unaffected.
+_M.reject_bodyless_part = true
 
 _M.get_boundary = function(self, content_type)
     local m = re_match(content_type, [[;\s*boundary\s*=\s*([0-9a-zA-Z'()+_,./:=?-]+)]], "joi")
@@ -206,8 +216,19 @@ function _M.parse(self, body, content_type)
     end
 
     for i, part in ipairs(t) do
-        -- remove last \r\n from body
         t[i].boundary = boundary
+
+        -- A well-formed part body is delimited by CRLF--boundary, so the raw
+        -- collected body is never empty: even an empty field carries its
+        -- delimiter CRLF (raw body == "\r\n"). An empty raw body means the
+        -- boundary was glued straight onto the headers terminator with no body
+        -- section (or the headers were never terminated) — a malformed part
+        -- the backend and the WAF parse differently. Reject the whole body.
+        if self.reject_bodyless_part and t[i].body == "" then
+            return nil, "malformed part (no body section; boundary glued to headers) in part " .. tostring(i)
+        end
+
+        -- remove last \r\n from body
         t[i].body = t[i].body:sub(1, -3)
         t[i].content_length = #t[i].body
 
