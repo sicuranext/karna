@@ -131,20 +131,23 @@ function _M.parse(self, body, content_type)
     local boundary_start = "^%-%-" .. boundary_escaped .. ""
     local boundary_end = "^%-%-" .. boundary_escaped .. "%-%-$"
 
-    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n`; lenient backends
-    -- accept bare `\n` and split the body differently from a strict
-    -- WAF — a documented bypass class. Pre-scan once; if clean, the
-    -- `\r?\n` gmatch below is safe.
-    -- The two body-wide scans use ngx.re (PCRE, JIT-compiled + cached via the
-    -- 'jo' flags) instead of Lua `string.find` patterns: on a multi-KB body the
-    -- interpreted Lua-pattern char-class scan was ~12% of multipart request CPU
-    -- (jit.p, scn05 3x10KB); PCRE-JIT scans the same bytes ~10x faster. Same
-    -- semantics ([^\r]\n = bare LF mid-body, \r[^\n] = bare CR mid-body); the
-    -- start/end-byte edge cases stay as cheap sub() checks. CRS-regression-gated.
+    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n`; lenient backends accept a
+    -- bare `\n` and split the body differently from a strict WAF — a documented
+    -- desync class.
+    --
+    -- Bare CR (a `\r` not followed by `\n`) has no legitimate use in a form
+    -- body, so it's rejected outright with a single body-wide ngx.re scan
+    -- (PCRE, JIT-compiled + cached via the 'jo' flags — ~10x faster than the
+    -- interpreted Lua char-class scan, which was ~12% of multipart CPU on a
+    -- multi-KB body: jit.p, scn05 3x10KB).
+    --
+    -- Bare LF is NOT scanned body-wide: that rejected any uploaded text file
+    -- carrying Unix newlines (a `\n` inside opaque part content is just data,
+    -- not a desync). It's enforced inside the parse loop below instead, scoped
+    -- to the FRAMING only (boundary lines, headers, the header/body separator,
+    -- and the `\r\n` preceding every delimiter) where a bare LF really does
+    -- desync.
     if self.strict_crlf then
-        if body:sub(1, 1) == "\n" or re_find(body, "[^\\r]\\n", "jo") then
-            return nil, "bare LF found in body (strict CRLF required)"
-        end
         if re_find(body, "\\r[^\\n]", "jo") or body:sub(-1) == "\r" then
             return nil, "bare CR found in body (strict CRLF required)"
         end
@@ -164,7 +167,27 @@ function _M.parse(self, body, content_type)
     local start_boundary_found = false
     local end_boundary_found = false
     local part_count = 0
-    for line in body:gmatch("([^\r\n]*)\r?\n") do
+    -- prev_cr: did the previous line end in CRLF ("\r") or bare LF ("")?
+    -- first_line guards the opening boundary, which has no preceding line.
+    local prev_cr = "\r"
+    local first_line = true
+    for line, cr in body:gmatch("([^\r\n]*)(\r?)\n") do
+        -- Strict CRLF, scoped to framing. A bare LF that terminates a boundary
+        -- line, a header line, the header/body separator, or the body just
+        -- before a delimiter is a desync vector (a strict backend wants
+        -- `\r\n--boundary`; a line-based parser accepts `\n--boundary`). Inside
+        -- opaque part content a bare LF is harmless, so a legit text-file
+        -- upload with Unix newlines passes.
+        if self.strict_crlf then
+            local is_bnd = line:match(boundary_start) or line:match(boundary_end)
+            local in_body = start_collecting_body
+            if is_bnd and not first_line and prev_cr ~= "\r" then
+                return nil, "bare LF before boundary delimiter (strict CRLF required on framing)"
+            end
+            if not (in_body and not is_bnd) and cr ~= "\r" then
+                return nil, "bare LF in multipart framing (strict CRLF required)"
+            end
+        end
         if line:match(boundary_end) then
             if self.debug then
                 print("> END OF MULTIPART")
@@ -204,6 +227,9 @@ function _M.parse(self, body, content_type)
             start_collecting_headers = false
             start_collecting_body = true
         end
+
+        prev_cr = cr
+        first_line = false
     end
 
     -- Gap #5: require the explicit closing `--<boundary>--` line. PHP

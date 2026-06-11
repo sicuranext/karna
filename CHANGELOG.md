@@ -7,6 +7,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop rejecting legitimate file uploads that contain Unix (LF) newlines. The
+  multipart `strict_crlf` guard scanned the entire body for a bare `\n` and
+  403'd any request whose body contained one — including the bytes of an
+  uploaded text file (CSV, JSON, logs, source code), which use `\n` line
+  endings. A bare LF inside opaque part content is just data, not a desync. The
+  bare-LF check is now scoped to the multipart framing (boundary lines, part
+  headers, the header/body separator, and the CRLF preceding every delimiter),
+  where a bare LF genuinely desyncs WAF from backend, and allowed inside part
+  content. Every bare-LF framing desync vector stays blocked and part content
+  is still inspected; bare CR remains rejected body-wide. Verified with CRS PL1
+  regression at 2757/2757.
+
 ### Security
 
 - Reject malformed multipart parts with no body section. A part whose boundary
