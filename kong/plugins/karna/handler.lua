@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.1.3",
+  VERSION = "1.1.4",
 }
 
 local ngx                 = ngx
