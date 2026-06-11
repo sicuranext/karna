@@ -75,6 +75,16 @@ _M.strict_crlf = true
 -- Require the explicit closing `--<boundary>--` line. PHP accepts
 -- incomplete bodies; strict WAFs must reject. Closes Bypass #4.
 _M.require_closing_boundary = true
+-- Reject a part whose boundary is glued directly onto the headers terminator
+-- with no body section: `...name="x"\r\n\r\n--boundary` instead of the
+-- well-formed `...name="x"\r\n\r\n\r\n--boundary`. RFC 2046 delimits a part
+-- body with `CRLF--boundary`, so even an empty field carries its body's
+-- trailing CRLF — a missing one is malformed and parsed differently by the
+-- backend (which reads the following boundary line as this part's body) than
+-- by a line-based WAF (the multipart empty-part desync; terjanq WAF-bypass
+-- #3). Legitimate empty fields (curl / browsers emit the full `\r\n\r\n\r\n`
+-- form) are unaffected.
+_M.reject_bodyless_part = true
 
 _M.get_boundary = function(self, content_type)
     local m = re_match(content_type, [[;\s*boundary\s*=\s*([0-9a-zA-Z'()+_,./:=?-]+)]], "joi")
@@ -121,20 +131,23 @@ function _M.parse(self, body, content_type)
     local boundary_start = "^%-%-" .. boundary_escaped .. ""
     local boundary_end = "^%-%-" .. boundary_escaped .. "%-%-$"
 
-    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n`; lenient backends
-    -- accept bare `\n` and split the body differently from a strict
-    -- WAF — a documented bypass class. Pre-scan once; if clean, the
-    -- `\r?\n` gmatch below is safe.
-    -- The two body-wide scans use ngx.re (PCRE, JIT-compiled + cached via the
-    -- 'jo' flags) instead of Lua `string.find` patterns: on a multi-KB body the
-    -- interpreted Lua-pattern char-class scan was ~12% of multipart request CPU
-    -- (jit.p, scn05 3x10KB); PCRE-JIT scans the same bytes ~10x faster. Same
-    -- semantics ([^\r]\n = bare LF mid-body, \r[^\n] = bare CR mid-body); the
-    -- start/end-byte edge cases stay as cheap sub() checks. CRS-regression-gated.
+    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n`; lenient backends accept a
+    -- bare `\n` and split the body differently from a strict WAF — a documented
+    -- desync class.
+    --
+    -- Bare CR (a `\r` not followed by `\n`) has no legitimate use in a form
+    -- body, so it's rejected outright with a single body-wide ngx.re scan
+    -- (PCRE, JIT-compiled + cached via the 'jo' flags — ~10x faster than the
+    -- interpreted Lua char-class scan, which was ~12% of multipart CPU on a
+    -- multi-KB body: jit.p, scn05 3x10KB).
+    --
+    -- Bare LF is NOT scanned body-wide: that rejected any uploaded text file
+    -- carrying Unix newlines (a `\n` inside opaque part content is just data,
+    -- not a desync). It's enforced inside the parse loop below instead, scoped
+    -- to the FRAMING only (boundary lines, headers, the header/body separator,
+    -- and the `\r\n` preceding every delimiter) where a bare LF really does
+    -- desync.
     if self.strict_crlf then
-        if body:sub(1, 1) == "\n" or re_find(body, "[^\\r]\\n", "jo") then
-            return nil, "bare LF found in body (strict CRLF required)"
-        end
         if re_find(body, "\\r[^\\n]", "jo") or body:sub(-1) == "\r" then
             return nil, "bare CR found in body (strict CRLF required)"
         end
@@ -154,7 +167,27 @@ function _M.parse(self, body, content_type)
     local start_boundary_found = false
     local end_boundary_found = false
     local part_count = 0
-    for line in body:gmatch("([^\r\n]*)\r?\n") do
+    -- prev_cr: did the previous line end in CRLF ("\r") or bare LF ("")?
+    -- first_line guards the opening boundary, which has no preceding line.
+    local prev_cr = "\r"
+    local first_line = true
+    for line, cr in body:gmatch("([^\r\n]*)(\r?)\n") do
+        -- Strict CRLF, scoped to framing. A bare LF that terminates a boundary
+        -- line, a header line, the header/body separator, or the body just
+        -- before a delimiter is a desync vector (a strict backend wants
+        -- `\r\n--boundary`; a line-based parser accepts `\n--boundary`). Inside
+        -- opaque part content a bare LF is harmless, so a legit text-file
+        -- upload with Unix newlines passes.
+        if self.strict_crlf then
+            local is_bnd = line:match(boundary_start) or line:match(boundary_end)
+            local in_body = start_collecting_body
+            if is_bnd and not first_line and prev_cr ~= "\r" then
+                return nil, "bare LF before boundary delimiter (strict CRLF required on framing)"
+            end
+            if not (in_body and not is_bnd) and cr ~= "\r" then
+                return nil, "bare LF in multipart framing (strict CRLF required)"
+            end
+        end
         if line:match(boundary_end) then
             if self.debug then
                 print("> END OF MULTIPART")
@@ -194,6 +227,9 @@ function _M.parse(self, body, content_type)
             start_collecting_headers = false
             start_collecting_body = true
         end
+
+        prev_cr = cr
+        first_line = false
     end
 
     -- Gap #5: require the explicit closing `--<boundary>--` line. PHP
@@ -206,8 +242,19 @@ function _M.parse(self, body, content_type)
     end
 
     for i, part in ipairs(t) do
-        -- remove last \r\n from body
         t[i].boundary = boundary
+
+        -- A well-formed part body is delimited by CRLF--boundary, so the raw
+        -- collected body is never empty: even an empty field carries its
+        -- delimiter CRLF (raw body == "\r\n"). An empty raw body means the
+        -- boundary was glued straight onto the headers terminator with no body
+        -- section (or the headers were never terminated) — a malformed part
+        -- the backend and the WAF parse differently. Reject the whole body.
+        if self.reject_bodyless_part and t[i].body == "" then
+            return nil, "malformed part (no body section; boundary glued to headers) in part " .. tostring(i)
+        end
+
+        -- remove last \r\n from body
         t[i].body = t[i].body:sub(1, -3)
         t[i].content_length = #t[i].body
 
