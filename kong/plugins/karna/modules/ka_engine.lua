@@ -5216,6 +5216,61 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
         s = string_gsub(s, "\\", "")
         return (string_gsub(s, rule.action.fix_matched_parts.remove_chars_pattern, ""))
     end
+
+    -- JSON body: sanitise per-field, like urlencoded. Parse once, clean only
+    -- the matched field's value in place, re-serialise at the end. The old code
+    -- raw-stripped the whole JSON body, which deleted structural characters
+    -- (every `"`, etc.) and handed the upstream malformed JSON, corrupting the
+    -- other, legitimate fields and breaking the document (reported by BackBox
+    -- AI, https://backbox.dev). json_body: nil = not tried, false = parse
+    -- failed (fall back to the raw-strip).
+    local json_body
+    local json_dirty = false
+    -- Walk the flattened key path (e.g. "user.name", "items.1.x") to the matched
+    -- leaf and clean its string value. Returns true only on a clean per-field
+    -- edit; false tells the caller to fall back to the raw-strip (a key that
+    -- itself contains dots, or other ambiguous shapes, can't be resolved from
+    -- the flattened path — the attack is still neutralised by the fallback).
+    local function _json_clean_field(path)
+        if type(json_body) ~= "table" then return false end
+        local function clean_leaf(node, key)
+            if type(node[key]) == "string" then node[key] = _ue_clean(node[key]); return true end
+            return false
+        end
+        -- Whole path as a single top-level key first (handles a top-level key
+        -- that itself contains dots).
+        if json_body[path] ~= nil and clean_leaf(json_body, path) then return true end
+        local segs = {}
+        for s in string_gmatch(path, "[^.]+") do segs[#segs + 1] = s end
+        if #segs == 0 then return false end
+        local node = json_body
+        for i = 1, #segs - 1 do
+            local nxt = node[segs[i]]
+            if nxt == nil then
+                local nk = tonumber(segs[i])
+                if nk ~= nil then nxt = node[nk] end
+            end
+            if type(nxt) ~= "table" then return false end
+            node = nxt
+        end
+        local leaf = segs[#segs]
+        if node[leaf] ~= nil then return clean_leaf(node, leaf) end
+        local n = tonumber(leaf)
+        if n ~= nil and node[n] ~= nil then return clean_leaf(node, n) end
+        return false
+    end
+    local function _try_json_field(path)
+        if json_body == nil then
+            local raw = request_get_raw_body()
+            json_body = (raw and cjson_safe.decode(raw)) or false
+        end
+        if _json_clean_field(path) then
+            json_dirty = true
+            return true
+        end
+        return false
+    end
+
     for _,mp in pairs(matched_parts) do
         --inspect(mp)
 
@@ -5268,6 +5323,7 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
         -- which includes the name key, and pairs() order is non-deterministic,
         -- so matched_on can be either. Either way the target field is the same.
         local ub = string_match(mp.matched_on, '^request%.body%.urlencode%.[^:]+:(.+)$')
+        local jb = string_match(mp.matched_on, '^request%.body%.json%.value%:(.+)$')
         if ub then
             if ue_body == nil then
                 ue_body = kong.request.get_body("application/x-www-form-urlencoded") or false
@@ -5286,6 +5342,12 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
         -- generic body (scalar request.body, or json / multipart / xml):
         -- raw-string strip on the whole body. Structured per-field
         -- sanitisation currently covers urlencoded only.
+        -- JSON body field: clean only the matched field's value and re-serialise
+        -- (below), so the rest of the document survives. Falls through to the
+        -- raw-strip if the field can't be resolved from the flattened path.
+        elseif jb and _try_json_field(jb) then
+            debug("Fixing matched part (json per-field): " .. mp.matched_on)
+
         elseif string_match(mp.matched_on, '^request%.body') then
             local body = request_get_raw_body()
             -- body buffered to disk (large body, incl. large chunked): read it
@@ -5314,6 +5376,15 @@ _M.__fix_matching_parts = function(self, rule, matched_parts)
     -- write winning when several form fields matched).
     if ue_dirty and type(ue_body) == "table" then
         kong.service.request.set_body(ue_body, "application/x-www-form-urlencoded")
+    end
+    -- One re-serialise for all sanitized JSON fields, preserving structure.
+    if json_dirty and type(json_body) == "table" then
+        local encoded = cjson_safe.encode(json_body)
+        if encoded then
+            kong.service.request.set_raw_body(encoded)
+        else
+            debug("json re-encode failed after sanitise; body left unmodified")
+        end
     end
 end
 

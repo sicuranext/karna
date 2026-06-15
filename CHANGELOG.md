@@ -7,6 +7,30 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- Cap XML nesting depth to stop a quadratic-parser DoS. The XML body flatten
+  rebuilds the element path string on every open and close, and the path grows
+  with depth, so a deeply-nested document costs O(depth²): a ~56 KB body
+  (8000 levels) burned ~2.6s of worker CPU, and the request-argument DoS gate
+  never caught it (XML keys aren't shaped like ARGS). Nesting beyond 256 levels
+  — far past any SOAP / SAML / config document — now aborts the parse from
+  inside the SAX callback, so the always-on body-parser gate rejects the
+  request (403) in a few milliseconds instead of grinding. Genuine shallow XML
+  is unaffected. Reported by BackBox AI (https://backbox.dev).
+
+### Fixed
+
+- Sanitise JSON request bodies per-field instead of mangling the whole
+  document. The `fix_matched_parts` action ("sanitize-not-block") raw-stripped
+  the entire body for a JSON match, deleting every structural `"` and
+  unconditionally removing `%` / `\`, which corrupted unrelated, legitimate
+  fields and handed the upstream malformed JSON. It now parses the body, cleans
+  only the matched field's value in place, and re-serialises — so the structure
+  and the other fields survive. Unresolvable key paths fall back to the prior
+  raw-strip (the attack is still neutralised). Reported by BackBox AI
+  (https://backbox.dev).
+
 ## [1.1.4] - 2026-06-11
 
 ### Fixed
