@@ -486,12 +486,32 @@ _M.xml = function(self, prefix, raw_body, try_base64decode_if_possible)
     local prefix_path_attr_name = "request.body.xml.attr.name.%NOOE%:"
     local root_element = true
     local number_of_opened_elements = 0
+    -- Cap XML nesting depth. The flatten rebuilds the element path string on
+    -- every open/close (replace_nooe on startElement, the gsub on
+    -- closeElement), and the path length grows with depth, so a deeply-nested
+    -- document costs O(depth^2): a small body (tens of KB) can burn seconds of
+    -- worker CPU — an algorithmic-complexity DoS (reported by BackBox AI,
+    -- https://backbox.dev). The arg-count gate doesn't catch it (XML keys
+    -- aren't shaped like ARGS). Legit XML is shallow; 256 is far beyond
+    -- SOAP / SAML / config depths. Exceeding it aborts the parse from inside
+    -- the SAX callback so the body-parser gate rejects the request instead of
+    -- grinding.
+    local XML_MAX_DEPTH = 256
+    local current_depth = 0
+    local xml_too_deep = false
     local SLAXML = require 'kong.plugins.karna.slaxml'
     
     local parser = SLAXML:parser {
         -- When "<foo" or <x:foo is seen
         startElement = function(name,nsURI,nsPrefix)
             number_of_opened_elements = number_of_opened_elements + 1
+            current_depth = current_depth + 1
+            if current_depth > XML_MAX_DEPTH then
+                -- Abort immediately: stops the O(depth^2) path rebuilding before
+                -- it can grind. parse_ok becomes false -> rejected below.
+                xml_too_deep = true
+                error("xml nesting depth exceeds limit")
+            end
             self.debug("XML: startElement ".. tostring(number_of_opened_elements) .." name: " .. name)
             if nsURI then self.debug("startElement nsURI: " .. nsURI) end
             if nsPrefix then self.debug("startElement nsPrefix: " .. nsPrefix) end
@@ -541,6 +561,7 @@ _M.xml = function(self, prefix, raw_body, try_base64decode_if_possible)
         end,
         -- When "</foo>" or </x:foo> or "/>" is seen
         closeElement = function(name,nsURI)
+            current_depth = current_depth - 1
             self.debug("closeElement name: " .. name)
             if nsURI then self.debug("closeElement nsURI: " .. nsURI) end
 
@@ -639,6 +660,10 @@ _M.xml = function(self, prefix, raw_body, try_base64decode_if_possible)
             return values, "xml parsing produced no elements"
         end
     else
+        if xml_too_deep then
+            self.debug("XML: nesting depth exceeded limit")
+            return values, "xml nesting depth exceeds limit"
+        end
         -- Malformed XML declared as application/xml. slaxml only throws on
         -- genuinely broken structure (e.g. a raw `<` inside an attribute
         -- value, which conformant backends reject too). Surface it as an

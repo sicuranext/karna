@@ -56,6 +56,8 @@ jobs:
         run: lua ka-unittest/seclang_ctl_directives.lua
       - name: fix_matched_parts action (sanitize-not-block primitive)
         run: lua ka-unittest/fix_matched_parts.lua
+      - name: JSON per-field sanitisation (fix_matched_parts, structure preserved)
+        run: lua ka-unittest/json_sanitize_field.lua
       - name: rule_action_overrides / rule_response_overrides (config-level)
         run: lua ka-unittest/rule_overrides.lua
       - name: Op negation normalization (canonical vs legacy)
