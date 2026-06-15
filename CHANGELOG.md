@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-06-15
+
 ### Security
 
 - Cap XML nesting depth to stop a quadratic-parser DoS. The XML body flatten
@@ -277,7 +279,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.5...HEAD
+[1.1.5]: https://github.com/sicuranext/karna/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/sicuranext/karna/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/sicuranext/karna/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/sicuranext/karna/compare/v1.1.1...v1.1.2
