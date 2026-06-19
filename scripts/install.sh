@@ -84,7 +84,7 @@ if have git && git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
   KA_SHORT="$(printf '%s' "$KA_COMMIT" | cut -c1-7)"
   KA_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   log "Stamping version.lua (commit ${KA_SHORT})"
-  printf 'return {\n  version      = "1.1.5",\n  commit       = "%s",\n  commit_short = "%s",\n  built_at     = "%s",\n}\n' \
+  printf 'return {\n  version      = "1.2.0",\n  commit       = "%s",\n  commit_short = "%s",\n  built_at     = "%s",\n}\n' \
     "$KA_COMMIT" "$KA_SHORT" "$KA_DATE" > "$REPO_ROOT/kong/plugins/karna/version.lua"
 fi
 
