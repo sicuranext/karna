@@ -255,7 +255,7 @@
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td class="name"><code>rule_action_overrides</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Change <em>what</em> a rule does. Action types: <code>fix</code> (switch to sanitize, with <code>remove_chars_pattern</code>), <code>passthrough</code> (drop the terminal action), <code>block</code> (force a block).</td></tr>
-          <tr><td class="name"><code>rule_response_overrides</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Customise the block response: <code>status_code</code>, <code>body</code> (supports <code>%{var}</code> macros), and merged <code>headers</code>.</td></tr>
+          <tr><td class="name"><code>rule_response_overrides</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Customise the block response: <code>status_code</code>, <code>body</code> (a static string served verbatim — no <code>%{var}</code> macros, so request data is never reflected into the block response), and merged <code>headers</code>.</td></tr>
         </tbody>
       </table>
       <div class="code-card">

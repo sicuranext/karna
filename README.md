@@ -420,12 +420,14 @@ exposes two config-level overrides:
   ```
 
 - **`rule_response_overrides`** customises the body / status / headers
-  when the (possibly overridden) action is still a block:
+  when the (possibly overridden) action is still a block. `body` is a
+  static string served verbatim — it does **not** resolve `%{var}` macros,
+  so request data is never reflected into Karna's own block response:
   ```json
   {
     "selector": { "tags": ["attack-sqli"] },
     "response": { "status_code": 451,
-                  "body":        "Refused: %{request.remote_addr}",
+                  "body":        "Request refused.",
                   "headers":     { "x-blocked-by": "your-org" } }
   }
   ```

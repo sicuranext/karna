@@ -129,8 +129,8 @@ local get_local_request_rules = function(plugin_conf)
 end
 
 -- Lightweight `%{var}` resolver for access-phase callers that need to
--- resolve a small set of request-context macros (rate_limit key,
--- response override body) without paying the cost of the full
+-- resolve a small set of request-context macros (the rate_limit counter
+-- key) without paying the cost of the full
 -- inspection_table parser (which eagerly reads the request body and
 -- has measurable PL1 side effects when invoked early). Falls back to
 -- leaving unrecognised macros literal — same fail-soft posture as
@@ -319,7 +319,15 @@ local apply_action_and_response_overrides = function(plugin_conf, rule)
         end
         if ov.response.status_code then new_fr.status_code = ov.response.status_code end
         if ov.response.body then
-          new_fr.body = resolve_request_macros(ov.response.body)
+          -- Operator-authored body used verbatim. We deliberately do NOT
+          -- resolve %{...} macros here: this body is reflected back to the
+          -- client in Karna's own block response, and request-derived macros
+          -- (e.g. %{request.path} / %{request.host}) would let an attacker
+          -- place their input into that response — a reflected-XSS sink if the
+          -- operator serves the page as HTML. HTML-escaping is not enough
+          -- (it depends on the output context the operator chose). A static,
+          -- operator-controlled body is safe by construction.
+          new_fr.body = ov.response.body
         end
         if ov.response.headers then
           for k, v in pairs(ov.response.headers) do new_fr.headers[k] = v end
