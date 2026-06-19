@@ -7,6 +7,18 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Audit log v2 now records a `response.latencies` breakdown in milliseconds —
+  `total` (the whole request, from nginx `$request_time`), `upstream` (time
+  waiting for the upstream, the existing `latency_ms`), and `kong` (the
+  gateway's own processing: Karna plus any other plugins and the proxy, i.e.
+  total minus upstream, clamped at zero). The values are read from the nginx
+  timers in the `log` phase, so no earlier phase is touched and there is no
+  added request-path cost. This makes the WAF/gateway processing time visible
+  to log consumers (SIEM, log pipelines) without an external timing source; the
+  pre-existing `response.latency_ms` is unchanged for backward compatibility.
+
 ### Security
 
 - `rule_response_overrides` no longer resolves `%{var}` macros in the response
