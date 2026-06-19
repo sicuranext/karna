@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- `rule_response_overrides` no longer resolves `%{var}` macros in the response
+  `body`. That body is reflected back to the client in Karna's own block
+  response, so resolving request-derived macros there (`%{request.path}`,
+  `%{request.host}`) let an operator unintentionally place attacker-controlled
+  input into the response — a reflected-XSS sink when the page is served as
+  HTML. HTML-escaping the value is not a reliable fix because safety depends on
+  the output context the operator chose, so the body is now served verbatim as
+  the operator-authored static string. Other macro sinks are unchanged: the
+  `rate_limit` counter key and `set_variable` values still resolve, since those
+  feed internal state (a Redis key, a context value), not the client response.
+
 ## [1.1.5] - 2026-06-15
 
 ### Security

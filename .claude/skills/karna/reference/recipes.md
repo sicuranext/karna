@@ -96,10 +96,12 @@ Redis SET `revoked_tokens`; this blocks any request whose `Authorization` header
    Put it in `rule_action_overrides`. Prefer 1 or 2 — disabling loses coverage.
 
 ## Custom-block response (status / body / headers)
-Use `rule_response_overrides` to change what a block returns:
+Use `rule_response_overrides` to change what a block returns. `body` is a
+static string served verbatim — no `%{var}` macros, so request data is never
+reflected into the block response:
 ```json
 { "selector": { "tags": ["attack-sqli"] },
-  "response": { "status_code": 451, "body": "Refused: %{request.remote_addr}",
+  "response": { "status_code": 451, "body": "Request refused.",
                 "headers": { "x-blocked-by": "waf" } } }
 ```
 

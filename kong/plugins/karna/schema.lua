@@ -208,11 +208,12 @@ local schema = {
           --
           -- rule_response_overrides customises the response body /
           -- status / headers when the (possibly overridden) action is
-          -- still a block. `body` supports `%{var}` template macros
-          -- resolved against the current request:
+          -- still a block. `body` is a static, operator-authored string
+          -- served verbatim — no `%{var}` macro resolution, so request
+          -- data is never reflected into the block response:
           --   { "selector": { "ids": ["920420"] },
           --     "response": { "status_code": 451,
-          --                   "body": "Refused: %{request.remote_addr}",
+          --                   "body": "Request refused.",
           --                   "headers": { "x-blocked-by": "karna" } } }
           --
           -- First matching entry wins (declaration order). The
