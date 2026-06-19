@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-19
+
 ### Added
 
 - Audit log v2 now records a `response.latencies` breakdown in milliseconds —
