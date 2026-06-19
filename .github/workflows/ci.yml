@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch: # allow manual re-runs (e.g. after a transient CI flake)
 
 # Least privilege. GitHub's default GITHUB_TOKEN can be read/write; these jobs
 # only need to read the repo. (The real guard against PR abuse is the repo
@@ -148,15 +149,29 @@ jobs:
       - name: Wait for Karna to activate (Postgres config propagation)
         run: |
           set -e
+          base='http://localhost:28000/'
           attack='http://localhost:28000/?q=1%27%20OR%20%271%27=%271'
-          for i in $(seq 1 30); do
-            if [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: karna-test' "$attack")" = "403" ]; then
+          hdr='Host: karna-test'
+          # 1) Wait for the proxy + route to serve at all (any non-000 status).
+          #    On a busy runner the proxy listener can lag the admin API.
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "$hdr" "$base" || true)
+            [ -n "$code" ] && [ "$code" != "000" ] && { echo "proxy serving after ${i}s (code ${code})"; break; }
+            sleep 1
+          done
+          # 2) Wait for Karna to actually block the attack (DB-mode config
+          #    propagation polls every db_update_frequency, ~5s; allow ample margin).
+          for i in $(seq 1 60); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "$hdr" "$attack")" = "403" ]; then
               echo "Karna active after ${i} polls"; break
             fi
             sleep 2
           done
-          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: karna-test' "$attack")" = "403" \
-            || { echo "::error::Karna did not activate (config propagation); WAF not blocking"; exit 1; }
+          if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "$hdr" "$attack")" != "403" ]; then
+            echo "benign=$(curl -s -o /dev/null -w '%{http_code}' -H "$hdr" "$base") attack=$(curl -s -o /dev/null -w '%{http_code}' -H "$hdr" "$attack")"
+            echo "::error::Karna did not activate (config propagation); WAF not blocking"
+            exit 1
+          fi
 
       - name: Run CRS PL1 regression with pass-rate floor
         run: |
