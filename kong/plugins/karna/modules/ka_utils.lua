@@ -567,6 +567,27 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     end
     latency_ms = latency_ms or 0
 
+    -- request-level latency breakdown (ms), read from the nginx timers in the
+    -- log phase — no extra instrumentation in the earlier phases:
+    --   total    = the whole request          ($request_time)
+    --   upstream = time waiting for upstream   (latency_ms, computed above)
+    --   kong     = the gateway's own processing (Karna + other plugins + proxy)
+    --              i.e. total minus upstream, clamped at zero
+    local total_ms
+    local rt = tonumber(tostring(ngx.var.request_time or ""):match("^[^,]+"))
+    if rt then total_ms = rt * 1000 end
+    local kong_ms
+    if total_ms then
+        kong_ms = total_ms - latency_ms
+        if kong_ms < 0 then kong_ms = 0 end
+    end
+    local function _round2(n) return n and tonumber(string.format("%.2f", n)) or 0 end
+    local latencies = {
+        total = _round2(total_ms),
+        upstream = _round2(latency_ms),
+        kong = _round2(kong_ms)
+    }
+
     -- collect sibling-plugin log entries (external_matches), if any
     local raw_external = nil
     if kong.ctx.shared.karna and kong.ctx.shared.karna.log_entries then
@@ -602,7 +623,8 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
         response = {
             status = kong.response.get_status(),
             headers = response_headers,
-            latency_ms = latency_ms
+            latency_ms = latency_ms,
+            latencies = latencies
         },
         engine = {
             name = "karna",
