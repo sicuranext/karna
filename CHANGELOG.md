@@ -7,6 +7,15 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- Audit log files now end with a trailing newline. Each record was already a
+  single physical line (embedded CR/LF are stripped); terminating it with a
+  newline makes the output valid JSON Lines (NDJSON), so log collectors that
+  split on newline and parse one object per line — Filebeat, Fluent Bit,
+  Vector, Promtail — ingest the files without extra configuration. The record
+  content is otherwise unchanged.
+
 ## [1.2.0] - 2026-06-19
 
 ### Added

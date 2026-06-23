@@ -654,8 +654,12 @@ _M.write_auditlog = function(premature, json_log, auditlog_path, timestamp, requ
     kong.log.debug("Karna: writing audit log to file: ", filename)
     local file = io.open(filename, "w")
     if file then
+        -- Strip any embedded CR/LF so the record is a single physical line,
+        -- then terminate it with one trailing newline. This is the JSON Lines
+        -- (NDJSON) convention log collectors expect — Filebeat / Fluent Bit /
+        -- Vector / Promtail split on newline and parse one object per line.
         local json_log_no_newlines = cjson.encode(json_log):gsub("[\r\n]","")
-        file:write(json_log_no_newlines)
+        file:write(json_log_no_newlines, "\n")
         file:close()
     else
         kong.log.err("Karna: failed to write audit log to file: ", filename)
