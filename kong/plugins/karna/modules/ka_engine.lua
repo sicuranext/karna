@@ -4492,12 +4492,19 @@ _M.get_inspection_table = function(self, plugin_conf)
             for k,v in pairs(cookie_flattened) do
                 local value_is_json = false
 
-                for ckeyn,cval in pairs(v) do
-                    if pcall(cjson.decode,cval) then
-                        value_is_json = true
-                        local cookie_json_flat = body_parser:json("response.set_cookie", cval, plugin_conf.try_bas64decode_if_possible)
-                        for kk,vv in pairs(cookie_json_flat) do
-                            table_insert(kong.ctx.plugin.inspection_table, vv)
+                -- A Set-Cookie value can flatten to a plain string (e.g.
+                -- `PHPSESSID=abc; path=/`) rather than a table. Guard pairs()
+                -- so a cookie-setting upstream (WordPress, PHP sessions, …)
+                -- cannot crash header_filter. The string value is still pushed
+                -- into the inspection table below, so detection is unchanged.
+                if type(v) == "table" then
+                    for ckeyn,cval in pairs(v) do
+                        if pcall(cjson.decode,cval) then
+                            value_is_json = true
+                            local cookie_json_flat = body_parser:json("response.set_cookie", cval, plugin_conf.try_bas64decode_if_possible)
+                            for kk,vv in pairs(cookie_json_flat) do
+                                table_insert(kong.ctx.plugin.inspection_table, vv)
+                            end
                         end
                     end
                 end
