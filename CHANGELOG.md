@@ -7,6 +7,18 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-06-26
+
+### Fixed
+
+- `header_filter` no longer crashes when an upstream response carries a
+  `Set-Cookie` header whose value flattens to a plain string (e.g.
+  `PHPSESSID=abc123; path=/`). The response-cookie inspection loop assumed
+  every flattened value was a table and called `pairs()` on it, which aborted
+  the response phase ("upstream sent no response") for any cookie-setting
+  backend (WordPress, PHP sessions, and the like). The value is still added to
+  the inspection table, so response-rule detection is unchanged.
+
 ### Changed
 
 - Audit log files now end with a trailing newline. Each record was already a
