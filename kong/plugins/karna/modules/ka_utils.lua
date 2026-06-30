@@ -644,15 +644,21 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     return json_log
 end
 
-_M.write_auditlog = function(premature, json_log, auditlog_path, timestamp, request_id)
+_M.write_auditlog = function(premature, json_log, auditlog_path, timestamp, worker_id)
     if premature then return end
 
     local cjson = require "cjson"
 
-    -- write a file log
-    local filename = auditlog_path.."/"..timestamp.."-ka-auditlog-"..request_id..".json"
+    -- One file per worker per minute, appended as JSON Lines. The filename
+    -- carries the UTC minute, so rotation is implicit: when the minute rolls
+    -- over the computed name changes and writes land in a fresh file. Each
+    -- Kong worker is a separate process and owns its file via <worker_id>, so
+    -- there is no cross-process append to the same file and no lock is needed.
+    local minute = os.date("!%Y%m%d%H%M", timestamp)
+    local wid = worker_id or 0
+    local filename = auditlog_path.."/karna_auditlog_"..wid.."_"..minute..".jsonl"
     kong.log.debug("Karna: writing audit log to file: ", filename)
-    local file = io.open(filename, "w")
+    local file = io.open(filename, "a")
     if file then
         -- Strip any embedded CR/LF so the record is a single physical line,
         -- then terminate it with one trailing newline. This is the JSON Lines

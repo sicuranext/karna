@@ -269,12 +269,12 @@
 
     <section id="audit">
       <h2>Audit logging</h2>
-      <p>Karna writes JSON audit logs to disk asynchronously. The log directory must be writable by the Kong worker user.</p>
+      <p>Karna writes audit logs to disk asynchronously as JSON Lines, one file per worker per minute named <code>karna_auditlog_&lt;worker_id&gt;_&lt;YYYYMMDDHHMM&gt;.jsonl</code> (UTC minute), appending one record per line and rolling over when the minute changes. The log directory must be writable by the Kong worker user.</p>
       <table class="doc-table">
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td class="name"><code>auditlog_enabled</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td><td>Write audit logs.</td></tr>
-          <tr><td class="name"><code>auditlog_path</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">/usr/local/openresty/nginx/logs</span></td><td>Directory for the JSON log files. Must be <code>chown</code>ed to the Kong worker user.</td></tr>
+          <tr><td class="name"><code>auditlog_path</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">/usr/local/openresty/nginx/logs</span></td><td>Directory for the <code>.jsonl</code> log files. Must be <code>chown</code>ed to the Kong worker user.</td></tr>
           <tr><td class="name"><code>auditlog_format</code></td><td><span class="badge badge-type">string</span> <span class="badge badge-def">v2</span></td><td>One of <code>v1</code> / <code>v2</code>. <code>v2</code> writes one entry per request with all matches in a <code>matches</code> array; <code>v1</code> is last-match-wins (ModSecurity-compatible when <code>auditlog_modsec</code> is on).</td></tr>
           <tr><td class="name"><code>auditlog_only_on_match</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Only write a log entry when at least one rule matched.</td></tr>
           <tr><td class="name"><code>auditlog_modsec</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Emit the ModSecurity-compatible audit format (with <code>v1</code>).</td></tr>

@@ -658,7 +658,7 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `rules_request` | array of stringified-JSON | n/a | Per-service local rules for the access / header_filter phase, including rule controls. |
 | `rules_response` | array of stringified-JSON | n/a | Per-service local rules for the response inspection. |
 | `auditlog_enabled` | bool | `true` | Write JSON audit logs. |
-| `auditlog_path` | string | `/usr/local/openresty/nginx/logs` | Audit log directory (must be writable by the Kong worker user). |
+| `auditlog_path` | string | `/usr/local/openresty/nginx/logs` | Audit log directory (must be writable by the Kong worker user). Karna writes JSON Lines, one file per worker per minute: `karna_auditlog_<worker_id>_<YYYYMMDDHHMM>.jsonl` (UTC minute), rolled over when the minute changes. |
 | `auditlog_format` | string | `v2` | `v1` (legacy, ModSecurity-compatible when `auditlog_modsec=true`) or `v2` (per-request, all matches in `matches[]`). |
 | `auditlog_only_on_match` | bool | `false` | Only write audit log when at least one rule matched. |
 | `auditlog_modsec` | bool | `false` | v1 only, emit ModSecurity-compatible format. |
