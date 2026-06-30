@@ -79,7 +79,7 @@ require "kong.plugins.karna.ka_seclang"
 The actual files live under `kong/plugins/karna/modules/` and `kong/plugins/karna/rules/`, but the rockspec maps short names (without `ka_` prefix in some cases — check the rockspec for the authoritative mapping).
 
 ## Audit Logging
-- Logs are written as JSON files to `auditlog_path` (default `/usr/local/openresty/nginx/logs`).
+- Logs are written to `auditlog_path` (default `/usr/local/openresty/nginx/logs`) as JSON Lines, one file per worker per minute: `karna_auditlog_<worker_id>_<YYYYMMDDHHMM>.jsonl` (UTC minute). Each record is one appended line; the file rolls over implicitly when the minute changes (the computed filename changes — no rotation timer, no persistent handle, no lock). Per-worker isolation means no cross-process append. `request_id` stays in the record body, so logs are still searchable. Filename built in `ka_utils.lua:write_auditlog`; worker id + minute epoch passed from `handler.lua` log phase.
 - Format `v2` (default): one entry per request, all matched rules in `matches` array.
 - Format `v1` (legacy): last-match wins, ModSecurity-compatible when `auditlog_modsec` is enabled.
 - The upstream latency in v2 is read from header `x-karna-upstream-latency`

@@ -126,7 +126,11 @@ grep -E 'Passed tests:' regression.log
 A drop in the pass count is a regression — investigate before shipping.
 
 ## Read the audit log
-Default `auditlog_path`: `/usr/local/openresty/nginx/logs`. v2 format = one JSON
+Default `auditlog_path`: `/usr/local/openresty/nginx/logs`. Karna writes JSON
+Lines, one file per worker per minute named
+`karna_auditlog_<worker_id>_<YYYYMMDDHHMM>.jsonl` (UTC minute), appending one
+record per line. To watch live, tail the newest file, e.g.
+`tail -F "$(ls -t karna_auditlog_*.jsonl | head -1)"`. v2 format = one JSON
 entry per request with all matches in a `matches` array. `action` values to look
 for: `"blocked"`, `"sanitized"`, `"rate_limited"`, `"log"`.
 

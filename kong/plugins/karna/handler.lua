@@ -1052,10 +1052,10 @@ function plugin:log(plugin_conf)
       ka_mcp.redact_audit(json_log, plugin_conf)
     end
 
-    -- write log to file
-    local timestamp = os.time(os.date("!*t"))
-    local request_id = ngx.var.request_id
-    ngx.timer.at(0, utils.write_auditlog, json_log, plugin_conf.auditlog_path, timestamp, request_id)
+    -- write log to file (one JSONL file per worker per minute; see write_auditlog)
+    local now = ngx.time()
+    local worker_id = ngx.worker.id() or 0
+    ngx.timer.at(0, utils.write_auditlog, json_log, plugin_conf.auditlog_path, now, worker_id)
   end
 end
 

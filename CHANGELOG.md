@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- Audit log files are now written one per worker per minute instead of one per
+  request. Each Kong worker appends its JSON Lines records to
+  `karna_auditlog_<worker_id>_<YYYYMMDDHHMM>.jsonl` (UTC minute) and rolls over
+  to a new file when the minute changes. This removes the per-request file (and
+  inode) churn of the old `<timestamp>-ka-auditlog-<request_id>.json` scheme and
+  is what log collectors expect: a few growing files to tail rather than a flood
+  of tiny ones. The record content is unchanged — `request_id` is still a field
+  in every entry, so logs stay searchable. **Breaking** for anything that
+  discovers audit files by the old filename pattern; the on-disk JSON is the
+  same.
+
 ## [1.2.1] - 2026-06-26
 
 ### Fixed
