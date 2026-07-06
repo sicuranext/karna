@@ -2545,6 +2545,38 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     values, err = self.__get_values_request_cookie(false)
                 end
 
+                -- response.* — resolve response signals in conditions
+                -- (response.status / response.header.value[:name] /
+                -- response.header.name[:name] / response.set_cookie.*).
+                -- get_inspection_table() flattens these into the
+                -- inspection_table during header_filter (see :4462+), so
+                -- read them back from there. Three shapes, mirroring the
+                -- request.* selectors: the exact key (response.status), a
+                -- :<name> selector (response.header.value:host), and the
+                -- collection form (response.header.value → every :<name>
+                -- key under it). Access-phase rules run before the response
+                -- exists, so the inspection_table holds no response.* key
+                -- then and this resolves to nothing (a silent no-match) —
+                -- response conditions only bite in header_filter.
+                if string_find(variable, "^response%.") then
+                    local pat
+                    if string_find(variable, ":", 1, true) then
+                        pat = "^" .. variable:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1") .. "$"
+                    elseif variable == "response.status" then
+                        pat = "^response%.status$"
+                    else
+                        pat = "^" .. variable:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1") .. ":"
+                    end
+                    local rows = self:__get_value_from_inspection_table(pat)
+                    if rows and #rows > 0 then
+                        values = {}
+                        for _, row in pairs(rows) do
+                            for k, v in pairs(row) do values[k] = v end
+                        end
+                        if next(values) == nil then values = nil end
+                    end
+                end
+
                 -- request.body.multipart.name / .filename (no selector)
                 -- → ModSec FILES_NAMES / (alongside FILES). Collect every
                 -- multipart part's `name=` (or `filename=`) so the
@@ -4552,10 +4584,18 @@ _M.__get_value_from_inspection_table = function(self, pattern, filter_out_patter
         return return_table
     end
     for _,v in pairs(kong.ctx.plugin.inspection_table) do
-        for key,_ in pairs(v) do
-            if string_match(key, pattern) then
-                if not string_match(key, filter_out_pattern) then
-                    table_insert(return_table, v)
+        -- Entries are normally single-key {key=value} tables, but the
+        -- Set-Cookie flattening (get_inspection_table :4543) can push a
+        -- bare string value with no key. Those carry nothing to match a
+        -- named pattern against, so skip them — pairs() on a string here
+        -- would crash header_filter for any caller (macro resolution or
+        -- the response.* condition resolver).
+        if type(v) == "table" then
+            for key,_ in pairs(v) do
+                if string_match(key, pattern) then
+                    if not string_match(key, filter_out_pattern) then
+                        table_insert(return_table, v)
+                    end
                 end
             end
         end

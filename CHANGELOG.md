@@ -7,6 +7,19 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Rule conditions can now match on `response.*` variables — `response.status`,
+  `response.header.value[:name]`, `response.header.name[:name]`, and
+  `response.set_cookie.*` — in the `header_filter` phase. These were already
+  populated for `%{...}` macro substitution (audit-log fields, Redis keys) but
+  had no branch in the condition matcher, so a condition on `response.status`
+  silently never matched. A response-phase rule can now key on a response
+  signal — for example a failed login, which returns a distinct status — and
+  drive a side effect such as a `redis_incr_key` counter, with an access-phase
+  rule reading that counter to rate-limit or ban the source. Access-phase rules
+  run before the response exists, so `response.*` resolves to nothing there.
+
 ### Changed
 
 - Audit log files are now written one per worker per minute instead of one per
@@ -19,6 +32,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   in every entry, so logs stay searchable. **Breaking** for anything that
   discovers audit files by the old filename pattern; the on-disk JSON is the
   same.
+
+### Fixed
+
+- `__get_value_from_inspection_table` no longer crashes when the inspection
+  table holds a bare-string entry. A Set-Cookie value can flatten to a plain
+  string rather than a `{key=value}` table (the same shape the 1.2.1
+  response-cookie fix handled on the population side); the reader assumed every
+  entry was a table and called `pairs()` on it. It now skips non-table entries.
+  The crash was latent — reachable by any `%{...}` macro resolved in
+  `header_filter` after a cookie-setting response — and was surfaced by the new
+  `response.*` condition resolver, which reads the same table during matching.
 
 ## [1.2.1] - 2026-06-26
 
