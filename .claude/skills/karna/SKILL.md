@@ -13,18 +13,28 @@ Karna, **configuring** it, and **writing rules**.
 
 ## How to use this skill
 
-Read the reference file for the job at hand. Do not load all of them up front.
+Read the reference file for the job at hand — but for anything involving rules,
+read **both** `reference/recipes.md` and `reference/rules.md`. Recipes gives the
+worked pattern; rules gives the shared mechanics (phases, evaluation order,
+variables, operators, actions) that every recipe relies on. A task that looks
+like a single recipe often needs the mechanics too — e.g. combining several rules
+in one phase depends on the evaluation order documented in `rules.md`. Don't load
+files unrelated to the task.
 
 | Job | Read |
 |-----|------|
 | Install / deploy (Docker or existing Kong), attach to a service | `reference/deploy.md` |
 | Set or explain a plugin config option | `reference/configuration.md` |
-| Write a rule: variables, operators, transforms, actions, controls | `reference/rules.md` |
-| Do a concrete task (block X, sanitize Y, rate-limit Z, fix an FP) | `reference/recipes.md` |
+| Write, compose, combine, or order rules (detection / sanitize / rate-limit / ban / FP) | `reference/recipes.md` **and** `reference/rules.md` |
 
-The authoritative source for config is `kong/plugins/karna/schema.lua`; for the
-rule engine it is `kong/plugins/karna/modules/ka_engine.lua`. When in doubt, read
-the code, not your memory.
+**You do not need to read the Lua source to author rules.** Everything required
+to write, combine, and order rules — variables, operators, transforms, actions,
+phases, and evaluation order — is in `recipes.md` and `rules.md`. Treat those two
+as authoritative for rule work. The engine source
+(`kong/plugins/karna/modules/ka_engine.lua`) and schema
+(`kong/plugins/karna/schema.lua`) are the ultimate source of truth and worth
+reading only to confirm a deep engine internal the reference genuinely does not
+cover — not for normal rule authoring.
 
 ## Golden rules (do not skip)
 
