@@ -33,6 +33,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   discovers audit files by the old filename pattern; the on-disk JSON is the
   same.
 
+### Removed
+
+- The `rules_response` config field. It was declared in the schema but consumed
+  nowhere — a rule placed there never ran, silently. All custom rules go in
+  `rules_request` and run in the phase named by each rule's `phase` field
+  (`access` or `header_filter`); the header_filter subset is now precomputed and
+  cached, so a response pass iterates only response-phase rules — which is what
+  the separate array was meant to achieve. **Breaking** only if a deployment
+  declared `rules_response`: Kong rejects an unknown config field on reload, so
+  drop the entry. It was a no-op, so nothing of substance is lost.
+
 ### Fixed
 
 - `__get_value_from_inspection_table` no longer crashes when the inspection

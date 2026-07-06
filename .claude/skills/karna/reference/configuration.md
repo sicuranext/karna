@@ -6,7 +6,7 @@ under the plugin `config` block. Defaults shown in `(parens)`.
 ## Engine & blocking
 - `engine_blocking_mode` (bool, `false`) — block on match (default 403) vs detection-only. Start `false`.
 - `coreruleset_enabled` (bool, `true`) — load/evaluate the OWASP CRS pack. The in-repo CRS-fix controls always apply regardless.
-- `local_rules_enabled` (bool, `true`) — evaluate `rules_request` / `rules_response`.
+- `local_rules_enabled` (bool, `true`) — evaluate the custom rules in `rules_request`.
 - `set_karna_headers` (bool, `false`) — add diagnostic response headers.
 
 ## CRS category toggles (under `coreruleset_rulesets`, gated by `coreruleset_enabled`)
@@ -51,8 +51,7 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 - `crs_plugins_enabled` (array, `[]`) — plugin dir names to load (e.g. `wordpress-rule-exclusions-plugin`).
 
 ## Custom rules
-- `rules_request` (array) — per-service request rules (JSON strings). See `rules.md`.
-- `rules_response` (array) — per-service response rules.
+- `rules_request` (array) — per-service custom rules (JSON strings), all phases. Each rule runs in the phase named by its `phase` field (`access` or `header_filter`); response-phase rules use `"phase": "header_filter"`. See `rules.md`.
 - `custom_secrules` (array, `[]`) — inline SecLang `SecRule` strings.
 
 ## Action / response overrides (change existing rules without editing the pack)

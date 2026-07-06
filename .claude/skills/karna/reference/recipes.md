@@ -1,8 +1,10 @@
 # Karna recipes
 
 Concrete tasks. Each assumes Karna is already attached to a service (see
-`deploy.md`). Add rules as JSON strings to the plugin's `rules_request` /
-`rules_response` arrays, or use config-level overrides for the CRS pack.
+`deploy.md`). Add rules as JSON strings to the plugin's `rules_request` array —
+every custom rule goes there regardless of phase; the engine runs each in the
+phase named by its `phase` field (`access` or `header_filter`). Config-level
+overrides tune the CRS pack.
 
 ## Turn on blocking (after tuning)
 Only after the audit log is clean in detection-only:

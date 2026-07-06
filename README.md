@@ -114,8 +114,9 @@ Karna inspects every request against a layered rule pipeline:
    adjust, exclude, or rewrite global rules at request time. Includes the
    in-repo CRS-fix layer (`coreruleset_fix.lua`) that neutralises known
    false-positive-prone OWASP CRS rules in production deployments.
-3. **Per-service local rules** (`rules_request`, `rules_response`): your
-   own custom rules. Gated by `local_rules_enabled` (default `true`).
+3. **Per-service local rules** (`rules_request`): your own custom rules,
+   each run in the phase named by its `phase` field (access or
+   header_filter). Gated by `local_rules_enabled` (default `true`).
 4. **OWASP CoreRuleSet** loaded from disk at `init_worker`. Gated by
    `coreruleset_enabled` (default `true`).
 
@@ -634,7 +635,7 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 |---|---|---|---|
 | `engine_blocking_mode` | bool | `false` | If `true`, matched rules return their `fixed_response` action (typically 403). If `false`, matches are logged only. |
 | `coreruleset_enabled` | bool | `true` | Toggle for the OWASP CRS rule pack loaded from disk at `init_worker`. The in-repo CRS-fix rule controls (`coreruleset_fix.lua`) are always applied. |
-| `local_rules_enabled` | bool | `true` | Toggle for `rules_request` / `rules_response` local rules. |
+| `local_rules_enabled` | bool | `true` | Toggle for `rules_request` local rules. |
 | `ignore_from_local_ips` | bool | `true` | Skip WAF for clients in `127.0.0.0/8`, `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`, `::1`, `fe80::/32`. |
 | `paranoia_level` | number | `1` | OWASP CRS paranoia level (1-4). Rules whose declared paranoia level exceeds this value are skipped at evaluation time. Rules without an explicit PL tag (Karna-native gates, `coreruleset_fix.global_fps`, user-supplied local rules) default to PL1 and always run when this setting is ≥ 1. |
 | `set_karna_headers` | bool | `false` | Set `X-Karna-Engine` / `X-Karna-Engine-Version` response headers. |
@@ -655,8 +656,7 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `crs_plugins_path` | string | `/opt/coreruleset-plugins/` | Directory holding the CRS plugins you downloaded. See [CRS plugins](#crs-plugins-wordpress-drupal-etc). |
 | `crs_plugins_enabled` | array | `[]` | Plugin directory names to load, e.g. `["wordpress-rule-exclusions-plugin"]`. |
 | `custom_secrules` | array | `[]` | SecLang rule strings parsed at load. Use it for inline exclusions without a plugin directory. |
-| `rules_request` | array of stringified-JSON | n/a | Per-service local rules for the access / header_filter phase, including rule controls. |
-| `rules_response` | array of stringified-JSON | n/a | Per-service local rules for the response inspection. |
+| `rules_request` | array of stringified-JSON | n/a | Per-service local rules for all phases, including rule controls. Each rule runs in the phase named by its `phase` field (`access` or `header_filter`). |
 | `auditlog_enabled` | bool | `true` | Write JSON audit logs. |
 | `auditlog_path` | string | `/usr/local/openresty/nginx/logs` | Audit log directory (must be writable by the Kong worker user). Karna writes JSON Lines, one file per worker per minute: `karna_auditlog_<worker_id>_<YYYYMMDDHHMM>.jsonl` (UTC minute), rolled over when the minute changes. |
 | `auditlog_format` | string | `v2` | `v1` (legacy, ModSecurity-compatible when `auditlog_modsec=true`) or `v2` (per-request, all matches in `matches[]`). |

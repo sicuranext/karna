@@ -23,7 +23,7 @@ plugin with no required dependency on other plugins.
   - `paranoia_level` (number, 1-4): OWASP CRS paranoia level.
   - `coreruleset_enabled` (default true): toggle for the OWASP CRS rule pack loaded from disk at `init_worker`. The in-repo CRS-fix rule controls (`coreruleset_fix.lua`) are always applied independently.
   - `local_rules_enabled`: per-service custom rules.
-  - `rules_request` / `rules_response`: per-service JSON rule arrays.
+  - `rules_request`: per-service JSON rule array (all phases; each rule runs in the phase named by its `phase` field — `access` or `header_filter`).
   - `auditlog_enabled`, `auditlog_path`, `auditlog_modsec`: audit logging config.
   - `redis_host`, `redis_port`, `redis_password`: Redis connection for counters.
   - Various request validation limits (arg length, arg count, methods, content types, extensions, charsets).

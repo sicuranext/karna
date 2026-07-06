@@ -93,15 +93,21 @@ end
 -- API update, which invalidates the cache automatically. Previously
 -- cjson.decode ran twice per rule per request (pcall validate + actual
 -- decode); now it runs once per (worker, plugin_conf) lifetime.
--- The returned table carries two views:
---   .all    : every parsed rule, used as the cross-phase
---             kong.ctx.plugin.local_rules (header_filter / body_filter
---             / mcp_event filter by .phase).
---   .access : the subset whose .phase == "access", consumed directly
---             by the access-phase rule loop.
+-- The returned table carries these views:
+--   .all           : every parsed rule, used as the cross-phase
+--                    kong.ctx.plugin.local_rules (body_filter / mcp_event
+--                    filter by .phase).
+--   .access        : the subset whose .phase == "access", consumed
+--                    directly by the access-phase rule loop.
+--   .header_filter : the subset whose .phase == "header_filter", consumed
+--                    directly by the header_filter loop. Precomputing it
+--                    means a response pass iterates only response-phase
+--                    rules, not the whole set filtered per request — this
+--                    is why there is no separate `rules_response` config
+--                    array; the phase field plus this cache do the job.
 local get_local_request_rules = function(plugin_conf)
   if not plugin_conf.rules_request or #plugin_conf.rules_request == 0 then
-    return { all = {}, access = {} }
+    return { all = {}, access = {}, header_filter = {} }
   end
   local key = "local_request_rules:" .. tostring(plugin_conf)
   local cached = ka_rules:get(key)
@@ -109,12 +115,15 @@ local get_local_request_rules = function(plugin_conf)
 
   local all = {}
   local access = {}
+  local header_filter = {}
   for _, req_rule_raw in pairs(plugin_conf.rules_request) do
     local ok, req_rule_or_err = pcall(cjson.decode, req_rule_raw)
     if ok then
       table.insert(all, req_rule_or_err)
       if req_rule_or_err.phase == "access" then
         table.insert(access, req_rule_or_err)
+      elseif req_rule_or_err.phase == "header_filter" then
+        table.insert(header_filter, req_rule_or_err)
       end
     else
       kong.log.err("Error parsing JSON rule: " .. tostring(req_rule_or_err))
@@ -123,7 +132,7 @@ local get_local_request_rules = function(plugin_conf)
 
   ka_compile.compile_rules(all, plugin_conf)
 
-  local result = { all = all, access = access }
+  local result = { all = all, access = access, header_filter = header_filter }
   ka_rules:set(key, result)
   return result
 end
@@ -917,19 +926,13 @@ function plugin:header_filter(plugin_conf)
     debug("Loaded "..tostring(#rules).." global rules")
   end
 
-  -- get service local request rules
-  local local_rules_request = {}
-  if kong.ctx.plugin.local_rules then
-    for _,req_rule in pairs(kong.ctx.plugin.local_rules) do
-      if req_rule.phase == "header_filter" then
-        table.insert(local_rules_request, req_rule)
-      end
-    end
-  end
-
-  -- local rules
+  -- Header_filter-phase local rules. Use the precomputed, cached
+  -- header_filter subset (get_local_request_rules is LRU-cached per
+  -- plugin_conf) so the response pass iterates only response-phase rules
+  -- instead of filtering the whole set on every request.
   if plugin_conf.local_rules_enabled then
-    evaluate_rules(plugin_conf, local_rules_request, "header_filter")
+    local header_filter_rules = get_local_request_rules(plugin_conf).header_filter
+    evaluate_rules(plugin_conf, header_filter_rules, "header_filter")
   end
 end
 
