@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-06
+
 ### Added
 
 - Rule conditions can now match on `response.*` variables — `response.status`,
