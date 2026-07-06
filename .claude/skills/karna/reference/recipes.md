@@ -6,6 +6,15 @@ every custom rule goes there regardless of phase; the engine runs each in the
 phase named by its `phase` field (`access` or `header_filter`). Config-level
 overrides tune the CRS pack.
 
+Combining several rules in one phase? Order matters, and you don't need to read
+the engine to know how: within a phase the engine runs the rules in array order,
+the first rule with a *terminal* action (`fixed_response` / `fix_matched_parts` /
+`rate_limit`) wins and stops the phase, while *non-terminal* actions
+(`redis_incr_key` / `set_variable` / `redis_set`) apply their effect and let
+evaluation continue. So put the most general terminal check (e.g. "block if
+already banned") first, and keep counters/side-effects on non-terminal rules.
+Full detail in `rules.md` → "Evaluation order".
+
 ## Turn on blocking (after tuning)
 Only after the audit log is clean in detection-only:
 ```sh
@@ -107,6 +116,15 @@ swap the counting rule's conditions for:
 For a ban that outlives the counter window, replace the block action with
 `redis_set` (`{ "key": "ban:%{remote_addr}", "expire": 3600 }`) on the threshold
 and reuse the `block-banned` rule above.
+
+Rule order when you combine these (all in `rules_request`, access phase runs in
+array order): put **`block-banned` first** — it's the most general terminal check,
+so once an IP is banned it short-circuits the rest and never touches the backend
+— then `authfail-block` (the threshold check), then any broad `rate_limit` rule
+last. A `rate_limit` on `/login` is terminal and matches every login request, so
+if you place it first it stops the phase and the ban rules never run. The
+`authfail-count` rule is `header_filter` phase, so it lives in the response pass
+and doesn't compete for order with the access rules.
 
 ## Reject a revoked credential from a shared set
 Needs `redis_inspect_enabled=true`. A sibling plugin (or your auth service) keeps a
