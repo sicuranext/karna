@@ -1,8 +1,10 @@
 # Karna rule reference
 
-A rule is a JSON object placed in `rules_request` (request phase) or
-`rules_response` (response phase). It fires when **all** conditions match, then runs
-its `action`. Authoritative engine: `kong/plugins/karna/modules/ka_engine.lua`.
+A rule is a JSON object placed in the `rules_request` array — every custom rule
+goes there regardless of phase, and the engine runs it in the phase named by its
+`phase` field. There is no separate response array; the engine dispatches by
+phase. A rule fires when **all** its conditions match, then runs its `action`.
+Authoritative engine: `kong/plugins/karna/modules/ka_engine.lua`.
 
 ## Rule shape
 
@@ -27,10 +29,20 @@ Condition fields: `variables[]`, `op`, `value`, `transform[]` (omit/`[]` for non
 Conditions are AND-ed (a chain). Later conditions can read `matched.value` and capture groups `group:0`, `group:1`, …
 
 ## Phases
+Set a rule's `phase` to one of these. Custom rules run in `access` and
+`header_filter` only.
 - `access` — before upstream. Inspects method/path/query/headers/cookies/parsed body. Can block, sanitize, modify. Most rules.
-- `header_filter` — after upstream responds. Request + response status/headers.
-- `body_filter` — response body streaming (internal MCP SSE reassembly).
-- `mcp_event` — per reassembled SSE event (Karna-native); can drop/replace/terminate/inject events.
+- `header_filter` — after upstream responds. Sees the request plus `response.status` / `response.header.*` / `response.set_cookie.*` (resolvable in conditions, not just in `%{}` macros). Use this to react to the response — e.g. count a failed login by its status.
+- `body_filter` — response body. Custom rules in this phase are **not currently evaluated** (the handler dispatch is commented out); the phase is used internally for MCP SSE reassembly.
+- `mcp_event` — per reassembled SSE event (Karna-native, MCP only); can drop/replace/terminate/inject events.
+
+## Evaluation order
+Within a phase the engine runs the rules in order. Non-terminal side effects
+(`set_variable`, `set_log_fields`, `redis_incr_key`) fire on **every** matching
+rule. The first rule whose action is **terminal** (`fixed_response`,
+`fix_matched_parts`, `rate_limit`) stops evaluation and wins. So a counter that
+must always increment belongs on a non-terminal rule, and a "block if already
+banned" check placed first short-circuits the rest.
 
 ## Variables (append `:<selector>` to target a named element)
 - `request.arg.value` / `.name` — query + parsed body args (canonical "any arg"). Target one: `request.arg.value:<name>`.
@@ -41,7 +53,7 @@ Conditions are AND-ed (a chain). Later conditions can read `matched.value` and c
 - `request.raw_path`, `request.basename`, `request.method`.
 - `request.file`, `request.body.multipart.filename`, `request.body.multipart.header.value`.
 - `request.header.referer.{path,query,scheme,host}`.
-- `response.set_cookie.value` / `.name`, `response.header.name:<name>` (response phases).
+- `response.status`, `response.header.value:<name>` / `.name:<name>`, `response.set_cookie.value` / `.name` (header_filter phase; resolvable in conditions).
 - `matched.value`, `group:<n>` (chain refs).
 - `tx:<name>` / `var:<name>` (CRS TX vars, e.g. `var:paranoia_level`).
 - `redis.<key>` — inspect a Redis key (read-only). Everything after `redis.` is the key name (macros allowed: `%{remote_addr}`, `%{request.method|host|scheme|path}`, `%{request_headers.X}`). The **operator picks the command**: `isSet`→EXISTS (ban/existence check; `negated:true`→absent), `eq`/`rx`/`contains`/`beginsWith`→GET+compare, `gt`/`lt`/`ge`/`le`→GET+numeric, `redis_sismember`→SISMEMBER, `redis_hexists`→HEXISTS. Needs `redis_inspect_enabled`. (Legacy `redis.key:<macro>` GET form is dead — use `redis.<key>`.)

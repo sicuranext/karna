@@ -186,8 +186,13 @@ local schema = {
           -- remain available for the same purpose; the two coexist.
           { custom_secrules = { type = "array", elements = { type = "string" }, default = {} } },
 
+          -- All custom rules live here regardless of phase; the engine
+          -- runs each in the phase named by its `phase` field (access /
+          -- header_filter). There is deliberately no separate response
+          -- array — the per-phase subset is precomputed and cached in
+          -- handler.lua:get_local_request_rules, so a response-phase pass
+          -- iterates only the response-phase rules, not the whole set.
           { rules_request = { type = "array", elements = { type = "string" } } },
-          { rules_response = { type = "array", elements = { type = "string" } } },
 
           -- Per-rule action and response overrides — Karna's escape
           -- hatch for the "I trust this WAF, but for rule X I want to
