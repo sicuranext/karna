@@ -335,6 +335,42 @@ eq("＜ → %uff1c",      "utf8toUnicode", "\xEF\xBC\x9C",  "%uff1c")
 -- ASCII pass-through
 eq("ASCII unchanged",  "utf8toUnicode", "abc",           "abc")
 
+print("== utf8toUnicode → urlDecodeUni chain (CRS #3793 non-Latin FP) ==")
+-- CRS rule 942120 applies t:utf8toUnicode,t:urlDecodeUni. ModSecurity's
+-- urlDecodeUni decodes %uHHHH by KEEPING ONLY THE LOW BYTE (zeroing the
+-- high byte), so any codepoint whose low byte is an ASCII metacharacter
+-- turns into that metacharacter. "имо" (U+0438,U+043C,U+043E) collapses to
+-- "8<>", and "<>" trips 942120 — a false positive on legitimate Cyrillic
+-- (also Armenian, Arabic, ...). See github.com/coreruleset/coreruleset/issues/3793
+-- (open, reproduced live on both ModSec and Karna on 2026-07-07).
+--
+-- Karna's urlDecodeUni re-encodes the FULL codepoint back to UTF-8 (see
+-- ka_utils.utf8FromHex), so the pair round-trips multi-byte UTF-8 and no
+-- metacharacter is ever synthesised. These tests lock that in: if someone
+-- ever "simplifies" utf8FromHex to truncate like ModSec, the FP comes back
+-- and these fail.
+local function chain(value, ...)
+    for _, tf in ipairs({ ... }) do value = apply(tf, value) end
+    return value
+end
+-- имо = D0 B8 D0 BC D0 BE ; ԼԾ = D4 BC D4 BE
+local imo = "\xD0\xB8\xD0\xBC\xD0\xBE"
+local arm = "\xD4\xBC\xD4\xBE"
+check("имо utf8toUnicode→urlDecodeUni round-trips to имо (not '8<>')",
+      chain(imo, "utf8toUnicode", "urlDecodeUni") == imo,
+      string.format("got=%q", chain(imo, "utf8toUnicode", "urlDecodeUni")))
+check("имо chain never synthesises '<>' (ModSec truncation FP)",
+      not chain(imo, "utf8toUnicode", "urlDecodeUni"):find("<>", 1, true))
+check("ԼԾ (Armenian) utf8toUnicode→urlDecodeUni round-trips (not '<>')",
+      chain(arm, "utf8toUnicode", "urlDecodeUni") == arm,
+      string.format("got=%q", chain(arm, "utf8toUnicode", "urlDecodeUni")))
+-- False-negative guard: a GENUINE %u-encoded ASCII metacharacter must still
+-- decode, so immunity to the FP costs no detection. utf8toUnicode is a no-op
+-- on the ASCII "%u003C" text, then urlDecodeUni decodes it to "<".
+check("genuine %u003C still decodes to '<' through the chain (no false negative)",
+      chain("%u003C", "utf8toUnicode", "urlDecodeUni") == "<",
+      string.format("got=%q", chain("%u003C", "utf8toUnicode", "urlDecodeUni")))
+
 print("== jsDecode ==")
 eq("\\u0020 → space (BMP ASCII)",          "jsDecode", "a\\u0020b",                              "a b")
 eq("\\uFF1C → < (fullwidth ASCII normalised)", "jsDecode", "\\uFF1C",                            "<")
