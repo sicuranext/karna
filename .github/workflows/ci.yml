@@ -61,6 +61,8 @@ jobs:
         run: lua ka-unittest/json_sanitize_field.lua
       - name: rule_action_overrides / rule_response_overrides (config-level)
         run: lua ka-unittest/rule_overrides.lua
+      - name: Default block response builder (body/headers precedence)
+        run: lua ka-unittest/default_block_response.lua
       - name: Op negation normalization (canonical vs legacy)
         run: lua ka-unittest/op_negation_normalization.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)

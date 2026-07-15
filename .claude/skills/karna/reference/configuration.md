@@ -56,8 +56,12 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 
 ## Action / response overrides (change existing rules without editing the pack)
 - `rule_action_overrides` (array, `[]`) — `{selector, action}` where action.type is `fix` (sanitize, with `remove_chars_pattern`), `passthrough` (drop terminal), or `block`.
-- `rule_response_overrides` (array, `[]`) — `{selector, response}` with `status_code`/`body` (supports `%{var}`)/`headers`.
+- `rule_response_overrides` (array, `[]`) — `{selector, response}` with `status_code`/`body` (static string served verbatim — NO `%{var}` macros, by design: request data must never be reflected into the block response)/`headers` (merged).
 - Selector grammar: `ids`, `id_ranges` (`"941000-941999"`), `tags`, `except_ids`, `except_tags`, `any:true`. First match wins; cached pack never mutated.
+
+## Default block response (the block page)
+- `default_block_response_body` (string, unset) — the page Karna serves whenever it blocks (CRS/local/custom rules AND the always-on validation gates) and nothing more specific was authored. Static string, no `%{var}` macros. Rule-authored `fixed_response` body, a matching `rule_response_overrides` entry, or a rate-limit rule's `response` still win.
+- `default_block_response_headers` (map, `{}`) — merged over the built-in block headers (`content-type: text/plain` + no-cache), operator keys win; set `content-type: text/html` when the body is HTML. Status codes are NOT configurable — they stay semantic per block point (403 rules/most gates, 405 method gate, 400 arg-length gate, 429 rate-limit).
 
 ## Audit logging
 - `auditlog_enabled` (bool, `true`), `auditlog_path` (str, `/usr/local/openresty/nginx/logs`, must be kong:kong-writable), `auditlog_format` (`v2`|`v1`, default `v2`), `auditlog_only_on_match` (bool, `false`), `auditlog_modsec` (bool, `false`), `auditlog_error_log_on_match` (bool, `false`).

@@ -382,6 +382,70 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
     return json_log
 end
 
+-- Built-in headers for Karna's own terminal (block) responses. Used
+-- wherever nothing more specific was authored; the operator can layer
+-- default_block_response_headers on top via the plugin config.
+local DEFAULT_BLOCK_HEADERS = {
+    ["content-type"] = "text/plain",
+    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
+}
+
+-- Build the body + headers for a terminal block response. Single point
+-- of truth for every place Karna denies a request (rule blocks, the
+-- always-on validation gates, the rate-limit 429).
+--
+-- Precedence:
+--   body:    explicit_body (rule / override / rate-limit authored)
+--            → plugin_conf.default_block_response_body
+--            → fallback_body (the built-in per-block-point text)
+--   headers: one merge chain, most specific wins per key —
+--            DEFAULT_BLOCK_HEADERS
+--            ← plugin_conf.default_block_response_headers
+--            ← explicit_headers (rule / override / rate-limit authored)
+--            ← extra_headers (e.g. x-karna-rule-id)
+--            Keys are lowercased on merge so "Content-Type" overrides
+--            the built-in "content-type" instead of duplicating it.
+--
+-- Always returns a fresh headers table — callers may mutate it (the
+-- rate-limit path adds Retry-After) without touching the cached rule
+-- pack or the schema default.
+_M.build_block_response = function(self, plugin_conf, explicit_body, explicit_headers, fallback_body, extra_headers)
+    local body = explicit_body
+    if body == nil and plugin_conf then
+        body = plugin_conf.default_block_response_body
+    end
+    if body == nil then
+        body = fallback_body
+    end
+
+    local headers = {}
+    for k, v in pairs(DEFAULT_BLOCK_HEADERS) do
+        headers[k] = v
+    end
+    local conf_headers = plugin_conf and plugin_conf.default_block_response_headers
+    if type(conf_headers) == "table" then
+        for k, v in pairs(conf_headers) do
+            if type(k) == "string" and type(v) == "string" then
+                headers[k:lower()] = v
+            end
+        end
+    end
+    if type(explicit_headers) == "table" then
+        for k, v in pairs(explicit_headers) do
+            if type(k) == "string" then
+                headers[k:lower()] = v
+            end
+        end
+    end
+    if extra_headers then
+        for k, v in pairs(extra_headers) do
+            headers[k] = v
+        end
+    end
+
+    return body, headers
+end
+
 -- Build the request enrichment block for audit log v2. Reads brand-neutral
 -- well-known keys from kong.ctx.shared.* (set by sibling plugins) and a
 -- free-form bucket from kong.ctx.shared.karna.enrichment for non-standard

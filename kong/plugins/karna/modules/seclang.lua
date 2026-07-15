@@ -642,13 +642,14 @@ end
 function seclang.__get_action(actions)
     local action = {["setvar"] = {}}
     if actions:match(",block") or actions:match("block,") then
+        -- status_code only: body and headers are deliberately NOT baked
+        -- into the parsed rule, so the serve path (handler.lua) fills
+        -- them at block time from default_block_response_body/_headers
+        -- (plugin config) or the built-in "Forbidden\r\n" fallback. A
+        -- baked body here would shadow the operator's default block page
+        -- for every CRS rule — the main use case.
         action["fixed_response"] = {
-            status_code = 403,
-            headers = {
-                ["content-type"] = "text/plain",
-                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
-            },
-            body = "Forbidden\r\n"
+            status_code = 403
         }
     end
 

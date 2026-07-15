@@ -7,6 +7,41 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-15
+
+### Added
+
+- `default_block_response_body` and `default_block_response_headers` config
+  fields: a default block page for every terminal response Karna generates —
+  CRS / local / custom rule blocks, the always-on validation gates, and the
+  rate-limit 429 — wherever nothing more specific was authored. `body` is a
+  static string served verbatim (no `%{var}` macros, so request data is never
+  reflected into the block page); `headers` is merged over the built-in
+  defaults (`content-type: text/plain` + no-cache) with operator keys winning,
+  so setting `content-type: text/html` turns the body into a proper HTML
+  page. Status codes are not configurable and stay semantic per block point
+  (403 rules and most gates, 405 method gate, 400 arg-length gate, 429
+  rate-limit). Precedence: rule-authored `fixed_response` body/headers, a
+  matching `rule_response_overrides` entry, and a rate-limit rule's `response`
+  all still win; the default only fills what used to be hardcoded.
+
+### Changed
+
+- Block response body/headers are no longer baked into every parsed SecLang
+  rule; they are resolved at block time by a single builder
+  (`ka_utils.build_block_response`), which is what lets
+  `default_block_response_*` reach CRS rule blocks. With the new fields unset
+  the on-wire responses are unchanged, with two footnote-level exceptions:
+  a JSON local rule that declares `fixed_response` without a `body` now
+  returns `Forbidden` instead of `Access Denied` (all built-in fallbacks are
+  unified), and headers authored on a rule / override / rate-limit `response`
+  are now merged over the built-in defaults (lowercased, most specific wins)
+  instead of replacing them wholesale — an authored `content-type` still
+  wins, but the standard `cache-control` no longer disappears. Header maps
+  passed by rules are copied, never mutated, so the cached rule pack can no
+  longer be dirtied by per-request additions like `Retry-After` or the
+  `private_debug` rule-id echo.
+
 ## [1.3.0] - 2026-07-06
 
 ### Added
