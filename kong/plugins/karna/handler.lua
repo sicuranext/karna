@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.3.0",
+  VERSION = "1.4.0",
 }
 
 local ngx                 = ngx
@@ -295,11 +295,11 @@ local apply_action_and_response_overrides = function(plugin_conf, rule)
         elseif t == "passthrough" then
           effective = { setvar = {} }
         elseif t == "block" then
-          local base = (rule.action and rule.action.fixed_response) or {
-            status_code = 403,
-            body = "Forbidden\r\n",
-            headers = { ["content-type"] = "text/plain" },
-          }
+          -- status_code only when the rule had no fixed_response: body
+          -- and headers stay nil so the serve path fills them from
+          -- default_block_response_* / the built-in fallback.
+          local base = (rule.action and rule.action.fixed_response)
+            or { status_code = 403 }
           effective = { fixed_response = {
             status_code = base.status_code,
             body = base.body,
@@ -529,16 +529,13 @@ local evaluate_rules = function(plugin_conf, rules, phase)
 
       if plugin_conf.engine_blocking_mode and match_entry.rate_limited then
         local resp = rl.response or {}
-        local headers = resp.headers
-        if type(headers) ~= "table" then
-          headers = { ["content-type"] = "text/plain", ["cache-control"] = "no-store" }
-        end
-        if not headers["retry-after"] and not headers["Retry-After"] then
+        local body, headers = utils:build_block_response(plugin_conf, resp.body, resp.headers, "Too Many Requests\r\n")
+        if not headers["retry-after"] then
           headers["Retry-After"] = tostring(window)
         end
         response_exit(
           tonumber(resp.status_code) or 429,
-          resp.body or "Too Many Requests\r\n",
+          body,
           headers
         )
       end
@@ -552,6 +549,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       if rule_matched_obj.action then
 
         if rule_matched_obj.action.fixed_response then
+          local fr = rule_matched_obj.action.fixed_response
           if plugin_conf.private_debug then
             -- Echo the matched rule id in a response header as well.
             -- The JSON body in `private_debug` mode carries the same
@@ -559,21 +557,25 @@ local evaluate_rules = function(plugin_conf, rules, phase)
             -- is the only channel that survives, so test harnesses
             -- (CRS regression suite) can identify which rule fired
             -- regardless of method.
-            local dbg_headers = rule_matched_obj.action.fixed_response.headers
-              or { ["content-type"] = "text/plain", ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate" }
+            local extra
             if rule_matched_obj.id then
-              dbg_headers["x-karna-rule-id"] = tostring(rule_matched_obj.id)
+              extra = { ["x-karna-rule-id"] = tostring(rule_matched_obj.id) }
             end
+            local _, dbg_headers = utils:build_block_response(plugin_conf, nil, fr.headers, nil, extra)
             response_exit(
-              rule_matched_obj.action.fixed_response.status_code or 403,
+              fr.status_code or 403,
               cjson.encode(ka_compile.public_view(rule_matched_obj)),
               dbg_headers
             )
           else
+            -- body/headers precedence: rule-authored (fr, includes any
+            -- rule_response_overrides merge) → default_block_response_*
+            -- (plugin config) → built-in "Forbidden\r\n".
+            local body, headers = utils:build_block_response(plugin_conf, fr.body, fr.headers, "Forbidden\r\n")
             response_exit(
-              rule_matched_obj.action.fixed_response.status_code or 403,
-              rule_matched_obj.action.fixed_response.body or "Access Denied",
-              rule_matched_obj.action.fixed_response.headers or { ["content-type"] = "text/plain", ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate" }
+              fr.status_code or 403,
+              body,
+              headers
             )
           end
         end

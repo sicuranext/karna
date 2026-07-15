@@ -228,6 +228,27 @@ local schema = {
           { rule_action_overrides = { type = "array", elements = { type = "string" }, default = {} } },
           { rule_response_overrides = { type = "array", elements = { type = "string" }, default = {} } },
 
+          -- Default block response — the page Karna serves whenever it
+          -- blocks (CRS / local / custom rules AND the always-on
+          -- validation gates) and nothing more specific was authored.
+          -- `body` replaces the built-in plain-text bodies ("Forbidden",
+          -- "Method Not Allowed", …); `headers` is merged over the
+          -- built-in defaults (content-type text/plain + no-cache), with
+          -- operator keys winning — set `content-type: text/html` here
+          -- when the body is an HTML page. Status codes are NOT
+          -- configurable: they stay semantic per block point (403 rules
+          -- and most gates, 405 method gate, 400 arg-length gate, 429
+          -- rate-limit). Anything more specific still wins: a rule's own
+          -- `fixed_response` body/headers, a matching
+          -- `rule_response_overrides` entry, a rate-limit rule's
+          -- `response`. Like the override bodies, `body` is served
+          -- verbatim — no `%{var}` macros, so request data is never
+          -- reflected into the block page.
+          { default_block_response_body = { type = "string" } },
+          { default_block_response_headers = { type = "map",
+              keys = { type = "string" }, values = { type = "string" },
+              default = {} } },
+
           { try_bas64decode_if_possible = { type = "boolean", default = false } },
 
           { auditlog_enabled = { type = "boolean", default = true } },

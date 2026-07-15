@@ -3514,15 +3514,9 @@ _M.check_request_body_parser = function(self, plugin_conf)
         }
     })
     if plugin_conf.engine_blocking_mode then
-        return kong.response.exit(
-            403,
-            "Forbidden",
-            {
-                ["content-type"] = "text/plain",
-                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                ["x-karna-rule-id"] = "request_body_parser_violation"
-            }
-        )
+        local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+            "Forbidden", { ["x-karna-rule-id"] = "request_body_parser_violation" })
+        return kong.response.exit(403, body, headers)
     end
 end
 
@@ -3595,15 +3589,9 @@ _M.check_request_arg_count = function(self, plugin_conf)
     })
 
     if plugin_conf.engine_blocking_mode then
-        return kong.response.exit(
-            403,
-            "Forbidden",
-            {
-                ["content-type"] = "text/plain",
-                ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                ["x-karna-rule-id"] = "limit_arg_num"
-            }
-        )
+        local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+            "Forbidden", { ["x-karna-rule-id"] = "limit_arg_num" })
+        return kong.response.exit(403, body, headers)
     end
 
     -- detection mode: don't scan a pathological request (the scan is the
@@ -3641,15 +3629,9 @@ _M.method_allowed = function (self, plugin_conf)
         })
 
         if plugin_conf.engine_blocking_mode then
-            return kong.response.exit(
-                405,
-                "Method Not Allowed",
-                {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                    ["x-karna-rule-id"] = "method_allowed"
-                }
-            )
+            local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                "Method Not Allowed", { ["x-karna-rule-id"] = "method_allowed" })
+            return kong.response.exit(405, body, headers)
         end
     end
 end
@@ -5694,15 +5676,9 @@ _M.check_arg_len = function(self, plugin_conf)
 
         -- if blocking mode, then return 400
         if plugin_conf.engine_blocking_mode then
-            return kong.response.exit(
-                400,
-                "Request argument length limit reached",
-                {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                    ["x-karna-rule-id"] = "check_arg_len"
-                }
-            )
+            local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                "Request argument length limit reached", { ["x-karna-rule-id"] = "check_arg_len" })
+            return kong.response.exit(400, body, headers)
         end
     end
 end
@@ -5802,15 +5778,9 @@ _M.uri_path_check_violation = function(self, plugin_conf)
 
         -- if blocking mode, then return 403
         if plugin_conf.engine_blocking_mode then
-            return kong.response.exit(
-                403,
-                "Request URI path contains illegal characters",
-                {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                    ["x-karna-rule-id"] = "uri_path_check_violation"
-                }
-            )
+            local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                "Request URI path contains illegal characters", { ["x-karna-rule-id"] = "uri_path_check_violation" })
+            return kong.response.exit(403, body, headers)
         end
     end
 end
@@ -5863,15 +5833,9 @@ _M.check_request_headers_allowed = function(self, plugin_conf)
 
         -- if blocking mode, then return 403
         if plugin_conf.engine_blocking_mode then
-            return kong.response.exit(
-                403,
-                "Request headers not allowed",
-                {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                    ["x-karna-rule-id"] = "check_request_headers_allowed"
-                }
-            )
+            local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                "Request headers not allowed", { ["x-karna-rule-id"] = "check_request_headers_allowed" })
+            return kong.response.exit(403, body, headers)
         end
     end
 
@@ -5902,15 +5866,9 @@ _M.check_request_headers_allowed = function(self, plugin_conf)
 
         -- if blocking mode, then return 403
         if plugin_conf.engine_blocking_mode then
-            return kong.response.exit(
-                403,
-                "Request headers not allowed",
-                {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                    ["x-karna-rule-id"] = "check_request_headers_allowed"
-                }
-            )
+            local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                "Request headers not allowed", { ["x-karna-rule-id"] = "check_request_headers_allowed" })
+            return kong.response.exit(403, body, headers)
         end
     end
 end
@@ -5955,15 +5913,9 @@ _M.check_request_content_type_charset = function(self, plugin_conf)
         
                 -- if blocking mode, then return 403
                 if plugin_conf.engine_blocking_mode then
-                    return kong.response.exit(
-                        403,
-                        "Request Content-Type charset not allowed",
-                        {
-                            ["content-type"] = "text/plain",
-                            ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                            ["x-karna-rule-id"] = "check_request_content_type_charset"
-                        }
-                    )
+                    local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                        "Request Content-Type charset not allowed", { ["x-karna-rule-id"] = "check_request_content_type_charset" })
+                    return kong.response.exit(403, body, headers)
                 end
             end
         end
@@ -6037,15 +5989,9 @@ _M.check_request_content_type_enforce = function(self, plugin_conf)
         })
 
         if plugin_conf.engine_blocking_mode then
-            return kong.response.exit(
-                403,
-                "Request body Content-Type not allowed",
-                {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate",
-                    ["x-karna-rule-id"] = "check_request_content_type_enforce"
-                }
-            )
+            local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+                "Request body Content-Type not allowed", { ["x-karna-rule-id"] = "check_request_content_type_enforce" })
+            return kong.response.exit(403, body, headers)
         end
     end
 end

@@ -101,11 +101,11 @@ local function apply_overrides(action_overrides, response_overrides, rule)
                 elseif t == "passthrough" then
                     effective = { setvar = {} }
                 elseif t == "block" then
-                    local base = (rule.action and rule.action.fixed_response) or {
-                        status_code = 403,
-                        body = "Forbidden\r\n",
-                        headers = { ["content-type"] = "text/plain" },
-                    }
+                    -- status_code only when the rule had no fixed_response:
+                    -- body/headers stay nil so the serve path fills them from
+                    -- default_block_response_* / the built-in fallback.
+                    local base = (rule.action and rule.action.fixed_response)
+                        or { status_code = 403 }
                     effective = { fixed_response = {
                         status_code = base.status_code,
                         body = base.body,

@@ -10,7 +10,7 @@
 -- `version` is the single source of truth for the engine version and must stay
 -- in sync with the rockspec version and handler.lua's plugin.VERSION on release.
 return {
-  version      = "1.3.0",
+  version      = "1.4.0",
   commit       = "unknown",
   commit_short = "unknown",
   built_at     = "unknown",

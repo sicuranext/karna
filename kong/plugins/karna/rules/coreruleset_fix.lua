@@ -76,13 +76,11 @@ _M.global_fps = {
             }
         },
         action = {
+            -- status_code only — body/headers come from the serve-path
+            -- defaults (default_block_response_* or the built-in
+            -- fallback), same as every CRS rule.
             fixed_response = {
-                status_code = 403,
-                headers = {
-                    ["content-type"] = "text/plain",
-                    ["cache-control"] = "max-age=0, private, no-store, no-cache, must-revalidate"
-                },
-                body = "Forbidden\r\n"
+                status_code = 403
             }
         }
     },
