@@ -140,9 +140,22 @@ pass-rate floor.
 
 ## Versioning
 SemVer + LuaRocks revision (`MAJOR.MINOR.PATCH-REV`). **Don't forget**: on every
-release keep three things in sync — `version` in `kong/plugins/karna/version.lua`
-(the source of truth; `handler.lua` sets `plugin.VERSION = ka_version.version`),
-the rockspec `version` (carries the `-REV` suffix), and the rockspec filename.
+release the version string is duplicated across six spots that must all move
+together (a bare `grep -rn "<old-version>"` before pushing catches strays — the
+rockspec rename in particular breaks a hardcoded `COPY` in the Dockerfile and CI
+fails at image build, not at the test):
+1. `version` in `kong/plugins/karna/version.lua` — the source of truth;
+   `handler.lua` sets `plugin.VERSION = ka_version.version` at load. (`handler.lua`
+   also carries a static `VERSION = "<ver>"` placeholder that is overwritten at
+   load — cosmetic, but bump it too so the grep stays clean.)
+2. the rockspec `version` field (carries the `-REV` suffix).
+3. the rockspec `source.tag` (`v<MAJOR.MINOR.PATCH>`).
+4. the rockspec **filename** (`kong-plugin-karna-<ver>-<rev>.rockspec`).
+5. `docker/Dockerfile` — the `COPY kong-plugin-karna-<ver>-<rev>.rockspec` line
+   AND the `version = "<ver>"` string in the build-time `version.lua` stamp.
+6. `docker/docker-compose.dev.yml` — the rockspec bind-mount path (both sides),
+   and `scripts/install.sh` — the `version = "<ver>"` string in its stamp.
+
 `version.lua` is committed with placeholder `commit`/`built_at`; the build stamps
 the real commit (Docker build arg `KARNA_COMMIT`, or `scripts/install.sh` via
 `git rev-parse`). `scripts/build.sh` wraps the stamped Docker build.
