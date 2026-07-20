@@ -1,5 +1,4 @@
 local re_match  = ngx.re.match
-local re_find   = ngx.re.find
 local _M = {}
 
 -- Escape Lua pattern metacharacters in an arbitrary string so it can be
@@ -68,9 +67,13 @@ _M.reject_filename_star = true
 -- Require RFC 2046 quoted-string form for CD parameter values. When on,
 -- `filename=backdoor.php` (unquoted) is rejected. Closes Bypass #3 / #8.
 _M.require_quoted_params = true
--- Require strict CRLF line separators in the body. Bare LF / bare CR
--- bypass classes (lenient backend accepts, strict WAF parses
--- differently). Closes Bypass #2.
+-- Require strict CRLF line separators on the multipart FRAMING (boundary
+-- lines, part headers, the header/body separator). A bare LF or bare CR in
+-- framing is a desync bypass class (a lenient backend accepts it and parses
+-- a different structure than a strict WAF). Closes Bypass #2. Inside opaque
+-- part content a bare LF / CR is data, not framing, so it's kept verbatim —
+-- binary uploads (an image carries thousands of raw 0x0D / 0x0A bytes) are
+-- not rejected.
 _M.strict_crlf = true
 -- Require the explicit closing `--<boundary>--` line. PHP accepts
 -- incomplete bodies; strict WAFs must reject. Closes Bypass #4.
@@ -131,27 +134,23 @@ function _M.parse(self, body, content_type)
     local boundary_start = "^%-%-" .. boundary_escaped .. ""
     local boundary_end = "^%-%-" .. boundary_escaped .. "%-%-$"
 
-    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n`; lenient backends accept a
-    -- bare `\n` and split the body differently from a strict WAF — a documented
-    -- desync class.
+    -- Gap #4: strict CRLF. RFC 2046 mandates `\r\n` on framing; lenient
+    -- backends accept a bare `\n` (or a bare `\r`) and split the body
+    -- differently from a strict WAF — a documented desync class.
     --
-    -- Bare CR (a `\r` not followed by `\n`) has no legitimate use in a form
-    -- body, so it's rejected outright with a single body-wide ngx.re scan
-    -- (PCRE, JIT-compiled + cached via the 'jo' flags — ~10x faster than the
-    -- interpreted Lua char-class scan, which was ~12% of multipart CPU on a
-    -- multi-KB body: jit.p, scn05 3x10KB).
-    --
-    -- Bare LF is NOT scanned body-wide: that rejected any uploaded text file
-    -- carrying Unix newlines (a `\n` inside opaque part content is just data,
-    -- not a desync). It's enforced inside the parse loop below instead, scoped
-    -- to the FRAMING only (boundary lines, headers, the header/body separator,
-    -- and the `\r\n` preceding every delimiter) where a bare LF really does
-    -- desync.
-    if self.strict_crlf then
-        if re_find(body, "\\r[^\\n]", "jo") or body:sub(-1) == "\r" then
-            return nil, "bare CR found in body (strict CRLF required)"
-        end
-    end
+    -- Neither bare LF nor bare CR is scanned body-wide. A body-wide bare-CR
+    -- scan used to live here, but it rejected every real binary upload: a
+    -- `\r` (0x0D) byte not followed by `\n` is ordinary data inside opaque
+    -- part content (a ~1 MB image carries thousands of them), not a desync,
+    -- so an image POST to e.g. Ghost's admin upload endpoint was blocked with
+    -- "bare CR found in body". The strict-CRLF requirement only matters on the
+    -- FRAMING — boundary lines, part headers, the header/body separator, and
+    -- the `\r\n` preceding every delimiter — where a lone LF or CR really can
+    -- make a lenient backend see a different structure. So both are enforced
+    -- inside the parse loop below, scoped to framing; inside a part body they
+    -- are kept verbatim (the loop splits on `\n` only, so an interior `\r` is
+    -- preserved rather than dropped — that is what keeps a bare CR hidden in a
+    -- non-file field value inside ARGS where it still gets inspected).
 
     -- Normalise trailing CRLF. The closing `--<boundary>--` line is
     -- often sent without a trailing `\r\n` (RFC 2046 allows it), but
@@ -161,7 +160,12 @@ function _M.parse(self, body, content_type)
         body = body .. "\r\n"
     end
 
-    -- split body by lines by "\r\n"
+    -- Split the body into lines on `\n`. We capture everything up to the next
+    -- `\n` (INCLUDING any `\r`), then peel a single trailing `\r` to recover
+    -- the logical line and whether it ended in CRLF (`cr`). Splitting on `\n`
+    -- only — not on `\r\n` — means an interior bare `\r` stays inside `line`
+    -- instead of being silently dropped, so a bare CR hidden in a non-file
+    -- field value survives into ARGS and gets inspected.
     local start_collecting_headers = false
     local start_collecting_body = false
     local start_boundary_found = false
@@ -171,21 +175,37 @@ function _M.parse(self, body, content_type)
     -- first_line guards the opening boundary, which has no preceding line.
     local prev_cr = "\r"
     local first_line = true
-    for line, cr in body:gmatch("([^\r\n]*)(\r?)\n") do
-        -- Strict CRLF, scoped to framing. A bare LF that terminates a boundary
-        -- line, a header line, the header/body separator, or the body just
-        -- before a delimiter is a desync vector (a strict backend wants
-        -- `\r\n--boundary`; a line-based parser accepts `\n--boundary`). Inside
-        -- opaque part content a bare LF is harmless, so a legit text-file
-        -- upload with Unix newlines passes.
+    for raw in body:gmatch("([^\n]*)\n") do
+        local cr, line
+        if #raw > 0 and raw:byte(#raw) == 13 then
+            cr = "\r"
+            line = raw:sub(1, -2)
+        else
+            cr = ""
+            line = raw
+        end
+        -- An interior `\r`: a bare CR that is NOT the trailing CRLF terminator.
+        local interior_cr = line:find("\r", 1, true) ~= nil
+        -- Strict CRLF, scoped to framing. A bare LF or bare CR that terminates
+        -- a boundary line, a header line, or the header/body separator (or a
+        -- bare CR embedded in any of them) is a desync vector (a strict
+        -- backend wants `\r\n--boundary`; a line-based parser accepts
+        -- `\n--boundary`). Inside opaque part content a bare LF / CR is
+        -- harmless data, so a legit text- or binary-file upload with Unix
+        -- newlines or raw 0x0D bytes passes.
         if self.strict_crlf then
             local is_bnd = line:match(boundary_start) or line:match(boundary_end)
             local in_body = start_collecting_body
+            -- framing = anything that isn't opaque (non-boundary) part content
+            local is_framing = not (in_body and not is_bnd)
             if is_bnd and not first_line and prev_cr ~= "\r" then
                 return nil, "bare LF before boundary delimiter (strict CRLF required on framing)"
             end
-            if not (in_body and not is_bnd) and cr ~= "\r" then
+            if is_framing and cr ~= "\r" then
                 return nil, "bare LF in multipart framing (strict CRLF required)"
+            end
+            if is_framing and interior_cr then
+                return nil, "bare CR in multipart framing (strict CRLF required)"
             end
         end
         if line:match(boundary_end) then
@@ -202,7 +222,7 @@ function _M.parse(self, body, content_type)
             if self.debug then print("> START OF PART") end
             start_boundary_found = true
             part_count = part_count + 1
-            t[part_count] = {raw_headers="",body=""}
+            t[part_count] = {raw_headers="",body="",body_buf={}}
             start_collecting_headers = true
             start_collecting_body = false
         end
@@ -213,7 +233,11 @@ function _M.parse(self, body, content_type)
         end
         if start_collecting_body then
             if self.debug then print("> BODY LINE: " .. line) end
-            t[part_count].body = t[part_count].body .. line .. "\r\n"
+            -- Buffer body lines; join once after the loop. Per-line string
+            -- concatenation here was O(n^2) on the line count (a large file
+            -- upload, or a body padded with newlines, is thousands of lines).
+            local body_buf = t[part_count].body_buf
+            body_buf[#body_buf + 1] = line
         end
 
 
@@ -244,18 +268,22 @@ function _M.parse(self, body, content_type)
     for i, part in ipairs(t) do
         t[i].boundary = boundary
 
-        -- A well-formed part body is delimited by CRLF--boundary, so the raw
-        -- collected body is never empty: even an empty field carries its
-        -- delimiter CRLF (raw body == "\r\n"). An empty raw body means the
-        -- boundary was glued straight onto the headers terminator with no body
-        -- section (or the headers were never terminated) — a malformed part
-        -- the backend and the WAF parse differently. Reject the whole body.
-        if self.reject_bodyless_part and t[i].body == "" then
+        -- A well-formed part body is delimited by CRLF--boundary, so at least
+        -- one body line is always collected: even an empty field carries its
+        -- delimiter CRLF. Zero collected lines means the boundary was glued
+        -- straight onto the headers terminator with no body section (or the
+        -- headers were never terminated) — a malformed part the backend and
+        -- the WAF parse differently. Reject the whole body.
+        if self.reject_bodyless_part and #t[i].body_buf == 0 then
             return nil, "malformed part (no body section; boundary glued to headers) in part " .. tostring(i)
         end
 
-        -- remove last \r\n from body
-        t[i].body = t[i].body:sub(1, -3)
+        -- Materialise the buffered body. Each collected line used to be stored
+        -- with a trailing "\r\n" and the final one stripped by sub(1,-3);
+        -- joining with "\r\n" reproduces exactly that normalised framing (no
+        -- trailing separator) in O(n) instead of O(n^2).
+        t[i].body = table.concat(t[i].body_buf, "\r\n")
+        t[i].body_buf = nil
         t[i].content_length = #t[i].body
 
         -- remove last \r\n\r\n from raw_headers

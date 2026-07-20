@@ -238,6 +238,71 @@ do
 end
 
 -- ===========================================================================
+print("== Gap #4b: bare CR scoped to framing (binary-upload false positive) ==")
+-- ===========================================================================
+-- A bare CR (0x0D not followed by 0x0A) is ordinary data inside a part body:
+-- binary uploads (images/PDFs) carry thousands of them. The old body-wide
+-- bare-CR scan rejected every such upload ("bare CR found in body"). It's now
+-- enforced only on FRAMING; inside part content a bare CR is kept verbatim.
+
+do
+    -- The Ghost image-upload FP: a file part whose bytes contain a bare CR.
+    local body = build_body({
+        { cd_header = 'Content-Disposition: form-data; name="file"; filename="pic.png"',
+          content_type = "image/png",
+          body = "PNG\r\137DATA\rMORE" },  -- raw 0x0D bytes, not CRLF
+    })
+    local r, err = mp:parse(body, CT)
+    check("binary file with bare CR → accepted (no 'bare CR' block)",
+          r and r[1] and not (err and err:find("bare CR")),
+          "got: " .. tostring(err))
+    check("binary file body preserved byte-for-byte (CR kept, none dropped)",
+          r and r[1] and r[1].body == "PNG\r\137DATA\rMORE",
+          "got body=" .. tostring(r and r[1] and r[1].body))
+end
+
+do
+    -- Non-file field value with a bare CR must survive into the parsed value
+    -- (byte-drop here would let an attacker hide a payload from ARGS scanning).
+    local body = build_body({
+        { cd_header = 'Content-Disposition: form-data; name="q"', body = "foo\rbar<script>" },
+    })
+    local r, err = mp:parse(body, CT)
+    check("non-file value with bare CR → preserved (no evasion via dropped bytes)",
+          r and r[1] and r[1].body == "foo\rbar<script>",
+          "got body=" .. tostring(r and r[1] and r[1].body) .. " err=" .. tostring(err))
+end
+
+do
+    -- Bare CR embedded in a part HEADER line is framing → still rejected.
+    local body = '--X\r\nContent-Disposition: form-data; name="a"\rEVIL\r\n\r\nv\r\n--X--\r\n'
+    local r, err = mp:parse(body, CT)
+    check("bare CR in a header line → rejected",
+          r == nil and err and err:find("bare CR in multipart framing"),
+          "got: " .. tostring(err))
+end
+
+do
+    -- Bare CR embedded in the opening boundary line is framing → still rejected.
+    local body = '--X\rGARBAGE\r\nContent-Disposition: form-data; name="a"\r\n\r\nv\r\n--X--\r\n'
+    local r, err = mp:parse(body, CT)
+    check("bare CR in the boundary line → rejected",
+          r == nil and err and err:find("bare CR in multipart framing"),
+          "got: " .. tostring(err))
+end
+
+do
+    -- A bare CR right before the closing delimiter (framing desync attempt):
+    -- the delimiter never surfaces as a clean line, so the closing-boundary
+    -- gate rejects it. Either way the request is denied, never parsed 200.
+    local body = '--X\r\nContent-Disposition: form-data; name="a"\r\n\r\nvalue\r--X--\r\n'
+    local r, err = mp:parse(body, CT)
+    check("bare CR glued before closing delimiter → rejected",
+          r == nil and err ~= nil,
+          "got: " .. tostring(err))
+end
+
+-- ===========================================================================
 print("== Gap #5: require closing boundary (Bypass #4) ==")
 -- ===========================================================================
 

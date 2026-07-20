@@ -7,6 +7,26 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- Multipart body parser no longer rejects binary file uploads that carry a
+  bare CR (a `0x0D` byte not followed by `0x0A`). Such bytes are ordinary data
+  inside opaque part content — a ~1 MB image contains thousands of them — but
+  the old body-wide bare-CR scan treated any of them as a framing desync and
+  blocked the request with `request_body_parser_violation`. In practice that
+  rejected essentially every real file upload (for example an image POST to
+  Ghost's admin upload endpoint). Strict-CRLF enforcement is now scoped to the
+  multipart framing (boundary lines, part headers, the header/body separator),
+  the same way bare LF was already handled; inside a part body a bare CR or LF
+  is kept verbatim. A bare CR embedded in framing is still rejected, and CRS
+  regression is unchanged (2757/2757).
+- Closed a related evasion and O(n²) cost in the same parser. The line splitter
+  used to drop the bytes between a bare CR and the next LF, which let a payload
+  hidden in a non-file field value skip ARGS inspection; it now splits on `\n`
+  only so those bytes survive and are scanned. Part-body reconstruction also
+  buffers lines and joins once instead of concatenating per line, so a large
+  upload (or a body padded with newlines) no longer costs seconds of worker CPU.
+
 ## [1.4.0] - 2026-07-15
 
 ### Added
