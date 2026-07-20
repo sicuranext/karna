@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-07-20
+
 ### Fixed
 
 - Multipart body parser no longer rejects binary file uploads that carry a
