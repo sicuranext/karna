@@ -119,7 +119,7 @@ Karna inspects every request against a layered rule pipeline:
    seconds of a publish, no `kong reload` and no per-service config.
    Publish with `scripts/karna-rules.py --type global-rules`; enable by
    setting `KARNA_REDIS_URL`. See the
-   [docs](https://karna.sicuranext.com/docs/rules.html#global-rules).
+   [rules documentation](docs/rules.html#global-rules).
 4. **Per-service local rules** (`rules_request`): your own custom rules,
    each run in the phase named by its `phase` field (access or
    header_filter). Gated by `local_rules_enabled` (default `true`).
