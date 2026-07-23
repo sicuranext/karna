@@ -58,6 +58,7 @@
     <a href="#rule-controls">Rule controls</a>
     <a href="#overrides">CRS overrides</a>
     <a href="#seclang">SecLang rules</a>
+    <a href="#global-rules">Global rules</a>
     <h5>Examples</h5>
     <a href="#ex-detect">Detect &amp; block</a>
     <a href="#ex-sanitize">Sanitize, don't block</a>
@@ -436,6 +437,57 @@
   <span class="str">"SecRule ARGS:debug \"@streq 1\" \"id:9001,phase:1,deny,status:403,msg:'debug arg blocked'\""</span>
 ]</pre></div>
       </div>
+    </section>
+
+    <section id="global-rules">
+      <h2>Global rules</h2>
+      <p>Karna is attached per-service, so Kong has no native way to ship one rule pack to every service — a global plugin instance would be shadowed by the per-service ones. Global rules close that gap: you publish a single pack to a Redis hash and <strong>every Karna worker on every node</strong> pulls it, verifies its signature, and evaluates it on <strong>every service</strong>, before local rules and the CRS. Updates go live within the poll interval — no <code>kong reload</code>, no per-service configuration, no files on the gateway nodes.</p>
+
+      <h3>Storage layout</h3>
+      <p>One Redis hash, <code>karna:global_rules</code>, written atomically by a single <code>HSET</code>:</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Field</th><th>Content</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>json</code></td><td>A JSON <em>array</em> of rules in the Karna rule format — the same objects you would put in <code>rules_request</code>. Author order is preserved.</td></tr>
+          <tr><td class="name"><code>seclang</code></td><td>Raw SecLang text, the same dialect as <code>custom_secrules</code> (<code>deny</code> and <code>block</code> both map to a 403 <code>fixed_response</code>; an explicit <code>status:NNN</code> is honoured). Rules are ordered by id.</td></tr>
+          <tr><td class="name"><code>version</code></td><td>Monotonically increasing integer, bumped on every publish. Workers poll this field only and re-fetch the pack when it changes.</td></tr>
+          <tr><td class="name"><code>sig</code></td><td>Hex HMAC-SHA256 over <code>version + "\n" + sha256(json) + "\n" + sha256(seclang)</code>.</td></tr>
+        </tbody>
+      </table>
+      <p>JSON rules are evaluated first (in author order), then SecLang rules (sorted by id). Supported phases match local rules: <code>access</code>, <code>header_filter</code>, and <code>mcp_event</code>; <code>body_filter</code> rules are not evaluated. Rules default to <code>"log": true</code>.</p>
+
+      <h3>Publishing</h3>
+      <p>Use <code>scripts/karna-rules.py</code> — it validates, previews, signs, and publishes the pack in one atomic write. Set up once:</p>
+      <div class="code-card">
+        <div class="code-head"><span>one-time setup</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre><span class="cmt"># 1. generate the signing key</span>
+openssl rand -hex 32
+
+<span class="cmt"># 2. on every Kong node (see Configuration → Environment):</span>
+<span class="cmt">#    KARNA_REDIS_URL=redis://:pass@redis:6379/0</span>
+<span class="cmt">#    KARNA_GLOBAL_RULES_HMAC_KEY=&lt;the key&gt;</span>
+<span class="cmt"># 3. restart Kong once to pick up the env</span></pre></div>
+      </div>
+      <div class="code-card">
+        <div class="code-head"><span>publish / inspect / recover</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre><span class="cmt"># publish (the key comes from the env, never from argv)</span>
+<span class="kw">export</span> KARNA_GLOBAL_RULES_HMAC_KEY=...
+./scripts/karna-rules.py --type global-rules \
+    --redis redis://localhost:6379/0 \
+    --json global_rules.json --seclang global_rules.conf
+
+<span class="cmt"># dry-run first, if you like: add --dry-run</span>
+<span class="cmt"># inspect what is live: --show   (version, counts, signature status)</span>
+<span class="cmt"># recover your authoring files from Redis: --pull</span></pre></div>
+      </div>
+      <p>Publishing only <code>--json</code> preserves the already-published SecLang payload (and vice versa) — pushing one format never wipes the other. Deleting the hash (<code>DEL karna:global_rules</code>) is the explicit off switch: workers clear the pack at the next poll.</p>
+
+      <h3>Trust model</h3>
+      <p>Redis is a <em>transport</em>, not a trust anchor. With <code>KARNA_GLOBAL_RULES_HMAC_KEY</code> set, a pack with a missing or invalid signature is rejected and the last known good pack stays active — write access to Redis alone is not enough to inject or weaken rules; the signing key is. Workers also refuse non-increasing versions, so an old signed pack cannot be replayed while they run (after a full Kong restart the counter resets; rotate the key if that residual matters to you). Without the key, packs are accepted unsigned and a loud warning is logged at startup — fine for a lab, not for production.</p>
+
+      <h3>Evaluation order and failure posture</h3>
+      <p>Global rules run <em>after</em> rule controls and CRS exclusion plugins (so per-service <code>ctl:*</code> exclusions and <a class="link" href="#overrides">overrides</a> can tame a global rule on one service without touching the pack) and <em>before</em> local rules and the CRS. Blocking behaviour follows each service's <code>engine_blocking_mode</code> — on a detection-only service a global rule logs instead of blocking. There is deliberately no per-service opt-out; tag your global rules (e.g. <code>"tags": ["global-pack"]</code>) so overrides can select them where exceptions are needed.</p>
+      <p>On a Redis outage or a rejected pack, workers keep the last known good pack and log an error per failed poll. A worker that starts while Redis is down runs without global rules until the first successful poll (the CRS and local rules are unaffected — they load from disk and config).</p>
     </section>
 
     <section id="ex-detect">

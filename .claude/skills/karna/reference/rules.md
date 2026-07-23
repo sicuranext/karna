@@ -37,7 +37,10 @@ Set a rule's `phase` to one of these. Custom rules run in `access` and
 - `mcp_event` — per reassembled SSE event (Karna-native, MCP only); can drop/replace/terminate/inject events.
 
 ## Evaluation order
-Within a phase the engine runs the rules in order. Non-terminal side effects
+Within a phase the engine runs, in this order: rule controls → CRS exclusion
+plugins + `custom_secrules` pass-rules (ctl side effects) → **global rules**
+(Redis pack, if published) → local rules (`rules_request`) → CRS. Within each
+list rules run in order. Non-terminal side effects
 (`set_variable`, `set_log_fields`, `redis_incr_key`) fire on **every** matching
 rule. The first rule whose action is **terminal** (`fixed_response`,
 `fix_matched_parts`, `rate_limit`) stops evaluation and wins. So a counter that
@@ -94,6 +97,23 @@ Macros for `key`/templates: `%{remote_addr}`, `%{request.method|host|scheme|path
 - `replace_condition` / `remove_condition` / `add_condition` `{rule_id, condition_number, ...}`.
 
 ## SecLang option
-`custom_secrules` accepts raw `SecRule <vars> "<op>" "<actions>"` strings (only the canonical form; `SecRule*` derivatives skipped). Parsed at worker start into the global pool.
+`custom_secrules` accepts raw `SecRule <vars> "<op>" "<actions>"` strings (only the canonical form; `SecRule*` derivatives skipped). Parsed at worker start into the global pool. `deny` and `block` both map to a 403 `fixed_response`; an explicit `status:NNN` is honoured.
+
+## Global rules (one pack for every service, via Redis)
+Karna is attached per-service; the global rules pack is how one rule set reaches
+**all** services with no per-service config and no reload. Operators publish two
+payloads (a JSON rule array — same format as `rules_request` — and/or a SecLang
+text) to the Redis hash `karna:global_rules` with
+`scripts/karna-rules.py --type global-rules --redis <url> --json f.json --seclang f.conf`
+(also `--show` to inspect, `--pull` to recover the files, `--dry-run`). Workers
+poll the version field (env `KARNA_GLOBAL_RULES_POLL`, default 30s) and hot-swap
+the pack. Enable by setting `KARNA_REDIS_URL` on the Kong nodes; sign packs with
+`KARNA_GLOBAL_RULES_HMAC_KEY` (same key on publisher and nodes — unsigned mode
+works but warns loudly). Bad signature / Redis outage → last known good pack
+stays; `DEL karna:global_rules` → pack cleared. Global rules run before local
+rules; phases: `access`, `header_filter`, `mcp_event` (no `body_filter`). There
+is no per-service opt-out — tag pack rules (e.g. `global-pack`) so per-service
+`rule_action_overrides` or `ctl:*` exclusions can tame one rule where needed.
+Blocking still follows each service's `engine_blocking_mode`.
 
 See `recipes.md` for end-to-end examples; the public docs at `/docs/rules.html` carry fuller worked examples.

@@ -65,6 +65,9 @@ Then wire Kong:
   env KARNA_LIBINJECTION_SO;
   env KARNA_LIBKA_RE2_SO;
   env KARNA_PROFILE;
+  env KARNA_REDIS_URL;
+  env KARNA_GLOBAL_RULES_HMAC_KEY;
+  env KARNA_GLOBAL_RULES_POLL;
   ```
 - Audit-log dir must be writable by the Kong worker user:
   `chown -R kong:kong /usr/local/openresty/nginx/logs`.
@@ -79,6 +82,9 @@ Then wire Kong:
 | `KARNA_LIBKA_RE2_SO` | `/usr/local/lib/libka_re2.so` | RE2 scanner (fallback to Lua if missing) |
 | `KARNA_LIBKA_AC_SO` | `/usr/local/lib/libka_ac.so` | Aho-Corasick scanner (fallback to Lua if missing) |
 | `KARNA_PROFILE` | unset | enables LuaJIT profiling (diagnostics) |
+| `KARNA_REDIS_URL` | unset | enables the global rules pack (`redis://…` / `rediss://…`); unset = feature off |
+| `KARNA_GLOBAL_RULES_HMAC_KEY` | unset | HMAC key for global rules signatures (`openssl rand -hex 32`); unset = unsigned mode + loud warning |
+| `KARNA_GLOBAL_RULES_POLL` | 30 | global rules poll interval, seconds (min 5) |
 
 ## Attaching Karna to a service
 

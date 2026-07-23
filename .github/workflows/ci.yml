@@ -69,6 +69,8 @@ jobs:
         run: lua ka-unittest/json_in_urlencoded.lua
       - name: Redis inspection read helper (whitelist + connection behavior)
         run: lua ka-unittest/redis_inspect.lua
+      - name: Global rules pack (HMAC verify, replay guard, poll state machine)
+        run: lua ka-unittest/global_rules.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

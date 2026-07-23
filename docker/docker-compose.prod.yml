@@ -46,7 +46,15 @@ services:
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_LOG_LEVEL: warn
-      # KONG_PLUGINS=bundled,karna and the PCRE match-limit are baked into the image.
+      # KONG_PLUGINS=bundled,karna, the PCRE match-limit and the KARNA_* env
+      # whitelist (KONG_NGINX_MAIN_INCLUDE) are baked into the image.
+
+      # Global rules (optional): a Redis-distributed rule pack evaluated on
+      # every service, before local + CRS rules. Uncomment both, generate the
+      # key with `openssl rand -hex 32`, publish with
+      # scripts/karna-rules.py --type global-rules. See docs/rules.html.
+      # KARNA_REDIS_URL: redis://redis:6379/0
+      # KARNA_GLOBAL_RULES_HMAC_KEY: "<openssl rand -hex 32>"
     volumes:
       - ./kong.yml:/kong/kong.yml:ro
     restart: unless-stopped

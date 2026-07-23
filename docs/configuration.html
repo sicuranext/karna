@@ -258,6 +258,10 @@
           <tr><td class="name"><code>rule_response_overrides</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Customise the block response: <code>status_code</code>, <code>body</code> (a static string served verbatim — no <code>%{var}</code> macros, so request data is never reflected into the block response), and merged <code>headers</code>.</td></tr>
           <tr><td class="name"><code>default_block_response_body</code></td><td><span class="badge badge-type">string</span></td><td>The page Karna serves whenever it blocks — CRS / local / custom rules <em>and</em> the always-on validation gates — and nothing more specific was authored. A static string served verbatim (no <code>%{var}</code> macros). A rule's own <code>fixed_response</code> body, a matching <code>rule_response_overrides</code> entry, or a rate-limit rule's <code>response</code> still win.</td></tr>
           <tr><td class="name"><code>default_block_response_headers</code></td><td><span class="badge badge-type">map</span> <span class="badge badge-def">{}</span></td><td>Headers merged over the built-in block defaults (<code>content-type: text/plain</code> + no-cache), your keys winning — set <code>content-type: text/html</code> here when the body is an HTML page. Status codes are not configurable: they stay semantic per block point (403 rules and most gates, 405 method gate, 400 arg-length gate, 429 rate-limit).</td></tr>
+          <tr><td class="name"><code>default_ratelimit_response_body</code></td><td><span class="badge badge-type">string</span></td><td>A dedicated page for the <code>429</code> served by the <code>rate_limit</code> rule action, so throttled (but legitimate) clients don't see the attack-block page. Precedence: the rule's own <code>response</code> → this → <code>default_block_response_body</code> (a deployment that only set the block page keeps its current 429 behaviour) → built-in <em>Too Many Requests</em>. Served verbatim (no <code>%{var}</code> macros). The automatic <code>Retry-After</code> is still added.</td></tr>
+          <tr><td class="name"><code>default_ratelimit_response_headers</code></td><td><span class="badge badge-type">map</span> <span class="badge badge-def">{}</span></td><td>Headers for the 429, merged over the block-header chain with these keys winning (below an explicit rule <code>response.headers</code>).</td></tr>
+          <tr><td class="name"><code>default_50x_response_body</code></td><td><span class="badge badge-type">string</span></td><td>When the <strong>upstream</strong> answers <code>500–599</code>, Karna replaces the body and headers with this page, <em>preserving the status code</em> (a 502 stays a 502). Info-leak hygiene: stack traces, framework error pages, and server banners never reach the client. Setting this enables the feature; unset = 5xx responses pass through untouched. Applies only to responses that came from the upstream or Kong's error handler — never to responses Karna or sibling plugins generated. Independent of <code>engine_blocking_mode</code>. Served verbatim (no <code>%{var}</code> macros).</td></tr>
+          <tr><td class="name"><code>default_50x_response_headers</code></td><td><span class="badge badge-type">map</span> <span class="badge badge-def">{}</span></td><td>Headers for the 50x page, merged over the built-in defaults (<code>content-type: text/plain</code> + no-cache). Does <em>not</em> inherit <code>default_block_response_headers</code> — the 50x page is response hygiene, not a block.</td></tr>
         </tbody>
       </table>
       <div class="code-card">
@@ -287,7 +291,8 @@
 
     <section id="redis">
       <h2>Redis</h2>
-      <p>Redis is optional. It backs the <code>rate_limit</code> and <code>redis_incr_key</code> rule actions, the <code>redis.&lt;key&gt;</code> inspection variables, the <code>redis_sismember</code> / <code>redis_hexists</code> operators, and the <code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code> write actions. The rest of the WAF works without it. With a shared Redis, these turn per-request, single-node state into cluster-wide state: a ban written on one node is seen by every node.</p>
+      <p>Redis is optional. It backs the <code>rate_limit</code> and <code>redis_incr_key</code> rule actions, the <code>redis.&lt;key&gt;</code> inspection variables, the <code>redis_sismember</code> / <code>redis_hexists</code> operators, the <code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code> write actions, and the <a class="link" href="rules.html#global-rules">global rules pack</a>. The rest of the WAF works without it. With a shared Redis, these turn per-request, single-node state into cluster-wide state: a ban written on one node is seen by every node.</p>
+      <div class="note"><span class="lbl">Two connections</span>The options below configure the per-service inspection/write client used by rules. The <a class="link" href="rules.html#global-rules">global rules</a> loader is worker-global (it runs before any service config exists) and is configured separately via the <code>KARNA_REDIS_URL</code> environment variable — see <a class="link" href="#env">Environment variables</a>. The two may point at the same Redis or different ones.</div>
       <table class="doc-table">
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>
@@ -337,6 +342,9 @@
           <tr><td class="name"><code>KARNA_LIBKA_RE2_SO</code></td><td class="mono">/usr/local/lib/libka_re2.so</td><td>Path to the RE2 scanner. Missing &rarr; pure-Lua <code>@rx</code> fallback.</td></tr>
           <tr><td class="name"><code>KARNA_LIBKA_AC_SO</code></td><td class="mono">/usr/local/lib/libka_ac.so</td><td>Path to the Aho-Corasick scanner. Missing &rarr; pure-Lua <code>@pm</code> fallback.</td></tr>
           <tr><td class="name"><code>KARNA_PROFILE</code></td><td class="mono">unset</td><td>If set, enables LuaJIT profiling. Diagnostics only.</td></tr>
+          <tr><td class="name"><code>KARNA_REDIS_URL</code></td><td class="mono">unset</td><td>Enables the <a class="link" href="rules.html#global-rules">global rules pack</a>. <code>redis://[user][:pass]@host[:port][/db]</code>, or <code>rediss://</code> for TLS. Unset &rarr; the feature is off, zero overhead.</td></tr>
+          <tr><td class="name"><code>KARNA_GLOBAL_RULES_HMAC_KEY</code></td><td class="mono">unset</td><td>Shared HMAC-SHA256 key for global rules pack signatures (generate with <code>openssl rand -hex 32</code>). Set &rarr; unsigned or tampered packs are rejected. Unset &rarr; packs are accepted unsigned, with a loud startup warning.</td></tr>
+          <tr><td class="name"><code>KARNA_GLOBAL_RULES_POLL</code></td><td class="mono">30</td><td>Global rules poll interval in seconds (minimum 5). Each poll is one cheap <code>HGET</code> of the version field; the pack is re-fetched only when it changes.</td></tr>
         </tbody>
       </table>
       <div class="code-card">
@@ -345,7 +353,10 @@
 env KARNA_CRS_PATH;
 env KARNA_LIBINJECTION_SO;
 env KARNA_LIBKA_RE2_SO;
-env KARNA_PROFILE;</pre></div>
+env KARNA_PROFILE;
+env KARNA_REDIS_URL;
+env KARNA_GLOBAL_RULES_HMAC_KEY;
+env KARNA_GLOBAL_RULES_POLL;</pre></div>
       </div>
     </section>
 
