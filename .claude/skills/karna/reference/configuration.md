@@ -59,9 +59,11 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 - `rule_response_overrides` (array, `[]`) — `{selector, response}` with `status_code`/`body` (static string served verbatim — NO `%{var}` macros, by design: request data must never be reflected into the block response)/`headers` (merged).
 - Selector grammar: `ids`, `id_ranges` (`"941000-941999"`), `tags`, `except_ids`, `except_tags`, `any:true`. First match wins; cached pack never mutated.
 
-## Default block response (the block page)
+## Default response pages (block / rate-limit / 50x)
 - `default_block_response_body` (string, unset) — the page Karna serves whenever it blocks (CRS/local/custom rules AND the always-on validation gates) and nothing more specific was authored. Static string, no `%{var}` macros. Rule-authored `fixed_response` body, a matching `rule_response_overrides` entry, or a rate-limit rule's `response` still win.
 - `default_block_response_headers` (map, `{}`) — merged over the built-in block headers (`content-type: text/plain` + no-cache), operator keys win; set `content-type: text/html` when the body is HTML. Status codes are NOT configurable — they stay semantic per block point (403 rules/most gates, 405 method gate, 400 arg-length gate, 429 rate-limit).
+- `default_ratelimit_response_body` / `_headers` (string / map `{}`, unset) — dedicated page for the 429 from the `rate_limit` action, so throttled-but-legit clients don't see the attack-block page. Body precedence: rule's own `response` → this → `default_block_response_body` (back-compat: block-page-only deployments keep today's 429) → built-in "Too Many Requests". Headers slot between the block-header chain and an explicit rule `response.headers`. Auto `Retry-After` still added. Verbatim, no macros.
+- `default_50x_response_body` / `_headers` (string / map `{}`, unset) — when the UPSTREAM answers 500-599, replace body+headers with this page, PRESERVING the status (502 stays 502). Info-leak hygiene (hides stack traces / banners). Setting body enables it; unset = pass-through. Only masks responses whose source is the upstream or Kong's error handler — NEVER Karna's own blocks or sibling-plugin responses (`kong.response.get_source() == "exit"`). Independent of `engine_blocking_mode`. Headers do NOT inherit the block-page headers (only the built-in text/plain + no-cache defaults). Verbatim, no macros. Runs in header_filter, after response-phase rules.
 
 ## Audit logging
 - `auditlog_enabled` (bool, `true`), `auditlog_path` (str, `/usr/local/openresty/nginx/logs`, must be kong:kong-writable), `auditlog_format` (`v2`|`v1`, default `v2`), `auditlog_only_on_match` (bool, `false`), `auditlog_modsec` (bool, `false`), `auditlog_error_log_on_match` (bool, `false`).
@@ -74,6 +76,7 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 - `redis_keepalive_pool_size` (num, `64`), `redis_keepalive_idle_ms` (num, `60000`) — inspection client connection pool.
 - `redis_on_error` (str, `skip`; one_of skip/fail_open/fail_closed) — inspection read when Redis is down: `skip`/`fail_open` = no match (traffic flows), `fail_closed` = match (deny on unreadable shared state). Default `skip` keeps a Redis outage from blocking traffic.
 - Read-only boundary: the inspection client enforces a deny-by-default command whitelist (GET/EXISTS/SISMEMBER/HEXISTS/TTL/… only). A `redis.<key>` variable can never run a write/admin/scripting/scan command; mutations go only through the write actions.
+- The global rules pack loader is a SEPARATE, worker-global Redis connection configured by env vars (`KARNA_REDIS_URL`, `KARNA_GLOBAL_RULES_HMAC_KEY`, `KARNA_GLOBAL_RULES_POLL` — see `deploy.md`), not by these per-service options. See `rules.md` → Global rules.
 
 ## Debug
 - `private_debug` (bool, `false`) — verbose internal output, off in prod.

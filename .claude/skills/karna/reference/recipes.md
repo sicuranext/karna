@@ -187,6 +187,30 @@ block response:
   "log": false }
 ```
 
+## Ship one rule pack to every service (global rules)
+Local rules live on one service; the global rules pack reaches all of them,
+hot, with no reload. One-time setup: `openssl rand -hex 32`, put the key on the
+Kong nodes as `KARNA_GLOBAL_RULES_HMAC_KEY` together with
+`KARNA_REDIS_URL=redis://…` (declare both in `main-env.conf` — see `deploy.md`),
+restart Kong once. Then, from wherever the rule files live:
+```sh
+export KARNA_GLOBAL_RULES_HMAC_KEY=...        # same key as the nodes, via env — never argv
+./scripts/karna-rules.py --type global-rules \
+    --redis redis://localhost:6379/0 \
+    --json global_rules.json --seclang global_rules.conf --dry-run   # preview
+# repeat without --dry-run to publish; workers apply within ~30s (KARNA_GLOBAL_RULES_POLL)
+```
+`--json` takes the same rule array as `--type rules`; `--seclang` a raw
+`.conf`. Omitting one preserves the published payload for that format.
+`--show` inspects what is live (version, counts, signature status); `--pull`
+writes the published payloads back to local files — the recovery path when the
+authoring files are lost, since Redis holds the only live copy.
+Tampered/unsigned packs are rejected when the key is set (workers keep the last
+good pack and log an error per poll); `DEL karna:global_rules` in Redis is the
+explicit kill switch. Global rules run before local rules on every service —
+there is no per-service opt-out, so tag them (e.g. `"tags": ["global-pack"]`)
+and use per-service `rule_action_overrides` (`passthrough`) for exceptions.
+
 ## Run the CRS regression locally (do this after any rule/engine change)
 ```sh
 # bring up the dev stack (Postgres + echo + live plugin reload)

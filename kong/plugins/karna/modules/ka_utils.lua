@@ -396,21 +396,38 @@ local DEFAULT_BLOCK_HEADERS = {
 --
 -- Precedence:
 --   body:    explicit_body (rule / override / rate-limit authored)
+--            → plugin_conf.default_ratelimit_response_body (variant
+--              "ratelimit" only — a dedicated page for throttled clients)
 --            → plugin_conf.default_block_response_body
 --            → fallback_body (the built-in per-block-point text)
 --   headers: one merge chain, most specific wins per key —
 --            DEFAULT_BLOCK_HEADERS
 --            ← plugin_conf.default_block_response_headers
+--            ← plugin_conf.default_ratelimit_response_headers (variant)
 --            ← explicit_headers (rule / override / rate-limit authored)
 --            ← extra_headers (e.g. x-karna-rule-id)
 --            Keys are lowercased on merge so "Content-Type" overrides
 --            the built-in "content-type" instead of duplicating it.
 --
+-- `variant` selects the per-block-point defaults layer: nil for standard
+-- blocks, "ratelimit" for the 429 path. The rate-limit layer sits between
+-- the explicit values and the block defaults so deployments that only set
+-- the block page keep the historical behaviour (429 falls through to it).
+--
 -- Always returns a fresh headers table — callers may mutate it (the
 -- rate-limit path adds Retry-After) without touching the cached rule
 -- pack or the schema default.
-_M.build_block_response = function(self, plugin_conf, explicit_body, explicit_headers, fallback_body, extra_headers)
+_M.build_block_response = function(self, plugin_conf, explicit_body, explicit_headers, fallback_body, extra_headers, variant)
+    local variant_body, variant_headers
+    if variant == "ratelimit" and plugin_conf then
+        variant_body = plugin_conf.default_ratelimit_response_body
+        variant_headers = plugin_conf.default_ratelimit_response_headers
+    end
+
     local body = explicit_body
+    if body == nil then
+        body = variant_body
+    end
     if body == nil and plugin_conf then
         body = plugin_conf.default_block_response_body
     end
@@ -430,6 +447,13 @@ _M.build_block_response = function(self, plugin_conf, explicit_body, explicit_he
             end
         end
     end
+    if type(variant_headers) == "table" then
+        for k, v in pairs(variant_headers) do
+            if type(k) == "string" and type(v) == "string" then
+                headers[k:lower()] = v
+            end
+        end
+    end
     if type(explicit_headers) == "table" then
         for k, v in pairs(explicit_headers) do
             if type(k) == "string" then
@@ -440,6 +464,33 @@ _M.build_block_response = function(self, plugin_conf, explicit_body, explicit_he
     if extra_headers then
         for k, v in pairs(extra_headers) do
             headers[k] = v
+        end
+    end
+
+    return body, headers
+end
+
+-- Body + headers for the upstream-5xx mask (default_50x_response_*).
+-- Deliberately NOT layered on the block chain: the 50x page is response
+-- hygiene, not a block, so it inherits only the built-in header defaults
+-- (content-type text/plain + no-cache) — default_block_response_headers
+-- do not apply. Returns nil when the feature is off (no body configured).
+_M.build_50x_response = function(self, plugin_conf)
+    local body = plugin_conf and plugin_conf.default_50x_response_body
+    if body == nil then
+        return nil
+    end
+
+    local headers = {}
+    for k, v in pairs(DEFAULT_BLOCK_HEADERS) do
+        headers[k] = v
+    end
+    local conf_headers = plugin_conf.default_50x_response_headers
+    if type(conf_headers) == "table" then
+        for k, v in pairs(conf_headers) do
+            if type(k) == "string" and type(v) == "string" then
+                headers[k:lower()] = v
+            end
         end
     end
 

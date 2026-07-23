@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.4.1",
+  VERSION = "1.4.2",
 }
 
 local ngx                 = ngx
@@ -14,6 +14,7 @@ local utils             = require "kong.plugins.karna.ka_utils"
 local seclang           = require "kong.plugins.karna.ka_seclang"
 local ka_mcp            = require "kong.plugins.karna.ka_mcp"
 local ka_compile        = require "kong.plugins.karna.ka_compile"
+local ka_global_rules   = require "kong.plugins.karna.ka_global_rules"
 local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
 local ka_version        = require "kong.plugins.karna.version"
 local lrucache          = require "resty.lrucache"
@@ -49,16 +50,25 @@ local load_plugin_dynamic_rules = function(plugin_conf)
   local base_dir = plugin_conf.crs_plugins_path or "/opt/coreruleset-plugins/"
   if not base_dir:match("/$") then base_dir = base_dir .. "/" end
 
-  for _, plugin_name in ipairs(enabled) do
-    local plugin_dir = base_dir .. plugin_name .. "/plugins/"
-    local files = seclang.collect_plugin_conf_files(plugin_dir)
-    for fname, content in pairs(files) do
-      local parsed = seclang.parse_isolated(content)
-      local count = 0
-      for _ in pairs(parsed) do count = count + 1 end
-      debug("CRS plugin '" .. plugin_name .. "/" .. fname
-            .. "' parsed " .. tostring(count) .. " rules")
-      for _, r in pairs(parsed) do table.insert(out, r) end
+  for idx, plugin_name in ipairs(enabled) do
+    -- Directory names are identifiers, not paths. Reject traversal and shell
+    -- metacharacters even though the directory scanner also quotes its input.
+    if type(plugin_name) == "string"
+       and plugin_name:match("^[A-Za-z0-9][A-Za-z0-9._-]*$")
+       and plugin_name ~= "." and plugin_name ~= ".." then
+      local plugin_dir = base_dir .. plugin_name .. "/plugins/"
+      local files = seclang.collect_plugin_conf_files(plugin_dir)
+      for fname, content in pairs(files) do
+        local parsed = seclang.parse_isolated(content)
+        local count = 0
+        for _ in pairs(parsed) do count = count + 1 end
+        debug("CRS plugin '" .. plugin_name .. "/" .. fname
+              .. "' parsed " .. tostring(count) .. " rules")
+        for _, r in pairs(parsed) do table.insert(out, r) end
+      end
+    else
+      kong.log.warn("Ignoring invalid CRS plugin directory name at index "
+                    .. tostring(idx))
     end
   end
 
@@ -529,7 +539,10 @@ local evaluate_rules = function(plugin_conf, rules, phase)
 
       if plugin_conf.engine_blocking_mode and match_entry.rate_limited then
         local resp = rl.response or {}
-        local body, headers = utils:build_block_response(plugin_conf, resp.body, resp.headers, "Too Many Requests\r\n")
+        -- "ratelimit" variant: default_ratelimit_response_* slots between
+        -- the rule's own response and the block-page defaults, so throttled
+        -- clients can get a dedicated page instead of the attack-block one.
+        local body, headers = utils:build_block_response(plugin_conf, resp.body, resp.headers, "Too Many Requests\r\n", nil, "ratelimit")
         if not headers["retry-after"] then
           headers["Retry-After"] = tostring(window)
         end
@@ -678,7 +691,14 @@ function plugin:init_worker()
     end
     ka_rules:set("ka_dfiles", ka_dfiles)
 
-    debug("#########> Loaded "..tostring(#rules).." global rules on worker number "..ngx.worker.id())
+    debug("#########> Loaded "..tostring(#rules).." CRS rules on worker number "..ngx.worker.id())
+
+    -- Centrally distributed global rules (Redis-backed, HMAC-verified).
+    -- init_worker cannot use cosockets, so this only schedules the timers
+    -- (immediate load + poll); the engine/compile refs are injected here to
+    -- keep ka_global_rules requirable from plain-Lua unit tests. No-op when
+    -- KARNA_REDIS_URL is unset.
+    ka_global_rules.init({ engine = engine, compile = ka_compile.compile_rules })
 
     -- RE2 @rx gate (engine_re2_scan spike — memory karna-re2-spike). Build the
     -- RE2::Set over gateable CRS @rx once per worker; config-independent, so
@@ -837,15 +857,15 @@ function plugin:access(plugin_conf)
     engine_off = false,
   }
 
-  -- get global rules
+  -- get the CRS rule pack (loaded from disk at init_worker)
   local rules = ka_rules:get("ka_rules")
   if rules then
-    debug("Loaded "..tostring(#rules).." global rules")
+    debug("Loaded "..tostring(#rules).." CRS rules")
   end
 
   local rcontrol_rules = ka_rules:get("rcontrol_rules")
   if rcontrol_rules then
-    debug("Loaded "..tostring(#rcontrol_rules).." global Rule Control rules")
+    debug("Loaded "..tostring(#rcontrol_rules).." CRS Rule Control rules")
   end
 
   -- get dfiles
@@ -890,6 +910,19 @@ function plugin:access(plugin_conf)
     kong.log.inspect(kong.ctx.plugin.rule_controls)
   end
 
+  -- Global rules (Redis-distributed pack, see ka_global_rules.lua).
+  -- Evaluated on EVERY service — no per-service opt-out — AFTER the rule
+  -- controls above (so ctl:* exclusions and rule_action_overrides can tame a
+  -- global rule per service) and BEFORE local + CRS rules. The pack
+  -- reference is pinned in kong.ctx.plugin so later phases (header_filter,
+  -- mcp_event) see the same snapshot even if the poll timer swaps the pack
+  -- mid-request.
+  local global_rules_pack = ka_global_rules.get()
+  kong.ctx.plugin.global_rules = global_rules_pack
+  if global_rules_pack and #global_rules_pack.access > 0 then
+    evaluate_rules(plugin_conf, global_rules_pack.access, "access")
+  end
+
   -- loop local rules
   if plugin_conf.local_rules_enabled then
     evaluate_rules(plugin_conf, local_rules_request, "access")
@@ -922,10 +955,12 @@ function plugin:header_filter(plugin_conf)
   -- generate global inspection table
   engine:get_inspection_table(plugin_conf)
 
-  -- get global rules
-  local rules = ka_rules:get("ka_rules")
-  if rules then
-    debug("Loaded "..tostring(#rules).." global rules")
+  -- Global rules first (same precedence as the access phase: global before
+  -- local). Uses the pack snapshot pinned by :access; requests that skipped
+  -- access (cache hit) skip here too via the response_from_cache guard above.
+  local global_rules_pack = kong.ctx.plugin.global_rules
+  if global_rules_pack and #global_rules_pack.header_filter > 0 then
+    evaluate_rules(plugin_conf, global_rules_pack.header_filter, "header_filter")
   end
 
   -- Header_filter-phase local rules. Use the precomputed, cached
@@ -935,6 +970,29 @@ function plugin:header_filter(plugin_conf)
   if plugin_conf.local_rules_enabled then
     local header_filter_rules = get_local_request_rules(plugin_conf).header_filter
     evaluate_rules(plugin_conf, header_filter_rules, "header_filter")
+  end
+
+  -- Upstream-5xx mask (default_50x_response_*): replace body and headers of
+  -- a 500-599 response with the operator's error page, preserving the status
+  -- code. Info-leak hygiene — stack traces, framework error pages and server
+  -- banners never reach the client. Runs AFTER the response rules above so
+  -- they see the original upstream response (and a terminal response rule
+  -- has already exited by now). Source guard: only responses that actually
+  -- came from the upstream ("service") or Kong's error handler ("error") are
+  -- masked — never "exit" (Karna's own blocks or sibling plugins' responses).
+  -- Independent of engine_blocking_mode: this is presentation, not attack
+  -- blocking. kong.response.exit is supported in header_filter — Kong buffers
+  -- the body via ngx.ctx.response_body and recomputes content-length.
+  if plugin_conf.default_50x_response_body then
+    local status = kong.response.get_status()
+    if status and status >= 500 and status <= 599 then
+      local source = kong.response.get_source()
+      if source == "service" or source == "error" then
+        local body, headers = utils:build_50x_response(plugin_conf)
+        debug("masking upstream " .. tostring(status) .. " response (source: " .. tostring(source) .. ")")
+        return response_exit(status, body, headers)
+      end
+    end
   end
 end
 
@@ -1065,5 +1123,4 @@ function plugin:log(plugin_conf)
 end
 
 return plugin
-
 

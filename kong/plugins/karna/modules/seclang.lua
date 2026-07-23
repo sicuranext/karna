@@ -641,15 +641,21 @@ end
 
 function seclang.__get_action(actions)
     local action = {["setvar"] = {}}
-    if actions:match(",block") or actions:match("block,") then
-        -- status_code only: body and headers are deliberately NOT baked
-        -- into the parsed rule, so the serve path (handler.lua) fills
-        -- them at block time from default_block_response_body/_headers
-        -- (plugin config) or the built-in "Forbidden\r\n" fallback. A
-        -- baked body here would shadow the operator's default block page
-        -- for every CRS rule — the main use case.
+    -- `block` is the CRS spelling ("do the configured disruptive action"),
+    -- `deny` the classic ModSec one — hand-written rules (custom_secrules,
+    -- the global rules pack) overwhelmingly use `deny`. Both become a
+    -- fixed_response terminal action. The loaded CRS pack never uses `deny`
+    -- as an action (901/949/959 are excluded; remaining hits are comments).
+    -- status_code honours an explicit `status:NNN` (common on deny rules),
+    -- else 403. body and headers are deliberately NOT baked into the parsed
+    -- rule, so the serve path (handler.lua) fills them at block time from
+    -- default_block_response_body/_headers (plugin config) or the built-in
+    -- "Forbidden\r\n" fallback. A baked body here would shadow the
+    -- operator's default block page for every CRS rule — the main use case.
+    if actions:match(",block") or actions:match("block,")
+       or actions:match(",deny") or actions:match("deny,") then
         action["fixed_response"] = {
-            status_code = 403
+            status_code = tonumber(actions:match("status:(%d+)")) or 403
         }
     end
 

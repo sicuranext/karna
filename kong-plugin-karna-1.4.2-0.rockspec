@@ -1,13 +1,13 @@
 package = "kong-plugin-karna"
 
-version = "1.4.1-0"
+version = "1.4.2-0"
 
 local pluginName = package:match("^kong%-plugin%-(.+)$")
 
 supported_platforms = {"linux"}
 source = {
   url = "git+https://github.com/sicuranext/karna.git",
-  tag = "v1.4.1"
+  tag = "v1.4.2"
 }
 
 description = {
@@ -35,6 +35,7 @@ build = {
     ["kong.plugins."..pluginName..".ka_mcp"]          = "kong/plugins/"..pluginName.."/modules/ka_mcp.lua",
     ["kong.plugins."..pluginName..".ka_mcp_sse"]      = "kong/plugins/"..pluginName.."/modules/ka_mcp_sse.lua",
     ["kong.plugins."..pluginName..".ka_compile"]      = "kong/plugins/"..pluginName.."/modules/ka_compile.lua",
+    ["kong.plugins."..pluginName..".ka_global_rules"] = "kong/plugins/"..pluginName.."/modules/ka_global_rules.lua",
     ["kong.plugins."..pluginName..".ka_re2"]          = "kong/plugins/"..pluginName.."/modules/ka_re2.lua",
     ["kong.plugins."..pluginName..".ka_re2_gate"]     = "kong/plugins/"..pluginName.."/modules/ka_re2_gate.lua",
     ["kong.plugins."..pluginName..".ka_ac"]           = "kong/plugins/"..pluginName.."/modules/ka_ac.lua",

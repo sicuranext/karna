@@ -111,13 +111,19 @@ Karna inspects every request against a layered rule pipeline:
    before any rule and apply unconditionally to any request that has
    Karna attached.
 2. **Per-service rule controls** (`rules_request` of type rule-control):
-   adjust, exclude, or rewrite global rules at request time. Includes the
+   adjust, exclude, or rewrite loaded rules at request time. Includes the
    in-repo CRS-fix layer (`coreruleset_fix.lua`) that neutralises known
    false-positive-prone OWASP CRS rules in production deployments.
-3. **Per-service local rules** (`rules_request`): your own custom rules,
+3. **Global rules** — one Redis-distributed, HMAC-signed rule pack
+   evaluated on *every* service Karna is attached to, hot-reloaded within
+   seconds of a publish, no `kong reload` and no per-service config.
+   Publish with `scripts/karna-rules.py --type global-rules`; enable by
+   setting `KARNA_REDIS_URL`. See the
+   [rules documentation](docs/rules.html#global-rules).
+4. **Per-service local rules** (`rules_request`): your own custom rules,
    each run in the phase named by its `phase` field (access or
    header_filter). Gated by `local_rules_enabled` (default `true`).
-4. **OWASP CoreRuleSet** loaded from disk at `init_worker`. Gated by
+5. **OWASP CoreRuleSet** loaded from disk at `init_worker`. Gated by
    `coreruleset_enabled` (default `true`).
 
 Detection-only or blocking is controlled by `engine_blocking_mode`

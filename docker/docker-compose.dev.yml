@@ -116,13 +116,22 @@ services:
       # Override CRS rules path (default in the image is /opt/coreruleset/rules/).
       KARNA_CRS_PATH: /opt/coreruleset/rules/
 
+      # Global rules (Redis-distributed pack). DEV-ONLY values — generate a
+      # real key with `openssl rand -hex 32` in production. Publish with:
+      #   KARNA_GLOBAL_RULES_HMAC_KEY=karna-dev-hmac-key \
+      #   ./scripts/karna-rules.py --type global-rules \
+      #       --redis redis://localhost:26379/0 --json rules.json
+      KARNA_REDIS_URL: redis://karna-redis:6379/0
+      KARNA_GLOBAL_RULES_HMAC_KEY: karna-dev-hmac-key
+      KARNA_GLOBAL_RULES_POLL: "5"
+
     volumes:
       # Plugin source — read-only. luarocks make at startup installs from here.
       - ../kong:/usr/local/kong/custom-plugins/karna/kong:ro
       # RE2 spike: C source compiled to libka_re2.so at start (memory karna-re2-spike).
       - ../src:/usr/local/kong/custom-plugins/karna/src:ro
       - ../tests:/usr/local/kong/custom-plugins/karna/tests:ro
-      - ../kong-plugin-karna-1.4.1-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.4.1-0.rockspec:ro
+      - ../kong-plugin-karna-1.4.2-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.4.2-0.rockspec:ro
       - ./main-env.conf:/etc/kong/nginx/main-env.conf:ro
 
     command: >

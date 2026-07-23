@@ -446,9 +446,17 @@ function _M.body_filter(plugin_conf, evaluate_rules)
         return
     end
 
-    -- Filter local rules to mcp_event phase. Pulled from kong.ctx.plugin.local_rules,
-    -- which handler.lua's :access phase has already parsed from plugin_conf.rules_request.
+    -- mcp_event-phase rules: global pack first (same global-before-local
+    -- precedence as the access phase; the pack snapshot is pinned in
+    -- kong.ctx.plugin.global_rules by handler.lua's :access), then local
+    -- rules from kong.ctx.plugin.local_rules (parsed from
+    -- plugin_conf.rules_request).
     local mcp_event_rules = {}
+    if kong.ctx.plugin.global_rules and kong.ctx.plugin.global_rules.mcp_event then
+        for _, r in ipairs(kong.ctx.plugin.global_rules.mcp_event) do
+            table_insert(mcp_event_rules, r)
+        end
+    end
     if kong.ctx.plugin.local_rules then
         for _, r in ipairs(kong.ctx.plugin.local_rules) do
             if r.phase == "mcp_event" then
