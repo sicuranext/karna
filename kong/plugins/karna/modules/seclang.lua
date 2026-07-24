@@ -413,33 +413,40 @@ function seclang.__variables_to_conditions(variables)
         end
     end
 
-    -- sort variables in order to have always the following in the same key
-    -- 1 = request.arg.value
-    -- 2 = request.arg.name
-    -- 3 = request.path_with_query
-    -- ... all others
+    -- Reassemble the variable list with the three "priority" variables first
+    -- (stable cache-key ordering — see the runtime resolver), then every
+    -- other variable in its original order.
+    --
+    -- Build CONTIGUOUSLY (append), never by fixed index. The previous version
+    -- assigned request.arg.value→[1], request.arg.name→[2],
+    -- request.path_with_query→[3] and the rest from [4], which left HOLES
+    -- whenever a priority variable was absent. `#`/ipairs over a holed table
+    -- is undefined in Lua, so a rule whose only variable was non-priority
+    -- (e.g. `SecRule REQUEST_FILENAME …` / `SecRule REQUEST_HEADERS …`, exactly
+    -- what the CRS WordPress exclusion pass-rules use) collapsed to an EMPTY
+    -- variable list and never matched — silently disabling the rule.
+    local PRIORITY = { "request.arg.value", "request.arg.name", "request.path_with_query" }
+    local is_priority = {
+        ["request.arg.value"]        = true,
+        ["request.arg.name"]         = true,
+        ["request.path_with_query"]  = true,
+    }
     local ordered_variable_list = {}
-    local order_start_with = 4
-    for k,v in pairs(variable_list) do
-        if v == "request.arg.value" then
-            ordered_variable_list[1] = v
-        elseif v == "request.arg.name" then
-            ordered_variable_list[2] = v
-        elseif v == "request.path_with_query" then
-            ordered_variable_list[3] = v
-        else
-            ordered_variable_list[order_start_with] = v
-            order_start_with = order_start_with + 1
+    local emitted = {}
+    for _, p in ipairs(PRIORITY) do
+        for _, v in ipairs(variable_list) do
+            if v == p and not emitted[v] then
+                ordered_variable_list[#ordered_variable_list + 1] = v
+                emitted[v] = true
+            end
         end
     end
-
-    -- remove nil values from ordered_variable_list
-    local i = 1
-    while i <= #ordered_variable_list do
-        if ordered_variable_list[i] == nil then
-            table.remove(ordered_variable_list, i)
-        else
-            i = i + 1
+    for _, v in ipairs(variable_list) do
+        -- non-priority variables keep their original order; duplicates are
+        -- preserved (variable_list rarely has any, and the old fixed-index
+        -- path preserved them too, so we don't dedupe here).
+        if not is_priority[v] then
+            ordered_variable_list[#ordered_variable_list + 1] = v
         end
     end
 

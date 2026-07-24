@@ -7,6 +7,34 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-07-24
+
+### Fixed
+
+- CRS exclusion plugins (e.g. the WordPress rule-exclusions plugin) now
+  correctly exclude **body** parameters. A `ctl:ruleRemoveTargetById=942100;ARGS:pwd`
+  maps to the internal target `request.arg.value:pwd`, but the parser stores a
+  urlencoded `pwd` field under the source-prefixed key
+  `request.body.urlencode.value:pwd` — the removal used an exact-key lookup that
+  never matched, so the exclusion was a silent no-op and the rule kept firing
+  (e.g. 942100 SQLi blocking a legit WordPress login). The removal now matches
+  by field name (the same suffix logic the rule side uses to resolve ARGS),
+  gated by namespace so an `ARGS:pwd` exclusion can never strip a `pwd` carried
+  in a header or cookie. Covers all three ctl removal paths
+  (`ruleRemoveTargetById`, `ruleRemoveTargetByTag` on `OWASP_CRS`, and exact
+  names). New unit test `ka-unittest/wordpress_target_exclusion.lua`.
+- SecLang parser no longer drops the variable list for rules whose only (or
+  first) variable is not one of the three "priority" args. The variable list
+  was rebuilt at fixed indices (`request.arg.value`→1, `request.arg.name`→2,
+  `request.path_with_query`→3, rest from 4), which left holes when a priority
+  variable was absent; `ipairs`/`#` over a holed table is undefined, so a rule
+  like `SecRule REQUEST_FILENAME …` / `SecRule REQUEST_HEADERS …` collapsed to
+  an empty variable list and silently never matched. This disabled, among
+  others, the CRS exclusion pass-rules (which key on `REQUEST_FILENAME`
+  `@rx /wp-login\.php$`). The list is now rebuilt contiguously. CRS regression
+  unchanged (2757/2757); reactivated rules verified against a benign-request
+  matrix for over-blocking.
+
 ## [1.4.2] - 2026-07-22
 
 ### Added

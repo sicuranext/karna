@@ -64,6 +64,58 @@ local string_char                       = string.char
 local string_lower                      = string.lower
 local string_len                        = string.len
 local string_find                       = string.find
+local string_sub                        = string.sub
+
+-- Remove a ctl exclusion target from a resolved `values` map.
+--
+-- Historically this was an exact key lookup (`values[target] = nil`),
+-- which silently failed for ARGS exclusions. A CRS exclusion plugin emits
+-- `ctl:ruleRemoveTargetById=942100;ARGS:pwd`, which the seclang parser maps
+-- to the target string `request.arg.value:pwd`. But the body parser stores
+-- a urlencoded `pwd` field under the SOURCE-prefixed key
+-- `request.body.urlencode.value:pwd` (query args under
+-- `request.query.value:pwd`) — there is never a flat `request.arg.value:pwd`
+-- key. The RULE side resolves ARGS by SUFFIX (see the `request.arg.value:`
+-- branch in __match_rule_conditions: it keeps keys ending in `:<name>` /
+-- `.<name>`), so the rule saw the field but the exclusion's exact lookup did
+-- not — the exclusion was a no-op and the rule kept firing (false positive
+-- on legitimate WordPress logins).
+--
+-- Fix: mirror the rule side. Match by FIELD NAME, not by the literal target
+-- string, using the same suffix test the rule uses. A NAMESPACE GATE keeps it
+-- safe against over-removal / bypass: `request.arg.value:pwd` only strips keys
+-- when the variable currently being resolved is the same collection
+-- (`request.arg.value`), so it can never silence a `pwd` carried in a header
+-- (`request.header.value:pwd`) or cookie. The exact-key lookup is kept as a
+-- first step so concrete targets (cookie/header/query, where the target and
+-- the stored key already coincide) behave exactly as before.
+local function remove_ctl_target(values, target, variable)
+    if not values or type(target) ~= "string" then return end
+
+    -- 1) exact key — back-compat for targets that already match a values key
+    if values[target] ~= nil then values[target] = nil end
+
+    -- 2) name-based, namespace-gated — the ARGS fix
+    local colon = string_find(target, ":", 1, true)
+    if not colon then return end
+    local t_ns   = string_sub(target, 1, colon - 1)
+    local t_name = string_sub(target, colon + 1)
+    if t_name == "" then return end
+
+    if type(variable) ~= "string" then return end
+    local vcolon = string_find(variable, ":", 1, true)
+    local var_ns = vcolon and string_sub(variable, 1, vcolon - 1) or variable
+    -- namespace gate: the target only applies to its own collection
+    if t_ns ~= var_ns then return end
+
+    -- suffix match, identical to the rule-side ARGS expansion, so exclusion
+    -- and rule look at EXACTLY the same keys (no bypass, no over-removal).
+    for k in pairs(values) do
+        if string_find(k, "%." .. t_name .. "$") or string_find(k, ":" .. t_name .. "$") then
+            values[k] = nil
+        end
+    end
+end
 
 --local request_get_query                 = kong.request.get_query
 local request_get_scheme                = kong.request.get_scheme
@@ -2889,12 +2941,13 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
 
             if kong.ctx and kong.ctx.plugin then
                 if values and #kong.ctx.plugin.rule_controls.remove_target_from_all_rules > 0 then
-                    -- remove all entries from values that are equals to entried in kong.ctx.plugin.rule_controls.remove_target_from_all_rules
+                    -- Drop every ctl-excluded target (ruleRemoveTargetByTag on
+                    -- the OWASP_CRS tag → applies to all rules). Name-based +
+                    -- namespace-gated match (see remove_ctl_target).
                     for _,remove_target in pairs(kong.ctx.plugin.rule_controls.remove_target_from_all_rules) do
-                        if values[remove_target] then
-                            values[remove_target] = nil
-                        end
+                        remove_ctl_target(values, remove_target, variable)
                     end
+                    if next(values) == nil then values = nil end
                 end
 
                 -- Per-(rule_id, target) removal — CRS `ctl:ruleRemoveTargetById=<id>;<target>`
@@ -2904,7 +2957,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 if values and kong.ctx.plugin.rule_controls.ids_targets
                    and kong.ctx.plugin.rule_controls.ids_targets[rule.id] then
                     for _, t in pairs(kong.ctx.plugin.rule_controls.ids_targets[rule.id]) do
-                        if values[t] then values[t] = nil end
+                        remove_ctl_target(values, t, variable)
                     end
                     if next(values) == nil then values = nil end
                 end
@@ -2923,7 +2976,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 end
                 if values and rc_remove_names then
                     for _, nm in pairs(rc_remove_names) do
-                        if values[nm] then values[nm] = nil end
+                        remove_ctl_target(values, nm, variable)
                     end
                 end
                 if values and next(values) == nil then values = nil end
