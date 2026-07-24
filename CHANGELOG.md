@@ -7,6 +7,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- Audit log v2: an empty per-match `tags` or `matched_parts` now serialises as
+  a JSON array `[]` instead of an object `{}`. cjson encodes an empty Lua table
+  as `{}`, so a match on a rule with no tags (e.g. a custom `rate_limit` rule)
+  emitted `"tags": {}`, and a match with no recorded parts emitted
+  `"matched_parts": {}`. A consumer that maps/iterates those fields (`.map` /
+  `.find`) would break on the object form. The top-level `matches` /
+  `external_matches` / `messages` arrays already used `cjson.empty_array` for
+  this reason; the per-match arrays now do too. Detection unchanged.
+
 ## [1.4.3] - 2026-07-24
 
 ### Fixed
