@@ -114,3 +114,12 @@ private/
 bench/
 # Generated WAF evaluation reports (not source)
 tests/reports/
+
+# Local work-in-progress (not for commit)
+dashboard/
+plans/
+
+# Agent tooling mirrors, kept local for now (the canonical copies live under
+# .claude/). AGENTS.md mirrors CLAUDE.md; .agents/ mirrors .claude/skills/.
+AGENTS.md
+.agents/
