@@ -43,9 +43,11 @@ Strip dangerous characters in place and let the request through:
 ```
 
 ## Rate-limit an endpoint
-Needs Redis (`redis_host`/`redis_port`). Caps per source IP:
+Needs Redis (`redis_host`/`redis_port`). Caps per source IP. Keep `"log": true`
+(local rules don't log unless asked) so the throttled 429s show up in the audit
+log:
 ```json
-{ "id": "rl-login", "phase": "access",
+{ "id": "rl-login", "phase": "access", "log": true,
   "conditions": [ { "op": "beginsWith", "value": "/api/login", "transform": [],
                     "variables": ["request.raw_path"] } ],
   "action": { "rate_limit": { "key": "%{remote_addr}", "limit": 5, "window_seconds": 60,
