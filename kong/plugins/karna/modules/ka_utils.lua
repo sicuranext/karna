@@ -634,6 +634,15 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
                 end
             end
 
+            -- Empty per-match arrays must serialise as JSON `[]`, not `{}`.
+            -- cjson encodes an empty Lua table as an object; a consumer that
+            -- maps/iterates the value then breaks (an empty `matched_parts`
+            -- or `tags` was arriving as `{}`). The top-level `matches` /
+            -- `external_matches` already use empty_array for this reason.
+            if #matched_parts == 0 then
+                matched_parts = cjson.empty_array
+            end
+
             -- determine action label
             -- precedence: sanitized > rate_limited > block > detect > log
             -- - sanitized: rule had fix_matched_parts and the engine
@@ -659,10 +668,16 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
                 end
             end
 
+            -- normalise tags the same way (nil / empty table → JSON `[]`)
+            local tags = rule.tags
+            if type(tags) ~= "table" or next(tags) == nil then
+                tags = cjson.empty_array
+            end
+
             matches[#matches + 1] = {
                 rule_id = tostring(rule.id or "0"),
                 message = rule.message or "",
-                tags = rule.tags or {},
+                tags = tags,
                 matched_parts = matched_parts,
                 action = action_label
             }
