@@ -25,6 +25,7 @@ build = {
   type = "builtin",
   modules = {
     ["kong.plugins."..pluginName..".handler"]         = "kong/plugins/"..pluginName.."/handler.lua",
+    ["kong.plugins."..pluginName..".api"]             = "kong/plugins/"..pluginName.."/api.lua",
     ["kong.plugins."..pluginName..".schema"]          = "kong/plugins/"..pluginName.."/schema.lua",
     ["kong.plugins."..pluginName..".version"]         = "kong/plugins/"..pluginName.."/version.lua",
     ["kong.plugins."..pluginName..".ka_engine"]       = "kong/plugins/"..pluginName.."/modules/ka_engine.lua",
