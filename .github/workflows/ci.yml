@@ -71,6 +71,8 @@ jobs:
         run: lua ka-unittest/redis_inspect.lua
       - name: Global rules pack (HMAC verify, replay guard, poll state machine)
         run: lua ka-unittest/global_rules.lua
+      - name: WordPress ctl target exclusion (ARGS:name body-param removal + namespace gate)
+        run: lua ka-unittest/wordpress_target_exclusion.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
