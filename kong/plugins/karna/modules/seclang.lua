@@ -116,6 +116,12 @@ end
 -- the operator may declare a plugin name that isn't on disk yet
 -- (CI bootstrap, optional installs), and we'd rather load no
 -- rules than crash the access phase.
+local function shell_quote(value)
+    -- POSIX single-quote escaping. plugin_dir is configuration-controlled;
+    -- quote it as data so it can never append shell syntax to the `ls` call.
+    return "'" .. tostring(value):gsub("'", "'\"'\"'") .. "'"
+end
+
 function seclang.collect_plugin_conf_files(plugin_dir)
     if not plugin_dir or plugin_dir == "" then return {} end
     if not plugin_dir:match("/$") then plugin_dir = plugin_dir .. "/" end
@@ -124,7 +130,7 @@ function seclang.collect_plugin_conf_files(plugin_dir)
     -- io.popen here is fork+exec — acceptable because this only runs
     -- on the first request after a plugin-config change (cached in the
     -- handler-side LRU thereafter), not on every request.
-    local pfile = io.popen('ls -a "' .. plugin_dir .. '" 2>/dev/null')
+    local pfile = io.popen("ls -a -- " .. shell_quote(plugin_dir) .. " 2>/dev/null")
     if not pfile then return files end
 
     for filename in pfile:lines() do
