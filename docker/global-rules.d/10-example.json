@@ -1,0 +1,42 @@
+[
+  {
+    "id": "global-example-block",
+    "phase": "access",
+    "message": "example global blocking rule: request carries the x-karna-global-test marker",
+    "tags": ["karna-global", "example"],
+    "conditions": [
+      {
+        "variables": ["request.header.value:x-karna-global-test"],
+        "op": "eq",
+        "value": "block"
+      }
+    ],
+    "action": {
+      "fixed_response": {
+        "status_code": 403,
+        "body": "Blocked by the global rules pack\r\n"
+      }
+    }
+  },
+  {
+    "id": "global-example-exclusion",
+    "phase": "access",
+    "message": "example global exclusion: the sqlquery arg on /reports/query is a query builder, not an attack",
+    "tags": ["karna-global", "example"],
+    "conditions": [
+      {
+        "variables": ["request.raw_path"],
+        "op": "beginsWith",
+        "value": "/reports/query"
+      }
+    ],
+    "rule_control": [
+      {
+        "remove_target_from_rule_by_id": {
+          "rule_id": "942100",
+          "target": "request.arg.value:sqlquery"
+        }
+      }
+    ]
+  }
+]
