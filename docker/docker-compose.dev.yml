@@ -125,6 +125,14 @@ services:
       KARNA_GLOBAL_RULES_HMAC_KEY: karna-dev-hmac-key
       KARNA_GLOBAL_RULES_POLL: "5"
 
+      # Global rules from disk. Off by default here so the dev stack (and the
+      # CRS regression that runs against it) has no extra rules in play —
+      # uncomment together with the matching volume below to try it. Point it
+      # at a single .json or at a directory of *.json loaded in filename
+      # order; it is read once per worker at init_worker, so changes need
+      # `kong reload` (or `up -d --force-recreate kong`).
+      # KARNA_GLOBAL_RULES_PATH: /etc/kong/karna/global-rules.d
+
     volumes:
       # Plugin source — read-only. luarocks make at startup installs from here.
       - ../kong:/usr/local/kong/custom-plugins/karna/kong:ro
@@ -133,6 +141,8 @@ services:
       - ../tests:/usr/local/kong/custom-plugins/karna/tests:ro
       - ../kong-plugin-karna-1.4.3-0.rockspec:/usr/local/kong/custom-plugins/karna/kong-plugin-karna-1.4.3-0.rockspec:ro
       - ./main-env.conf:/etc/kong/nginx/main-env.conf:ro
+      # Pairs with KARNA_GLOBAL_RULES_PATH above (both commented out by default).
+      # - ./global-rules.d:/etc/kong/karna/global-rules.d:ro
 
     command: >
       sh -c "
