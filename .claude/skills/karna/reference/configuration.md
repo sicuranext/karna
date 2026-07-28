@@ -76,7 +76,7 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 - `redis_keepalive_pool_size` (num, `64`), `redis_keepalive_idle_ms` (num, `60000`) — inspection client connection pool.
 - `redis_on_error` (str, `skip`; one_of skip/fail_open/fail_closed) — inspection read when Redis is down: `skip`/`fail_open` = no match (traffic flows), `fail_closed` = match (deny on unreadable shared state). Default `skip` keeps a Redis outage from blocking traffic.
 - Read-only boundary: the inspection client enforces a deny-by-default command whitelist (GET/EXISTS/SISMEMBER/HEXISTS/TTL/… only). A `redis.<key>` variable can never run a write/admin/scripting/scan command; mutations go only through the write actions.
-- The global rules pack loader is a SEPARATE, worker-global Redis connection configured by env vars (`KARNA_REDIS_URL`, `KARNA_GLOBAL_RULES_HMAC_KEY`, `KARNA_GLOBAL_RULES_POLL` — see `deploy.md`), not by these per-service options. See `rules.md` → Global rules.
+- The global rules pack loader is a SEPARATE, worker-global Redis connection configured by env vars (`KARNA_REDIS_URL`, `KARNA_GLOBAL_RULES_HMAC_KEY`, `KARNA_GLOBAL_RULES_POLL` — see `deploy.md`), not by these per-service options. Redis is not required for global rules at all: `KARNA_GLOBAL_RULES_PATH` loads the same pack from a JSON file (or a directory of them) on disk. See `rules.md` → Global rules.
 
 ## Debug
 - `private_debug` (bool, `false`) — verbose internal output, off in prod.

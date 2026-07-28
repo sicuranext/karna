@@ -38,9 +38,10 @@ Set a rule's `phase` to one of these. Custom rules run in `access` and
 
 ## Evaluation order
 Within a phase the engine runs, in this order: rule controls → CRS exclusion
-plugins + `custom_secrules` pass-rules (ctl side effects) → **global rules**
-(Redis pack, if published) → local rules (`rules_request`) → CRS. Within each
-list rules run in order. Non-terminal side effects
+plugins + `custom_secrules` pass-rules (ctl side effects) → **global rules
+exclusions** (disk pack, then Redis pack) → **global rules detection** (disk,
+then Redis) → local rules (`rules_request`) → CRS. Within each list rules run in
+order. Non-terminal side effects
 (`set_variable`, `set_log_fields`, `redis_incr_key`) fire on **every** matching
 rule. The first rule whose action is **terminal** (`fixed_response`,
 `fix_matched_parts`, `rate_limit`) stops evaluation and wins. So a counter that
@@ -99,21 +100,53 @@ Macros for `key`/templates: `%{remote_addr}`, `%{request.method|host|scheme|path
 ## SecLang option
 `custom_secrules` accepts raw `SecRule <vars> "<op>" "<actions>"` strings (only the canonical form; `SecRule*` derivatives skipped). Parsed at worker start into the global pool. `deny` and `block` both map to a 403 `fixed_response`; an explicit `status:NNN` is honoured.
 
-## Global rules (one pack for every service, via Redis)
+## Global rules (one pack for every service)
 Karna is attached per-service; the global rules pack is how one rule set reaches
-**all** services with no per-service config and no reload. Operators publish two
-payloads (a JSON rule array — same format as `rules_request` — and/or a SecLang
-text) to the Redis hash `karna:global_rules` with
+**all** services with no per-service config. Two independent sources, either or
+both:
+
+**Disk** — `KARNA_GLOBAL_RULES_PATH` points at a `.json` file or at a directory
+whose `*.json` files load in filename order (prefix them `00-`, `10-` to control
+it). Each file is a bare JSON array of rules in the Karna rule format, the same
+array `rules_request` and the Redis `json` payload carry; no SecLang here. Read
+synchronously once per worker at `init_worker`, so it is live before the first
+request and there is no watcher: edits need `kong reload` or a restart. Not
+signed — on disk the filesystem is the trust anchor. Each worker logs one
+`notice` summary with the path, counts and a `sha256:` fingerprint of the bytes
+(use it to check a fleet runs the same pack).
+
+**Redis** — publish a JSON array and/or a SecLang text to the hash
+`karna:global_rules` with
 `scripts/karna-rules.py --type global-rules --redis <url> --json f.json --seclang f.conf`
 (also `--show` to inspect, `--pull` to recover the files, `--dry-run`). Workers
 poll the version field (env `KARNA_GLOBAL_RULES_POLL`, default 30s) and hot-swap
-the pack. Enable by setting `KARNA_REDIS_URL` on the Kong nodes; sign packs with
+the pack. Enable with `KARNA_REDIS_URL`; sign packs with
 `KARNA_GLOBAL_RULES_HMAC_KEY` (same key on publisher and nodes — unsigned mode
 works but warns loudly). Bad signature / Redis outage → last known good pack
-stays; `DEL karna:global_rules` → pack cleared. Global rules run before local
-rules; phases: `access`, `header_filter`, `mcp_event` (no `body_filter`). There
-is no per-service opt-out — tag pack rules (e.g. `global-pack`) so per-service
-`rule_action_overrides` or `ctl:*` exclusions can tame one rule where needed.
-Blocking still follows each service's `engine_blocking_mode`.
+stays; `DEL karna:global_rules` → pack cleared.
+
+**Both configured**: disk is evaluated before Redis, and duplicate rule ids are
+first-wins, so Redis can add rules but cannot replace a rule deployed on disk
+with one carrying the same id (the discarded copy is logged, naming both sides).
+Same rule between two files of a directory: earlier filename wins.
+
+**Blocking rules and exclusions in one pack**: order in the file does not
+matter. At load each pack is split — rules with `rule_control` and no `action`
+go to a *controls* list evaluated first on the multi-match path (so every
+matching exclusion applies its `ctl:*`, in time to affect global detection
+rules, local rules and the CRS); everything else goes to *detection* on the
+standard first-terminal-wins path with the full action dispatch. A rule with
+`rule_control` **plus** a real action stays in detection so it keeps that
+dispatch.
+
+Phases: `access`, `header_filter`, `mcp_event` (no `body_filter`).
+`@pmFromFile` is not supported on this channel (rule dropped with a warning —
+a pack ships no data files). Anything the engine could not evaluate (missing
+`id`/`phase`/`conditions`, unsupported op, unevaluated phase) is dropped with
+the id and reason; a file that does not decode is skipped and the others still
+load. Global rules run before local rules. There is no per-service opt-out —
+tag pack rules (e.g. `global-pack`) so per-service `rule_action_overrides` or
+`ctl:*` exclusions can tame one rule where needed. Blocking still follows each
+service's `engine_blocking_mode`.
 
 See `recipes.md` for end-to-end examples; the public docs at `/docs/rules.html` carry fuller worked examples.

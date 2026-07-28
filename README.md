@@ -114,11 +114,14 @@ Karna inspects every request against a layered rule pipeline:
    adjust, exclude, or rewrite loaded rules at request time. Includes the
    in-repo CRS-fix layer (`coreruleset_fix.lua`) that neutralises known
    false-positive-prone OWASP CRS rules in production deployments.
-3. **Global rules** — one Redis-distributed, HMAC-signed rule pack
-   evaluated on *every* service Karna is attached to, hot-reloaded within
-   seconds of a publish, no `kong reload` and no per-service config.
-   Publish with `scripts/karna-rules.py --type global-rules`; enable by
-   setting `KARNA_REDIS_URL`. See the
+3. **Global rules** — one rule pack evaluated on *every* service Karna is
+   attached to, from either or both of two sources: a JSON file (or
+   directory of JSON files) on disk via `KARNA_GLOBAL_RULES_PATH`, and a
+   Redis-distributed HMAC-signed pack via `KARNA_REDIS_URL` (published
+   with `scripts/karna-rules.py --type global-rules`, hot-reloaded within
+   seconds, no `kong reload`). Blocking rules and CRS exclusions can live
+   in the same pack; with both sources configured, disk is the
+   authoritative baseline. See the
    [rules documentation](docs/rules.html#global-rules).
 4. **Per-service local rules** (`rules_request`): your own custom rules,
    each run in the phase named by its `phase` field (access or
