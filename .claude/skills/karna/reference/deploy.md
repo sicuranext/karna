@@ -66,6 +66,7 @@ Then wire Kong:
   env KARNA_LIBKA_RE2_SO;
   env KARNA_PROFILE;
   env KARNA_REDIS_URL;
+  env KARNA_GLOBAL_RULES_PATH;
   env KARNA_GLOBAL_RULES_HMAC_KEY;
   env KARNA_GLOBAL_RULES_POLL;
   ```
@@ -82,7 +83,8 @@ Then wire Kong:
 | `KARNA_LIBKA_RE2_SO` | `/usr/local/lib/libka_re2.so` | RE2 scanner (fallback to Lua if missing) |
 | `KARNA_LIBKA_AC_SO` | `/usr/local/lib/libka_ac.so` | Aho-Corasick scanner (fallback to Lua if missing) |
 | `KARNA_PROFILE` | unset | enables LuaJIT profiling (diagnostics) |
-| `KARNA_REDIS_URL` | unset | enables the global rules pack (`redis://…` / `rediss://…`); unset = feature off |
+| `KARNA_GLOBAL_RULES_PATH` | unset | loads the global rules pack from disk: a `.json` file or a directory of `*.json` (filename order). Read once per worker, so edits need `kong reload`; unset = no disk source |
+| `KARNA_REDIS_URL` | unset | enables the Redis source of the global rules pack (`redis://…` / `rediss://…`); unset = no Redis source |
 | `KARNA_GLOBAL_RULES_HMAC_KEY` | unset | HMAC key for global rules signatures (`openssl rand -hex 32`); unset = unsigned mode + loud warning |
 | `KARNA_GLOBAL_RULES_POLL` | 30 | global rules poll interval, seconds (min 5) |
 

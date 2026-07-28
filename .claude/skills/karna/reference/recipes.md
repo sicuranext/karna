@@ -189,10 +189,32 @@ block response:
   "log": false }
 ```
 
-## Ship one rule pack to every service (global rules)
-Local rules live on one service; the global rules pack reaches all of them,
-hot, with no reload. One-time setup: `openssl rand -hex 32`, put the key on the
-Kong nodes as `KARNA_GLOBAL_RULES_HMAC_KEY` together with
+## Ship one rule pack to every service, from disk (global rules)
+The simplest global pack is a file. Put the rules in a JSON array — same format
+as `rules_request` — mount it, and point `KARNA_GLOBAL_RULES_PATH` at it
+(declare the var in `main-env.conf`, see `deploy.md`):
+```sh
+docker run ... \
+    -e KARNA_GLOBAL_RULES_PATH=/etc/kong/karna/global-rules.d \
+    -v ./global-rules.d:/etc/kong/karna/global-rules.d:ro \
+    karna:latest
+# ./global-rules.d/00-exclusions.json   loaded first (filename order)
+# ./global-rules.d/10-blocking.json
+```
+A directory loads every `*.json` in filename order; a single `.json` file works
+too. Blocking rules and CRS exclusions can share the pack in any order — the
+exclusions (rules with `rule_control` and no `action`) are always evaluated
+first. The pack is read once per worker at startup, so an edit needs
+`kong reload` or a container restart; each worker logs a `notice` line with the
+counts and a `sha256:` fingerprint, which is how you verify every node runs the
+same pack. A rule the engine cannot evaluate is dropped with its id and the
+reason (`@pmFromFile` is not supported here); a file that does not decode is
+skipped and the rest still load, so a typo never takes a node down.
+
+## Ship one rule pack to every service, hot (global rules via Redis)
+Same pack, delivered over Redis when you need to change it on a running fleet
+without touching the nodes. One-time setup: `openssl rand -hex 32`, put the key
+on the Kong nodes as `KARNA_GLOBAL_RULES_HMAC_KEY` together with
 `KARNA_REDIS_URL=redis://…` (declare both in `main-env.conf` — see `deploy.md`),
 restart Kong once. Then, from wherever the rule files live:
 ```sh
@@ -212,6 +234,10 @@ good pack and log an error per poll); `DEL karna:global_rules` in Redis is the
 explicit kill switch. Global rules run before local rules on every service —
 there is no per-service opt-out, so tag them (e.g. `"tags": ["global-pack"]`)
 and use per-service `rule_action_overrides` (`passthrough`) for exceptions.
+With both sources configured, disk wins: it is evaluated first, and a rule id
+already provided by the disk pack is discarded when Redis sends it again (logged,
+naming both sides). So the hot channel can add rules but cannot quietly replace
+a rule you deployed on disk.
 
 ## Run the CRS regression locally (do this after any rule/engine change)
 ```sh

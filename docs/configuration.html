@@ -292,7 +292,7 @@
     <section id="redis">
       <h2>Redis</h2>
       <p>Redis is optional. It backs the <code>rate_limit</code> and <code>redis_incr_key</code> rule actions, the <code>redis.&lt;key&gt;</code> inspection variables, the <code>redis_sismember</code> / <code>redis_hexists</code> operators, the <code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code> write actions, and the <a class="link" href="rules.html#global-rules">global rules pack</a>. The rest of the WAF works without it. With a shared Redis, these turn per-request, single-node state into cluster-wide state: a ban written on one node is seen by every node.</p>
-      <div class="note"><span class="lbl">Two connections</span>The options below configure the per-service inspection/write client used by rules. The <a class="link" href="rules.html#global-rules">global rules</a> loader is worker-global (it runs before any service config exists) and is configured separately via the <code>KARNA_REDIS_URL</code> environment variable — see <a class="link" href="#env">Environment variables</a>. The two may point at the same Redis or different ones.</div>
+      <div class="note"><span class="lbl">Two connections</span>The options below configure the per-service inspection/write client used by rules. The <a class="link" href="rules.html#global-rules">global rules</a> loader is worker-global (it runs before any service config exists) and is configured separately via the <code>KARNA_REDIS_URL</code> environment variable — see <a class="link" href="#env">Environment variables</a>. The two may point at the same Redis or different ones. Redis is not required for global rules at all: <code>KARNA_GLOBAL_RULES_PATH</code> loads the same pack from disk.</div>
       <table class="doc-table">
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>
@@ -342,7 +342,8 @@
           <tr><td class="name"><code>KARNA_LIBKA_RE2_SO</code></td><td class="mono">/usr/local/lib/libka_re2.so</td><td>Path to the RE2 scanner. Missing &rarr; pure-Lua <code>@rx</code> fallback.</td></tr>
           <tr><td class="name"><code>KARNA_LIBKA_AC_SO</code></td><td class="mono">/usr/local/lib/libka_ac.so</td><td>Path to the Aho-Corasick scanner. Missing &rarr; pure-Lua <code>@pm</code> fallback.</td></tr>
           <tr><td class="name"><code>KARNA_PROFILE</code></td><td class="mono">unset</td><td>If set, enables LuaJIT profiling. Diagnostics only.</td></tr>
-          <tr><td class="name"><code>KARNA_REDIS_URL</code></td><td class="mono">unset</td><td>Enables the <a class="link" href="rules.html#global-rules">global rules pack</a>. <code>redis://[user][:pass]@host[:port][/db]</code>, or <code>rediss://</code> for TLS. Unset &rarr; the feature is off, zero overhead.</td></tr>
+          <tr><td class="name"><code>KARNA_GLOBAL_RULES_PATH</code></td><td class="mono">unset</td><td>Loads the <a class="link" href="rules.html#global-rules">global rules pack</a> from disk: a <code>.json</code> file, or a directory whose <code>*.json</code> files are read in filename order. Read once per worker at start, so edits need <code>kong reload</code>. Unset &rarr; no disk source, no I/O.</td></tr>
+          <tr><td class="name"><code>KARNA_REDIS_URL</code></td><td class="mono">unset</td><td>Enables the Redis source of the <a class="link" href="rules.html#global-rules">global rules pack</a>. <code>redis://[user][:pass]@host[:port][/db]</code>, or <code>rediss://</code> for TLS. Unset &rarr; no Redis source, zero overhead.</td></tr>
           <tr><td class="name"><code>KARNA_GLOBAL_RULES_HMAC_KEY</code></td><td class="mono">unset</td><td>Shared HMAC-SHA256 key for global rules pack signatures (generate with <code>openssl rand -hex 32</code>). Set &rarr; unsigned or tampered packs are rejected. Unset &rarr; packs are accepted unsigned, with a loud startup warning.</td></tr>
           <tr><td class="name"><code>KARNA_GLOBAL_RULES_POLL</code></td><td class="mono">30</td><td>Global rules poll interval in seconds (minimum 5). Each poll is one cheap <code>HGET</code> of the version field; the pack is re-fetched only when it changes.</td></tr>
         </tbody>
@@ -355,6 +356,7 @@ env KARNA_LIBINJECTION_SO;
 env KARNA_LIBKA_RE2_SO;
 env KARNA_PROFILE;
 env KARNA_REDIS_URL;
+env KARNA_GLOBAL_RULES_PATH;
 env KARNA_GLOBAL_RULES_HMAC_KEY;
 env KARNA_GLOBAL_RULES_POLL;</pre></div>
       </div>

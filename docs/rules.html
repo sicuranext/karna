@@ -441,9 +441,39 @@
 
     <section id="global-rules">
       <h2>Global rules</h2>
-      <p>Karna is attached per-service, so Kong has no native way to ship one rule pack to every service — a global plugin instance would be shadowed by the per-service ones. Global rules close that gap: you publish a single pack to a Redis hash and <strong>every Karna worker on every node</strong> pulls it, verifies its signature, and evaluates it on <strong>every service</strong>, before local rules and the CRS. Updates go live within the poll interval — no <code>kong reload</code>, no per-service configuration, no files on the gateway nodes.</p>
+      <p>Karna is attached per-service, so Kong has no native way to ship one rule pack to every service — a global plugin instance would be shadowed by the per-service ones. Global rules close that gap: one pack, evaluated on <strong>every service</strong> Karna is attached to, before local rules and the CRS.</p>
+      <p>There are two sources, independent and individually optional:</p>
+      <table class="doc-table">
+        <thead><tr><th>Source</th><th class="mono">Enabled by</th><th>Shape</th><th>Update</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Disk</strong></td><td class="mono">KARNA_GLOBAL_RULES_PATH</td><td>A <code>.json</code> file, or a directory of <code>*.json</code> files</td><td><code>kong reload</code> / restart</td></tr>
+          <tr><td><strong>Redis</strong></td><td class="mono">KARNA_REDIS_URL</td><td>A hash with a JSON and a SecLang payload, HMAC-signed</td><td>Hot, within the poll interval</td></tr>
+        </tbody>
+      </table>
+      <p>Pick disk when the rules belong in version control and ride your normal deploy (GitOps, DB-less, air-gapped, no Redis to run). Pick Redis when you need to change the pack on a running fleet without touching the nodes. Run both and the disk pack is the authoritative baseline the hot channel cannot overwrite — see <a class="link" href="#global-merge">Two sources, one pack</a>.</p>
 
-      <h3>Storage layout</h3>
+      <h3>From disk</h3>
+      <p>Point <code>KARNA_GLOBAL_RULES_PATH</code> at a single <code>.json</code> file or at a directory, in which case every <code>*.json</code> inside is loaded <strong>in filename order</strong> — prefix the files (<code>00-</code>, <code>10-</code>) and that prefix is the evaluation order. Each file is a bare JSON array of rules in the Karna rule format: the same objects you would put in <code>rules_request</code>, and the same array you would publish to Redis as the <code>json</code> payload, so a pack moves between the two channels verbatim. SecLang is not accepted on this channel.</p>
+      <div class="code-card">
+        <div class="code-head"><span>docker run</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre>docker run ... \
+    -e KARNA_GLOBAL_RULES_PATH=/etc/kong/karna/global-rules.d \
+    -v ./global-rules.d:/etc/kong/karna/global-rules.d:ro \
+    karna:latest
+
+<span class="cmt"># ./global-rules.d/00-exclusions.json   -> evaluated first</span>
+<span class="cmt"># ./global-rules.d/10-blocking.json</span></pre></div>
+      </div>
+      <p>The pack is read once per worker at <code>init_worker</code>, synchronously, so it is live before the first request — there is no cold-start window and no filesystem watcher. Editing a file takes effect on <code>kong reload</code> (which respawns the workers) or a container restart. On disk the filesystem is the trust anchor, exactly as for the CRS rules themselves, so the pack carries no signature.</p>
+      <div class="note"><span class="lbl">env vars and nginx</span>nginx wipes the environment of its worker processes, so <code>KARNA_GLOBAL_RULES_PATH</code> must be declared in the main context with <code>env KARNA_GLOBAL_RULES_PATH;</code>. The published image already does this — see <a class="link" href="configuration.html#env">Configuration → Environment variables</a>.</div>
+      <p>At startup each worker logs one summary line at <code>notice</code> level (Kong's default): the path, how many files it read, how many rules ended up in each list, how many were dropped, and a <code>sha256</code> fingerprint of the exact bytes the pack was built from. The fingerprint is how you check that every node in a fleet is running the same global rules; unlike a hand-written version field, it cannot be forgotten on an edit.</p>
+      <div class="code-card">
+        <div class="code-head"><span>startup log</span><span class="lang">text</span></div>
+        <div class="code-body"><pre>[karna] global rules: loaded file pack sha256:f2cc8ce2a430 from
+  /etc/kong/karna/global-rules.d (2 file(s), 1 controls + 3 detection, worker 0)</pre></div>
+      </div>
+
+      <h3>From Redis — storage layout</h3>
       <p>One Redis hash, <code>karna:global_rules</code>, written atomically by a single <code>HSET</code>:</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Field</th><th>Content</th></tr></thead>
@@ -454,9 +484,9 @@
           <tr><td class="name"><code>sig</code></td><td>Hex HMAC-SHA256 over <code>version + "\n" + sha256(json) + "\n" + sha256(seclang)</code>.</td></tr>
         </tbody>
       </table>
-      <p>JSON rules are evaluated first (in author order), then SecLang rules (sorted by id). Supported phases match local rules: <code>access</code>, <code>header_filter</code>, and <code>mcp_event</code>; <code>body_filter</code> rules are not evaluated. Rules default to <code>"log": true</code>.</p>
+      <p>JSON rules are evaluated first (in author order), then SecLang rules (sorted by id). Rules default to <code>"log": true</code>.</p>
 
-      <h3>Publishing</h3>
+      <h3>Publishing to Redis</h3>
       <p>Use <code>scripts/karna-rules.py</code> — it validates, previews, signs, and publishes the pack in one atomic write. Set up once:</p>
       <div class="code-card">
         <div class="code-head"><span>one-time setup</span><span class="lang">bash</span></div>
@@ -485,9 +515,30 @@ openssl rand -hex 32
       <h3>Trust model</h3>
       <p>Redis is a <em>transport</em>, not a trust anchor. With <code>KARNA_GLOBAL_RULES_HMAC_KEY</code> set, a pack with a missing or invalid signature is rejected and the last known good pack stays active — write access to Redis alone is not enough to inject or weaken rules; the signing key is. Workers also refuse non-increasing versions, so an old signed pack cannot be replayed while they run (after a full Kong restart the counter resets; rotate the key if that residual matters to you). Without the key, packs are accepted unsigned and a loud warning is logged at startup — fine for a lab, not for production.</p>
 
+      <h3 id="global-merge">Two sources, one pack</h3>
+      <p>When both are configured, the two packs are merged into the one the request path reads:</p>
+      <ul>
+        <li><strong>Order</strong> — disk before Redis. Inside a source, author order (files in filename order, rules in array order).</li>
+        <li><strong>Duplicate ids</strong> — first wins. A rule id that already came from disk is discarded when it arrives again from Redis, with a warning naming both sides. So the hot channel can <em>add</em> rules but cannot silently replace a rule you deployed on disk with a weaker one carrying the same id. The same rule applies between two files in a directory: the earlier filename wins.</li>
+      </ul>
+
+      <h3>Blocking rules and exclusions in the same pack</h3>
+      <p>A global pack can carry both, and their order in the file does not matter. At load time each pack is split in two lists:</p>
+      <ul>
+        <li><strong>controls</strong> — rules with a <code>rule_control</code> and no <code>action</code>: CRS-style exclusions. They run first, on the multi-match path, so <em>every</em> matching exclusion contributes its <code>ctl:*</code> side effects, and they land in time to affect the global detection rules, the local rules and the CRS.</li>
+        <li><strong>detection</strong> — everything else, on the standard first-terminal-wins path with the full action dispatch (<code>fixed_response</code>, <code>fix_matched_parts</code>, <code>rate_limit</code>, <code>set_variable</code>, …). A rule that carries a <code>rule_control</code> <em>next to</em> a real action stays here, so it keeps that dispatch.</li>
+      </ul>
+      <p>Without the split, a blocking rule matching early in the list would end the pass and quietly swallow an exclusion declared after it — visible only in detection mode, where the request continues to the CRS with fewer exclusions applied than the file says.</p>
+
       <h3>Evaluation order and failure posture</h3>
       <p>Global rules run <em>after</em> rule controls and CRS exclusion plugins (so per-service <code>ctl:*</code> exclusions and <a class="link" href="#overrides">overrides</a> can tame a global rule on one service without touching the pack) and <em>before</em> local rules and the CRS. Blocking behaviour follows each service's <code>engine_blocking_mode</code> — on a detection-only service a global rule logs instead of blocking. There is deliberately no per-service opt-out; tag your global rules (e.g. <code>"tags": ["global-pack"]</code>) so overrides can select them where exceptions are needed.</p>
-      <p>On a Redis outage or a rejected pack, workers keep the last known good pack and log an error per failed poll. A worker that starts while Redis is down runs without global rules until the first successful poll (the CRS and local rules are unaffected — they load from disk and config).</p>
+      <p>Supported phases match local rules: <code>access</code>, <code>header_filter</code> and <code>mcp_event</code>. <code>@pmFromFile</code> is <strong>not</strong> supported on this channel — a global pack ships no data files and must not reach into the engine's shared data-file store.</p>
+      <p>Failures are fail-open, granular and loud, because a broken global pack must never take a node down:</p>
+      <ul>
+        <li>A rule the engine could not evaluate — missing <code>id</code> / <code>phase</code> / <code>conditions</code>, an unsupported <code>@pmFromFile</code>, a phase that is never evaluated — is dropped with the id and the reason in the log. The rest of the pack stays active. Such a rule is not kept: a condition that can never match would look like coverage without being any.</li>
+        <li>A file that cannot be read or does not decode is skipped with an error; the other files in the directory still load. A single-file pack that does not decode means no rules from disk, and the node keeps serving with the CRS, the local rules and any Redis pack.</li>
+        <li>On a Redis outage or a rejected pack, workers keep the last known good Redis pack and log an error per failed poll. A worker that starts while Redis is down runs without the Redis pack until the first successful poll; the disk pack, the CRS and the local rules are unaffected.</li>
+      </ul>
     </section>
 
     <section id="ex-detect">
