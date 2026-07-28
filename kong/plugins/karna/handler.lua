@@ -693,11 +693,13 @@ function plugin:init_worker()
 
     debug("#########> Loaded "..tostring(#rules).." CRS rules on worker number "..ngx.worker.id())
 
-    -- Centrally distributed global rules (Redis-backed, HMAC-verified).
-    -- init_worker cannot use cosockets, so this only schedules the timers
-    -- (immediate load + poll); the engine/compile refs are injected here to
-    -- keep ka_global_rules requirable from plain-Lua unit tests. No-op when
-    -- KARNA_REDIS_URL is unset.
+    -- Global rules pack: read inline from disk (KARNA_GLOBAL_RULES_PATH) and
+    -- polled from Redis (KARNA_REDIS_URL, HMAC-verified). init_worker cannot
+    -- use cosockets, so the Redis half only schedules its timers (immediate
+    -- load + poll) while the disk half is read here and is live before the
+    -- first request. The engine/compile refs are injected to keep
+    -- ka_global_rules requirable from plain-Lua unit tests. No-op when neither
+    -- env var is set.
     ka_global_rules.init({ engine = engine, compile = ka_compile.compile_rules })
 
     -- RE2 @rx gate (engine_re2_scan spike — memory karna-re2-spike). Build the
@@ -910,17 +912,30 @@ function plugin:access(plugin_conf)
     kong.log.inspect(kong.ctx.plugin.rule_controls)
   end
 
-  -- Global rules (Redis-distributed pack, see ka_global_rules.lua).
+  -- Global rules (disk and/or Redis pack, see ka_global_rules.lua).
   -- Evaluated on EVERY service — no per-service opt-out — AFTER the rule
   -- controls above (so ctl:* exclusions and rule_action_overrides can tame a
   -- global rule per service) and BEFORE local + CRS rules. The pack
   -- reference is pinned in kong.ctx.plugin so later phases (header_filter,
   -- mcp_event) see the same snapshot even if the poll timer swaps the pack
   -- mid-request.
+  --
+  -- The pack arrives pre-split: `controls` (exclusion rules — only
+  -- rule_control, no action) runs first on the multi-match path so every
+  -- matching exclusion contributes its ctl:* side effects, then `detection`
+  -- runs on the standard first-terminal-wins path. That split is what makes
+  -- rule order inside a pack irrelevant: a blocking rule matching early can
+  -- no longer swallow an exclusion declared after it. Within each list the
+  -- order is disk before Redis.
   local global_rules_pack = ka_global_rules.get()
   kong.ctx.plugin.global_rules = global_rules_pack
-  if global_rules_pack and #global_rules_pack.access > 0 then
-    evaluate_rules(plugin_conf, global_rules_pack.access, "access")
+  if global_rules_pack then
+    if #global_rules_pack.controls.access > 0 then
+      apply_pass_rule_controls(plugin_conf, global_rules_pack.controls.access, "access")
+    end
+    if #global_rules_pack.detection.access > 0 then
+      evaluate_rules(plugin_conf, global_rules_pack.detection.access, "access")
+    end
   end
 
   -- loop local rules
@@ -955,12 +970,18 @@ function plugin:header_filter(plugin_conf)
   -- generate global inspection table
   engine:get_inspection_table(plugin_conf)
 
-  -- Global rules first (same precedence as the access phase: global before
-  -- local). Uses the pack snapshot pinned by :access; requests that skipped
-  -- access (cache hit) skip here too via the response_from_cache guard above.
+  -- Global rules first (same precedence and controls-then-detection split as
+  -- the access phase: see the comment there). Uses the pack snapshot pinned by
+  -- :access; requests that skipped access (cache hit) skip here too via the
+  -- response_from_cache guard above.
   local global_rules_pack = kong.ctx.plugin.global_rules
-  if global_rules_pack and #global_rules_pack.header_filter > 0 then
-    evaluate_rules(plugin_conf, global_rules_pack.header_filter, "header_filter")
+  if global_rules_pack then
+    if #global_rules_pack.controls.header_filter > 0 then
+      apply_pass_rule_controls(plugin_conf, global_rules_pack.controls.header_filter, "header_filter")
+    end
+    if #global_rules_pack.detection.header_filter > 0 then
+      evaluate_rules(plugin_conf, global_rules_pack.detection.header_filter, "header_filter")
+    end
   end
 
   -- Header_filter-phase local rules. Use the precomputed, cached

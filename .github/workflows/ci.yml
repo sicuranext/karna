@@ -69,7 +69,7 @@ jobs:
         run: lua ka-unittest/json_in_urlencoded.lua
       - name: Redis inspection read helper (whitelist + connection behavior)
         run: lua ka-unittest/redis_inspect.lua
-      - name: Global rules pack (HMAC verify, replay guard, poll state machine)
+      - name: Global rules pack (file + Redis sources, dedup, controls split, HMAC, replay guard)
         run: lua ka-unittest/global_rules.lua
       - name: WordPress ctl target exclusion (ARGS:name body-param removal + namespace gate)
         run: lua ka-unittest/wordpress_target_exclusion.lua
