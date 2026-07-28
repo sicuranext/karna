@@ -1,11 +1,55 @@
--- ka_global_rules.lua — centrally distributed global rules, pulled from Redis.
+-- ka_global_rules.lua — global rules: one rule pack evaluated on EVERY
+-- service Karna is attached to, BEFORE local rules and the CRS pack.
 --
 -- Karna instances are attached per-service, so there is no Kong-native way to
 -- ship one rule pack to every service (a global plugin instance would be
 -- shadowed by the per-service ones — Kong runs a single instance of a plugin
--- per request). This module closes that gap: operators publish a rule pack to
--- a single Redis hash and every worker on every node pulls it, verifies it,
--- and evaluates it on every service BEFORE local rules and the CRS pack.
+-- per request). This module closes that gap, from two independent and
+-- individually optional sources:
+--
+--   DISK   KARNA_GLOBAL_RULES_PATH — a .json file, or a directory whose
+--          `*.json` files are loaded in filename order. Each file is a bare
+--          JSON array of rules in the Karna rule format: the same array
+--          `rules_request` carries, and the same payload published to Redis
+--          as the `json` field, so a pack can be moved between the two
+--          channels verbatim. No SecLang on this channel.
+--          Read synchronously at init_worker — file I/O needs no cosockets,
+--          so the pack is live before the first request. There is no
+--          filesystem watcher by design: changing the file takes effect on
+--          `kong reload` (which respawns workers) or a restart.
+--          The pack is NOT signed — on disk the filesystem is the trust
+--          anchor, exactly as for the CRS rules and the CRS plugin dirs.
+--
+--   REDIS  KARNA_REDIS_URL — polled, HMAC-verified, hot-swapped with no
+--          reload. Details below.
+--
+-- Both sources feed the same `build_sources()` and are then merged by
+-- `recombine()` into the single pack `get()` returns. Two contracts hold
+-- across the merge:
+--
+--   ORDER   disk before Redis. Within one source, author order (files in
+--           filename order, rules in array order).
+--   DEDUP   first-wins on rule id, across sources and files: the disk pack
+--           is authoritative, so Redis can ADD rules but cannot silently
+--           replace a rule deployed on disk with a weaker one carrying the
+--           same id. Later duplicates are discarded with a warning.
+--
+-- Each pack is split in two lists, and the split is what makes rule order
+-- inside a file irrelevant:
+--
+--   controls   rules with `rule_control` and no `action` — CRS-style
+--              exclusions. Evaluated on the multi-match path, so every
+--              matching exclusion contributes its ctl:* side effects.
+--   detection  everything else, evaluated on the standard first-terminal-
+--              wins path with the full action dispatch (fixed_response,
+--              fix_matched_parts, rate_limit, set_variable, setvar, …).
+--              A rule carrying `rule_control` PLUS another action stays
+--              here, so it keeps that dispatch.
+--
+-- `@pmFromFile` is not supported on this channel (either source): a rule
+-- using it is dropped with a warning rather than kept as a condition that
+-- can never match, which would be silent fail-open. Global packs therefore
+-- never touch the engine's shared data-file store.
 --
 -- Redis layout — one hash key, `karna:global_rules`, four fields:
 --   json     raw JSON array of rules in the Karna rule format (same shape as
@@ -30,18 +74,34 @@
 --
 -- Environment (worker env — remember nginx wipes env unless declared with
 -- `env NAME;` in the main context, see docker/main-env.conf):
+--   KARNA_GLOBAL_RULES_PATH      .json file or directory of *.json files.
+--                                Unset = disk source disabled, no I/O at all.
 --   KARNA_REDIS_URL              redis://[user][:pass]@host[:port][/db] or
---                                rediss:// for TLS. Unset = feature disabled,
---                                zero overhead.
+--                                rediss:// for TLS. Unset = Redis source
+--                                disabled, zero overhead.
 --   KARNA_GLOBAL_RULES_HMAC_KEY  shared HMAC key; unset = unsigned mode.
 --   KARNA_GLOBAL_RULES_POLL      poll interval seconds (default 30, min 5).
 --
--- init_worker cannot use cosockets, so `init()` only schedules timers: an
--- immediate one-shot load plus a recurring poll. Until the first successful
--- load the pack is empty (cold-start window ≤ one poll on a Redis outage).
--- Failure posture: connection/verify/parse failures KEEP the last known good
--- pack; an explicitly deleted hash CLEARS it (absence is a valid published
--- state, an error is not).
+-- The two sources are independent: either can run without the other.
+--
+-- Failure posture — fail-open, granular, loud:
+--   * a rule the engine could not evaluate (missing id/phase/conditions, or
+--     an unsupported @pmFromFile) is dropped; the rest of the pack stays
+--     active.
+--   * a file that cannot be read or does not decode is skipped with an
+--     error; the other files in the directory still load.
+--   * for Redis, connection/verify/parse failures KEEP the last known good
+--     pack, while an explicitly deleted hash CLEARS it (absence is a valid
+--     published state, an error is not).
+-- A broken global pack therefore never takes a node down — it shows up as
+-- ERR/WARN lines at load time, which is why those lines name the rule id and
+-- the reason.
+--
+-- init_worker cannot use cosockets, so the Redis half of `init()` only
+-- schedules timers: an immediate one-shot load plus a recurring poll. Until
+-- the first successful load the Redis pack is empty (cold-start window ≤ one
+-- poll on a Redis outage). The disk half has no such window: it is read
+-- inline, before the worker serves anything.
 
 local seclang = require "kong.plugins.karna.ka_seclang"
 local cjson   = require "cjson"
@@ -50,6 +110,11 @@ local _M = {}
 
 _M.REDIS_KEY = "karna:global_rules"
 
+-- The phases a global pack is evaluated in. `body_filter` is absent on
+-- purpose: same as local rules, response bodies are only inspected through
+-- the MCP SSE path (`mcp_event`).
+local PHASES = { "access", "header_filter", "mcp_event" }
+
 -- Injected by handler.lua at init (dependency injection keeps this module
 -- requirable from plain-Lua unit tests without dragging in the engine):
 --   _M._engine  → ka_engine (for the pmFromFile dfiles merge)
@@ -57,9 +122,13 @@ _M.REDIS_KEY = "karna:global_rules"
 _M._engine  = nil
 _M._compile = nil
 
--- Current pack. Swapped atomically (table reference assignment) by the
--- polling timer; readers (`get()`) never see a half-built pack.
-_M._pack = nil
+-- Per-source packs plus the merged view served to the request path. All three
+-- are swapped by whole-table reference assignment, so readers (`get()`) never
+-- see a half-built pack: the disk pack is built once at init_worker, the Redis
+-- pack by the polling timer, and `recombine()` publishes a fresh merged table.
+_M._file_pack = nil
+_M._redis_pack = nil
+_M._combined = nil          -- what get() returns; nil while both sources are empty
 _M._last_version = nil      -- string, as stored in Redis (cheap poll compare)
 _M._last_version_num = nil  -- number, for the monotonicity check
 _M._warned_unsigned = false
@@ -230,12 +299,22 @@ _M.verify = function(fields, hmac_key)
 end
 
 -- ---------------------------------------------------------------------------
--- build — parse the two payloads into one compiled, phase-split pack
+-- build — turn payload sources (files, or the Redis json/seclang fields) into
+-- one compiled pack, split controls/detection and then per phase
 -- ---------------------------------------------------------------------------
 
 local function empty_pack(version)
-    return { all = {}, access = {}, header_filter = {}, mcp_event = {},
-             version = version, n_json = 0, n_seclang = 0, n_dropped = 0 }
+    local pack = {
+        all = {}, controls = {}, detection = {},
+        version = version,
+        n_json = 0, n_seclang = 0, n_dropped = 0,
+        n_controls = 0, n_detection = 0,
+    }
+    for _, phase in ipairs(PHASES) do
+        pack.controls[phase] = {}
+        pack.detection[phase] = {}
+    end
+    return pack
 end
 
 -- Numeric-aware id sort, same policy as the CRS loader in ka_engine:
@@ -264,123 +343,354 @@ local function rule_is_sane(rule)
        and type(rule.conditions) == "table"
 end
 
--- Resolve @pmFromFile data files against the CRS rules dir (the only rule
--- data present on every node — the global pack itself ships no files).
--- Returns true + dfiles-merged, or false when a data file is missing (the
--- rule is dropped: a pmFromFile with no file never matches, keeping it
--- would be silent fail-open).
-local function resolve_dfiles(rule, dfiles)
+-- @pmFromFile is unsupported on the global channel — see the header. Catches
+-- both the canonical `{op="pmFromFile", negated=…}` shape and the legacy
+-- `!pmFromFile` shorthand the engine still accepts on input.
+local function uses_pmfromfile(rule)
     for _, condition in pairs(rule.conditions or {}) do
-        if condition.op == "pmFromFile" and condition.value then
-            if not dfiles[condition.value] then
-                local content = seclang.collect_data_file(seclang.crs_path .. condition.value)
-                if not content then
-                    return false, condition.value
-                end
-                dfiles[condition.value] = content
-            end
+        if condition.op == "pmFromFile" or condition.op == "!pmFromFile" then
+            return true
         end
+    end
+    return false
+end
+
+-- Exclusion rules (only `rule_control`, no action) go on the multi-match
+-- controls path; everything else keeps the standard action dispatch. A rule
+-- carrying `rule_control` NEXT TO a real action stays in detection, because
+-- the controls path deliberately does not run action side effects
+-- (set_variable / set_log_fields / redis_incr_key would be silently lost).
+local function is_control_only(rule)
+    if type(rule.rule_control) ~= "table" then return false end
+    local action = rule.action
+    if action == nil then return true end
+    if type(action) ~= "table" then return false end
+    return next(action) == nil
+end
+
+-- Vet one rule and file it into the pack. `label` names the source in the log
+-- line (a filename, or "redis"); `position` is a human hint for rules that
+-- have no usable id. Returns true when the rule was kept.
+local function add_rule(pack, rule, label, position)
+    if not rule_is_sane(rule) then
+        pack.n_dropped = pack.n_dropped + 1
+        kong.log.err("[karna] global rules: ", label, " rule ", position,
+                     " dropped (needs id, phase, conditions)")
+        return false
+    end
+
+    if uses_pmfromfile(rule) then
+        pack.n_dropped = pack.n_dropped + 1
+        kong.log.warn("[karna] global rules: ", label, " rule ", tostring(rule.id),
+                      " dropped — @pmFromFile is not supported in global rules")
+        return false
+    end
+
+    local is_control = is_control_only(rule)
+    local bucket = is_control and pack.controls or pack.detection
+    local phase_list = bucket[rule.phase]
+    if not phase_list then
+        -- Sane but unreachable: a phase this channel never evaluates
+        -- (body_filter, or a typo). Dropped rather than parked in the pack
+        -- looking like coverage it does not provide.
+        pack.n_dropped = pack.n_dropped + 1
+        kong.log.warn("[karna] global rules: ", label, " rule ", tostring(rule.id),
+                      " dropped — phase '", tostring(rule.phase),
+                      "' is not evaluated for global rules")
+        return false
+    end
+
+    if rule.log == nil then rule.log = true end
+
+    -- Where this rule came from (filename, or "redis"). Only used to make the
+    -- duplicate-id warning actionable — it names both sides of the clash.
+    rule._ka_origin = label
+
+    pack.all[#pack.all + 1] = rule
+    phase_list[#phase_list + 1] = rule
+    if is_control then
+        pack.n_controls = pack.n_controls + 1
+    else
+        pack.n_detection = pack.n_detection + 1
     end
     return true
 end
 
--- fields.json / fields.seclang → pack. Never throws; unparseable payloads
--- return nil + err so the caller keeps the last known good pack.
-_M.build = function(fields)
-    local pack = empty_pack(fields.version)
-    local dfiles = {}
+-- Build one pack out of an ordered list of payload sources, each
+-- `{name = <label>, json = <blob>, seclang = <blob>}`. Never throws.
+-- Returns `pack, errors` where `errors` is a (possibly empty) list of
+-- per-source failure strings — a source whose payload does not decode
+-- contributes an error and no rules; the callers differ in how they react
+-- (Redis rejects the whole pack and keeps the last known good, the disk
+-- loader skips the bad file and keeps the others).
+_M.build_sources = function(sources, version)
+    local pack = empty_pack(version)
+    local errors = {}
 
-    -- 1) JSON payload: a single JSON array, author order preserved.
-    local json_blob = fields.json
-    if json_blob and json_blob ~= "" then
-        local ok, decoded = pcall(cjson.decode, json_blob)
-        if not ok or type(decoded) ~= "table" then
-            return nil, "json payload is not a valid JSON array: " .. tostring(decoded)
-        end
-        for i, rule in ipairs(decoded) do
-            if not rule_is_sane(rule) then
-                pack.n_dropped = pack.n_dropped + 1
-                kong.log.err("[karna] global rules: json rule #", i,
-                             " dropped (needs id, phase, conditions)")
+    for _, source in ipairs(sources or {}) do
+        local label = source.name or "?"
+
+        -- JSON payload: a bare JSON array, author order preserved.
+        local json_blob = source.json
+        if json_blob and json_blob ~= "" then
+            local ok, decoded = pcall(cjson.decode, json_blob)
+            if not ok or type(decoded) ~= "table" then
+                errors[#errors + 1] = label ..
+                    ": json payload is not a valid JSON array: " .. tostring(decoded)
+            elseif decoded[1] == nil and next(decoded) ~= nil then
+                -- Decodes fine but is an object, not an array — the likely
+                -- authoring mistake is wrapping the rules in an envelope
+                -- ({"rules": [...]}). Say so instead of silently loading zero
+                -- rules from a file that looks fine.
+                errors[#errors + 1] = label ..
+                    ": json payload must be an ARRAY of rules, got a JSON object"
             else
-                local okd, missing = resolve_dfiles(rule, dfiles)
-                if not okd then
-                    pack.n_dropped = pack.n_dropped + 1
-                    kong.log.warn("[karna] global rules: rule ", tostring(rule.id),
-                                  " dropped — pmFromFile data file not found: ", missing)
-                else
-                    if rule.log == nil then rule.log = true end
-                    pack.all[#pack.all + 1] = rule
-                    pack.n_json = pack.n_json + 1
+                for i, rule in ipairs(decoded) do
+                    if add_rule(pack, rule, label, "#" .. tostring(i)) then
+                        pack.n_json = pack.n_json + 1
+                    end
+                end
+            end
+        end
+
+        -- SecLang payload (Redis channel only), parsed in isolation — the
+        -- same path as custom_secrules. Appended AFTER this source's JSON
+        -- rules and sorted by id, because seclang.parse returns a hash whose
+        -- LuaJIT iteration order differs across workers.
+        local seclang_blob = source.seclang
+        if seclang_blob and seclang_blob ~= "" then
+            local ok, parsed = pcall(seclang.parse_isolated, seclang_blob)
+            if not ok then
+                errors[#errors + 1] = label ..
+                    ": seclang payload failed to parse: " .. tostring(parsed)
+            else
+                for _, id in ipairs(sorted_ids(parsed)) do
+                    if add_rule(pack, parsed[id], label, tostring(id)) then
+                        pack.n_seclang = pack.n_seclang + 1
+                    end
                 end
             end
         end
     end
 
-    -- 2) SecLang payload, parsed in isolation (same path as custom_secrules),
-    --    appended AFTER the JSON rules, sorted by id for determinism.
-    local seclang_blob = fields.seclang
-    if seclang_blob and seclang_blob ~= "" then
-        local ok, parsed = pcall(seclang.parse_isolated, seclang_blob)
-        if not ok then
-            return nil, "seclang payload failed to parse: " .. tostring(parsed)
-        end
-        for _, id in ipairs(sorted_ids(parsed)) do
-            local rule = parsed[id]
-            local okd, missing = resolve_dfiles(rule, dfiles)
-            if not okd then
-                pack.n_dropped = pack.n_dropped + 1
-                kong.log.warn("[karna] global rules: rule ", tostring(rule.id),
-                              " dropped — pmFromFile data file not found: ", missing)
-            else
-                if rule.log == nil then rule.log = true end
-                pack.all[#pack.all + 1] = rule
-                pack.n_seclang = pack.n_seclang + 1
-            end
-        end
-    end
-
-    -- 3) phase split (same precomputed-views contract as
-    --    handler.lua:get_local_request_rules)
-    for _, rule in ipairs(pack.all) do
-        if rule.phase == "access" then
-            pack.access[#pack.access + 1] = rule
-        elseif rule.phase == "header_filter" then
-            pack.header_filter[#pack.header_filter + 1] = rule
-        elseif rule.phase == "mcp_event" then
-            pack.mcp_event[#pack.mcp_event + 1] = rule
-        end
-    end
-
-    -- 4) compile to closures (nil plugin_conf, same as the CRS init path)
+    -- Compile to closures (nil plugin_conf, same as the CRS init path).
     if _M._compile and #pack.all > 0 then
         pcall(_M._compile, pack.all, nil)
     end
 
-    pack.dfiles = dfiles
+    return pack, errors
+end
+
+-- Redis entry point: one source, all-or-nothing. Unparseable payloads return
+-- nil + err so the caller keeps the last known good pack.
+_M.build = function(fields)
+    local pack, errors = _M.build_sources(
+        { { name = "redis", json = fields.json, seclang = fields.seclang } },
+        fields.version)
+    if #errors > 0 then
+        return nil, errors[1]
+    end
     return pack
 end
 
-_M.apply = function(pack)
-    _M._pack = pack
-    -- Merge pmFromFile data files into the engine's live dfile store so the
-    -- pm matcher finds them. Additive: global packs only ever reference CRS
-    -- data files already on disk, so entries are identical across reloads.
-    if _M._engine and pack.dfiles then
-        _M._engine._ka_dfiles = _M._engine._ka_dfiles or {}
-        for k, v in pairs(pack.dfiles) do
-            _M._engine._ka_dfiles[k] = v
-            -- invalidate the lowercased memo for this file, if the engine
-            -- keeps one (see ka_engine load_rules)
-            if _M._engine._ka_dfiles_lower then
-                _M._engine._ka_dfiles_lower[k] = nil
+-- Merge the per-source packs into the single view the request path reads.
+-- Order is disk then Redis, controls then detection; dedup is first-wins on
+-- rule id across the whole merged pack, so the disk pack is authoritative and
+-- a duplicate id can never quietly shadow it. Rebuilt from scratch on every
+-- change and published by reference assignment, so a request in flight keeps
+-- reading the previous merged table.
+_M.recombine = function()
+    local combined = {
+        all = {}, controls = {}, detection = {},
+        n_duplicates = 0, duplicate_ids = {},
+    }
+    for _, phase in ipairs(PHASES) do
+        combined.controls[phase] = {}
+        combined.detection[phase] = {}
+    end
+
+    local seen = {}
+    local steps = {
+        { pack = _M._file_pack,  kind = "controls",  source = "file"  },
+        { pack = _M._redis_pack, kind = "controls",  source = "redis" },
+        { pack = _M._file_pack,  kind = "detection", source = "file"  },
+        { pack = _M._redis_pack, kind = "detection", source = "redis" },
+    }
+
+    for _, step in ipairs(steps) do
+        if step.pack then
+            for _, phase in ipairs(PHASES) do
+                local target = combined[step.kind][phase]
+                for _, rule in ipairs(step.pack[step.kind][phase]) do
+                    local id = tostring(rule.id)
+                    local owner = seen[id]
+                    if owner then
+                        combined.n_duplicates = combined.n_duplicates + 1
+                        combined.duplicate_ids[#combined.duplicate_ids + 1] = id
+                        kong.log.warn("[karna] global rules: duplicate rule id ", id,
+                                      " from ", step.source, " (",
+                                      tostring(rule._ka_origin), ", ", step.kind, "/", phase,
+                                      ") discarded — already provided by ", owner)
+                    else
+                        seen[id] = step.source .. " (" .. tostring(rule._ka_origin) ..
+                                   ", " .. step.kind .. "/" .. phase .. ")"
+                        target[#target + 1] = rule
+                        combined.all[#combined.all + 1] = rule
+                    end
+                end
             end
         end
     end
+
+    _M._combined = combined
+    return combined
+end
+
+-- Redis pack swap. Kept as `apply` for the poll state machine's benefit.
+_M.apply = function(pack)
+    _M._redis_pack = pack
+    _M.recombine()
 end
 
 _M.get = function()
-    return _M._pack
+    return _M._combined
+end
+
+-- ---------------------------------------------------------------------------
+-- disk source
+-- ---------------------------------------------------------------------------
+
+-- Filesystem access sits behind these three fields so the unit tests can
+-- drive the loader without a real filesystem — same dependency-injection
+-- pattern as the crypto helpers above.
+
+_M._read_file = function(path)
+    local fh, oerr = io.open(path, "r")
+    if not fh then return nil, tostring(oerr or "cannot open") end
+    local content = fh:read("*a")
+    fh:close()
+    if not content then return nil, "unreadable (is it a directory?)" end
+    return content
+end
+
+-- "file" | "directory" | nil
+_M._path_kind = function(path)
+    local ok, lfs = pcall(require, "lfs")
+    if ok and type(lfs) == "table" and lfs.attributes then
+        local mode = lfs.attributes(path, "mode")
+        if mode == "directory" then return "directory" end
+        if mode == "file" then return "file" end
+        return nil
+    end
+    -- No luafilesystem (plain-Lua runs): probe by reading a byte. A directory
+    -- handle opens but does not read on Linux.
+    local fh = io.open(path, "r")
+    if not fh then return nil end
+    local probe = fh:read(1)
+    fh:close()
+    if probe == nil then return nil end
+    return "file"
+end
+
+-- Regular `*.json` files in `path`, sorted by name — the sort IS the
+-- evaluation order, which is why an operator can prefix files (00-, 10-)
+-- to control it. Returns nil + err when the directory cannot be listed.
+_M._list_dir = function(path)
+    local ok, lfs = pcall(require, "lfs")
+    if not (ok and type(lfs) == "table" and lfs.dir) then
+        return nil, "luafilesystem unavailable"
+    end
+    local iter_ok, iterator, state = pcall(lfs.dir, path)
+    if not iter_ok or not iterator then
+        return nil, tostring(iterator or "cannot list")
+    end
+    local names = {}
+    for entry in iterator, state do
+        if entry ~= "." and entry ~= ".." and entry:match("%.json$")
+           and lfs.attributes(path .. entry, "mode") == "file" then
+            names[#names + 1] = entry
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+-- Read the configured path into a pack. Returns nil + err when nothing
+-- usable came out of it; a directory where SOME files are broken yields a
+-- pack with the good ones plus one ERR line per bad file (fail-open,
+-- granular, loud — see the header).
+_M.load_file_pack = function(path)
+    local kind = _M._path_kind(path)
+    if not kind then
+        return nil, "path not found or not readable: " .. tostring(path)
+    end
+
+    local sources = {}
+    if kind == "directory" then
+        local base = path:match("/$") and path or (path .. "/")
+        local names, lerr = _M._list_dir(base)
+        if not names then
+            return nil, "cannot list directory " .. base .. ": " .. tostring(lerr)
+        end
+        if #names == 0 then
+            return nil, "no *.json files in " .. base
+        end
+        for _, name in ipairs(names) do
+            local content, rerr = _M._read_file(base .. name)
+            if content then
+                sources[#sources + 1] = { name = name, json = content }
+            else
+                kong.log.err("[karna] global rules: cannot read ", base, name,
+                             " (", tostring(rerr), ") — file skipped")
+            end
+        end
+        if #sources == 0 then
+            return nil, "no readable *.json files in " .. base
+        end
+    else
+        local content, rerr = _M._read_file(path)
+        if not content then
+            return nil, "cannot read " .. path .. ": " .. tostring(rerr)
+        end
+        sources[#sources + 1] = { name = path, json = content }
+    end
+
+    -- Fingerprint the exact bytes this pack was built from. It answers "are
+    -- all my nodes running the same global rules?" and, unlike a hand-written
+    -- version field, it cannot be forgotten on an edit.
+    local blob = {}
+    for _, source in ipairs(sources) do blob[#blob + 1] = source.json end
+    local fingerprint = _M._sha256_hex(table.concat(blob, "\n"))
+    local short = fingerprint and ("sha256:" .. fingerprint:sub(1, 12)) or nil
+
+    local pack, errors = _M.build_sources(sources, short)
+    for _, err in ipairs(errors) do
+        kong.log.err("[karna] global rules: ", err, " — file skipped")
+    end
+    if #pack.all == 0 and #errors > 0 then
+        return nil, errors[1]
+    end
+
+    pack.source = "file"
+    pack.path = path
+    pack.files = #sources
+    pack.skipped_files = #errors
+    pack.fingerprint = fingerprint
+    return pack
+end
+
+_M._file_config = nil
+_M.file_config = function()
+    if _M._file_config ~= nil then return _M._file_config end
+
+    local path = os.getenv("KARNA_GLOBAL_RULES_PATH")
+    if not path or path == "" then
+        _M._file_config = false  -- memoized "disabled"
+        return false
+    end
+
+    _M._file_config = { path = path }
+    return _M._file_config
 end
 
 -- ---------------------------------------------------------------------------
@@ -436,7 +746,7 @@ _M._tick = function()
     if version == ngx.null or version == nil then
         -- Hash deleted (or never published): absence is a valid state.
         red:set_keepalive(10000, 2)
-        if _M._pack and #_M._pack.all > 0 then
+        if _M._redis_pack and #_M._redis_pack.all > 0 then
             _M.apply(empty_pack(nil))
             _M._last_version, _M._last_version_num = nil, nil
             kong.log.notice("[karna] global rules: pack removed from Redis — cleared")
@@ -475,8 +785,9 @@ _M._tick = function()
     _M.apply(pack)
     _M._last_version = fields.version
     _M._last_version_num = vnum
-    kong.log.notice("[karna] global rules: applied pack version ", fields.version,
-                    " (", pack.n_json, " json + ", pack.n_seclang, " seclang rules",
+    kong.log.notice("[karna] global rules: applied redis pack version ", fields.version,
+                    " (", pack.n_json, " json + ", pack.n_seclang, " seclang rules: ",
+                    pack.n_controls, " controls + ", pack.n_detection, " detection",
                     pack.n_dropped > 0 and (", " .. pack.n_dropped .. " dropped") or "",
                     ", worker ", ngx.worker.id() or "?", ")")
     return "applied"
@@ -492,33 +803,69 @@ local function timer_tick(premature)
     end
 end
 
--- Called from handler.lua init_worker. Cosockets are unavailable there, so
--- this only schedules: one immediate load + the recurring poll.
+-- Called from handler.lua init_worker, once per worker. The two sources are
+-- wired independently: the disk pack is read inline (file I/O needs no
+-- cosockets, and reading it here means it is live before the first request),
+-- the Redis half can only schedule timers — one immediate load plus the
+-- recurring poll. Returns true when at least one source is configured.
 _M.init = function(opts)
     opts = opts or {}
     _M._engine  = opts.engine or _M._engine
     _M._compile = opts.compile or _M._compile
 
+    local enabled = false
+
+    -- disk source
+    local fconf = _M.file_config()
+    if fconf then
+        enabled = true
+        local pack, ferr = _M.load_file_pack(fconf.path)
+        if pack then
+            _M._file_pack = pack
+            _M.recombine()
+            kong.log.notice("[karna] global rules: loaded file pack ",
+                            pack.version or "(unfingerprinted)",
+                            " from ", fconf.path,
+                            " (", tostring(pack.files), " file(s)",
+                            pack.skipped_files > 0
+                              and (", " .. pack.skipped_files .. " skipped") or "",
+                            ", ", pack.n_controls, " controls + ", pack.n_detection, " detection",
+                            pack.n_dropped > 0 and (", " .. pack.n_dropped .. " rules dropped") or "",
+                            ", worker ", ngx.worker.id() or "?", ")")
+        else
+            -- Fail-open: the node keeps serving with CRS + local rules (and
+            -- the Redis pack, if any). Loud, because a baseline that silently
+            -- did not load is worse than no baseline at all.
+            kong.log.err("[karna] global rules: file pack NOT loaded from ",
+                         fconf.path, " (", tostring(ferr), ") — no rules from disk")
+        end
+    else
+        kong.log.debug("[karna] global rules: KARNA_GLOBAL_RULES_PATH not set — disk source off")
+    end
+
+    -- redis source
     local conf = _M.config()
-    if not conf then
-        kong.log.debug("[karna] global rules: KARNA_REDIS_URL not set — disabled")
-        return false
+    if conf then
+        enabled = true
+
+        local ok, err = ngx.timer.at(0, timer_tick)
+        if not ok then
+            kong.log.err("[karna] global rules: failed to schedule initial load: ", err)
+        end
+        local ok2, err2 = ngx.timer.every(conf.poll, timer_tick)
+        if not ok2 then
+            kong.log.err("[karna] global rules: failed to schedule poll timer: ", err2)
+        end
+
+        kong.log.notice("[karna] global rules: redis source enabled — ", conf.host, ":",
+                        tostring(conf.port), (conf.ssl and " (tls)" or ""),
+                        ", poll ", tostring(conf.poll), "s, ",
+                        conf.hmac_key and "HMAC signature REQUIRED" or "UNSIGNED mode")
+    else
+        kong.log.debug("[karna] global rules: KARNA_REDIS_URL not set — redis source off")
     end
 
-    local ok, err = ngx.timer.at(0, timer_tick)
-    if not ok then
-        kong.log.err("[karna] global rules: failed to schedule initial load: ", err)
-    end
-    local ok2, err2 = ngx.timer.every(conf.poll, timer_tick)
-    if not ok2 then
-        kong.log.err("[karna] global rules: failed to schedule poll timer: ", err2)
-    end
-
-    kong.log.notice("[karna] global rules: enabled — redis ", conf.host, ":",
-                    tostring(conf.port), (conf.ssl and " (tls)" or ""),
-                    ", poll ", tostring(conf.poll), "s, ",
-                    conf.hmac_key and "HMAC signature REQUIRED" or "UNSIGNED mode")
-    return true
+    return enabled
 end
 
 return _M

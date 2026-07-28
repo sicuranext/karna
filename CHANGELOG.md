@@ -7,6 +7,46 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Global rules from disk: set `KARNA_GLOBAL_RULES_PATH` to a `.json` file, or to
+  a directory whose `*.json` files are loaded in filename order, and that pack is
+  evaluated on every service just like the Redis-distributed one. Each file is a
+  bare JSON array of rules in the Karna rule format — the same array
+  `rules_request` carries and the same payload published to Redis as `json`, so a
+  pack moves between the two channels verbatim (no SecLang on this channel). The
+  pack is read synchronously once per worker at `init_worker`, so it is live
+  before the first request and there is no cold-start window; there is no
+  filesystem watcher by design, so edits take effect on `kong reload` or a
+  restart. It carries no signature: on disk the filesystem is the trust anchor,
+  exactly as for the CRS rules. Each worker logs one `notice` summary with the
+  path, file and rule counts, and a `sha256` fingerprint of the bytes the pack
+  was built from — how you verify a fleet runs the same global rules. Redis is
+  no longer required to ship one rule pack to every service.
+- Global rules: blocking rules and CRS exclusions can now live in the same pack
+  regardless of their order in it. Each pack is split at load time — rules with a
+  `rule_control` and no `action` go to a *controls* list evaluated first on the
+  multi-match path, so every matching exclusion applies its `ctl:*` side effects
+  in time to affect the global detection rules, the local rules and the CRS;
+  everything else keeps the standard first-terminal-wins path and full action
+  dispatch. Previously a blocking rule that matched early ended the pass and
+  swallowed any exclusion declared after it, visible in detection mode as a
+  request reaching the CRS with fewer exclusions applied than the pack declared.
+- Global rules: with both sources configured, the disk pack is evaluated before
+  the Redis one and duplicate rule ids are first-wins, so Redis can add rules but
+  cannot silently replace a rule deployed on disk with one carrying the same id.
+  Discarded duplicates are logged, naming both sides (file and source). The same
+  applies between two files of a directory: the earlier filename wins.
+
+### Changed
+
+- Global rules: `@pmFromFile` is no longer supported on the global channel
+  (either source). A rule using it is dropped with a warning instead of being
+  kept as a condition that can never match, and global packs no longer write into
+  the engine's shared data-file store. A rule declaring a phase the channel never
+  evaluates (e.g. `body_filter`) is likewise dropped with a warning rather than
+  parked in the pack looking like coverage it does not provide.
+
 ### Fixed
 
 - Audit log v2: an empty per-match `tags` or `matched_parts` now serialises as

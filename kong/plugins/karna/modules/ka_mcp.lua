@@ -452,8 +452,16 @@ function _M.body_filter(plugin_conf, evaluate_rules)
     -- rules from kong.ctx.plugin.local_rules (parsed from
     -- plugin_conf.rules_request).
     local mcp_event_rules = {}
-    if kong.ctx.plugin.global_rules and kong.ctx.plugin.global_rules.mcp_event then
-        for _, r in ipairs(kong.ctx.plugin.global_rules.mcp_event) do
+    local global_pack = kong.ctx.plugin.global_rules
+    if global_pack then
+        -- controls before detection, same order the request phases use. Both
+        -- lists go through the single rule loop below: an mcp_event exclusion
+        -- has no terminal action, so it cannot short-circuit the detection
+        -- rules that follow it.
+        for _, r in ipairs(global_pack.controls.mcp_event) do
+            table_insert(mcp_event_rules, r)
+        end
+        for _, r in ipairs(global_pack.detection.mcp_event) do
             table_insert(mcp_event_rules, r)
         end
     end
