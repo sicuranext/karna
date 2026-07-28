@@ -155,7 +155,9 @@
           <tr><td class="name"><code>request.header.value</code> / <code>.name</code></td><td>Request header values / names. Target one with <code>:&lt;header&gt;</code>.</td></tr>
           <tr><td class="name"><code>request.header_no_fp.value</code></td><td>Header values excluding the most FP-prone ones (User-Agent, Referer, …).</td></tr>
           <tr><td class="name"><code>request.cookie.value</code> / <code>.name</code></td><td>Cookie values / names.</td></tr>
-          <tr><td class="name"><code>request.raw_path</code></td><td>URL path, not normalized, no query string.</td></tr>
+          <tr><td class="name"><code>request.raw_path</code></td><td>URL path exactly as it came off the wire: not normalized, percent-encoding intact, no query string. The one to match for traversal / encoding evasion.</td></tr>
+          <tr><td class="name"><code>request.path</code></td><td>URL path after nginx normalization: dot segments resolved, percent-encoding decoded (<code>%2F</code> excepted — nginx never decodes an encoded slash). The same view the upstream routes on: <code>/x/../y</code> resolves to <code>/y</code> here and stays <code>/x/../y</code> in <code>request.raw_path</code>.</td></tr>
+          <tr><td class="name"><code>request.path_with_query</code></td><td>Verbatim path plus the query string (CRS <code>REQUEST_URI</code>).</td></tr>
           <tr><td class="name"><code>request.basename</code></td><td>Last segment of the path (e.g. <code>index.php</code>).</td></tr>
           <tr><td class="name"><code>request.method</code></td><td>HTTP method.</td></tr>
           <tr><td class="name"><code>request.file</code></td><td>Uploaded file names / multipart param names.</td></tr>

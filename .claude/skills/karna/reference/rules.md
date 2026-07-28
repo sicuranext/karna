@@ -54,7 +54,7 @@ banned" check placed first short-circuits the rest.
 - `request.body.urlencode.value:<name>`, `request.body.json.value:<path>`, `request.body`.
 - `request.header.value` / `.name` (`request.header.value:host`), `request.header_no_fp.value` (excludes FP-prone headers).
 - `request.cookie.value` / `.name`.
-- `request.raw_path`, `request.basename`, `request.method`.
+- `request.raw_path` (verbatim path — percent-encoding intact, dot segments intact; match this for traversal/encoding evasion), `request.path` (nginx-normalized: dot segments resolved, percent-decoded except `%2F` — the view the upstream routes on), `request.path_with_query` (verbatim + query string), `request.basename`, `request.method`.
 - `request.file`, `request.body.multipart.filename`, `request.body.multipart.header.value`.
 - `request.header.referer.{path,query,scheme,host}`.
 - `response.status`, `response.header.value:<name>` / `.name:<name>`, `response.set_cookie.value` / `.name` (header_filter phase; resolvable in conditions).

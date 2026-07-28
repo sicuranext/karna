@@ -339,6 +339,19 @@ function _M.compile_variable_resolver(variable)
         end
     end
 
+    -- request.path — normalized path (nginx's $uri: dot segments resolved,
+    -- percent-encoding decoded except %2F), distinct from request.raw_path,
+    -- which is verbatim. Mirrors the engine branch in
+    -- __match_rule_conditions_impl.
+    if variable == "request.path" then
+        return function(engine, rule)
+            if ngx.get_phase() ~= "init_worker" then
+                return { ["request.path"] = tostring(kong.request.get_path()) }
+            end
+            return nil
+        end
+    end
+
     -- request.path_with_query — kong.request live, init_worker-guarded.
     if variable == "request.path_with_query" then
         return function(engine, rule)

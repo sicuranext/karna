@@ -71,6 +71,8 @@ jobs:
         run: lua ka-unittest/redis_inspect.lua
       - name: Global rules pack (file + Redis sources, dedup, controls split, HMAC, replay guard)
         run: lua ka-unittest/global_rules.lua
+      - name: URI variable resolvers (request.path vs raw_path vs path_with_query)
+        run: lua ka-unittest/variable_resolution.lua
       - name: WordPress ctl target exclusion (ARGS:name body-param removal + namespace gate)
         run: lua ka-unittest/wordpress_target_exclusion.lua
 
