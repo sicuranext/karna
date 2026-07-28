@@ -2539,6 +2539,26 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     values, err = self.__get_values_request_raw_path()
                 end
 
+                -- request.path — the NORMALIZED path, i.e. nginx's $uri, as
+                -- opposed to request.raw_path (the path exactly as it came off
+                -- the wire). Measured difference, not a guess:
+                --   /x/../y   path=/x/y resolved to /y   raw_path=/x/../y
+                --   /a%2Fb    path=/a%2Fb (nginx never    raw_path=/a%2Fb
+                --             decodes an encoded slash)
+                --   /%41      path=/A (decoded)           raw_path=/%41
+                -- Neither is an alias of the other, and the choice matters:
+                -- match raw_path to catch encoding/traversal evasion, path
+                -- when you want the same view the upstream routes on.
+                -- request.path was already published in the access-phase
+                -- inspection_table (and as the %{request.path} macro) but had
+                -- no branch here, so a rule targeting it resolved nothing and
+                -- silently never matched.
+                if variable == "request.path" then
+                    if get_phase() ~= "init_worker" then
+                        values = { ["request.path"] = tostring(request_get_path()) }
+                    end
+                end
+
                 if variable == "request.path_with_query" then
                     if get_phase() ~= "init_worker" then
                         values = { ["request.path_with_query"] = tostring(request_get_path_with_query()) }

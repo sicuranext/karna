@@ -49,6 +49,18 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- `request.path` is now resolvable in rule conditions. It was published in the
+  access-phase inspection table (and as the `%{request.path}` macro) but had no
+  branch in the condition resolver, so a rule targeting it resolved no value and
+  silently never matched — no error, no warning, just a rule that looks active
+  and is not. It resolves to nginx's normalized path (dot segments resolved,
+  percent-encoding decoded except `%2F`), which is deliberately NOT the same as
+  `request.raw_path` (verbatim, encoding intact): `/x/../y` is `/y` in
+  `request.path` and `/x/../y` in `request.raw_path`. Match `raw_path` for
+  traversal / encoding evasion, `path` for the view the upstream routes on. Both
+  the interpreted and the compiled resolver paths were updated; new unit test
+  `ka-unittest/variable_resolution.lua` pins the distinction. CRS unaffected (no
+  CRS variable maps to `request.path`).
 - Audit log v2: an empty per-match `tags` or `matched_parts` now serialises as
   a JSON array `[]` instead of an object `{}`. cjson encodes an empty Lua table
   as `{}`, so a match on a rule with no tags (e.g. a custom `rate_limit` rule)
