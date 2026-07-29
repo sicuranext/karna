@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-07-29
+
 ### Added
 
 - Global rules from disk: set `KARNA_GLOBAL_RULES_PATH` to a `.json` file, or to

@@ -1,13 +1,13 @@
 package = "kong-plugin-karna"
 
-version = "1.4.3-0"
+version = "1.4.4-0"
 
 local pluginName = package:match("^kong%-plugin%-(.+)$")
 
 supported_platforms = {"linux"}
 source = {
   url = "git+https://github.com/sicuranext/karna.git",
-  tag = "v1.4.3"
+  tag = "v1.4.4"
 }
 
 description = {
