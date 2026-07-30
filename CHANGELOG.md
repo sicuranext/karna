@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-30
+
 ### Added
 
 - Client IP is now a rule variable. `request.remote_addr` is the address on the
