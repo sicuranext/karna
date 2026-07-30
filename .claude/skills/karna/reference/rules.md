@@ -91,7 +91,18 @@ A negated condition fires when the positive fails AND the value is present. Exce
 Macros for `key`/templates: `%{remote_addr}`, `%{request.method|host|scheme|path}`, plus any inspection-table var in `set_variable`/`set_log_fields`. Redis `redis.<key>` variables and `redis_set/sadd/del` keys/values also resolve `%{request_headers.X}`; the `redis_sismember`/`redis_hexists` needle (condition.value) resolves `%{remote_addr}`/`%{request.*}`/`%{request_headers.X}`.
 
 ## Rule controls (`rule_control[]` — modify this/other rules by id or tag)
-- `remove_rule` `{rule_id}` (range ok: `"920100-920199"`), `remove_rules_by_tag` `{tag}`.
+Per-request (a matching rule applies these to every rule evaluated after it — this is the `ctl:*` surface, and what a global-pack/local exclusion rule uses):
+- `remove_rule` `{rule_id}` (range ok: `"920100-920199"`) ← `ctl:ruleRemoveById`.
+- `remove_rules_by_tag` `{tag}` ← `ctl:ruleRemoveByTag`. Drops every rule carrying the tag.
+- `remove_target_from_rule_by_id` `{rule_id, target}` ← `ctl:ruleRemoveTargetById`.
+- `remove_target_rule_by_tag` `{tag, name}` ← `ctl:ruleRemoveTargetByTag`. Works on any tag. `tag: "OWASP_CRS"` is special-cased to mean **all rules** (custom ones included), not just CRS-tagged ones.
+- `engine_off: true` ← `ctl:ruleEngine=Off`. Skips all remaining rule evaluation.
+- `detection_only: true` ← `ctl:ruleEngine=DetectionOnly`. Rules still match, log, and run side effects; every terminal action is suppressed (`fixed_response`, the `rate_limit` 429, and `fix_matched_parts` sanitising). Audit log reports `engine.mode: "detection"` and `action: "detect"`.
+- `body_access_off: true` ← `ctl:requestBodyAccess=Off`. The request body stops being inspected: `request.body`, the parsed body namespaces (json/xml/urlencode/multipart/files) and the body half of `request.arg.value` all resolve empty; query args, path, headers and cookies are unaffected. `request.body.processor` stays set (it comes from Content-Type).
+
+**The always-on validation gates run before any rule control exists**, so none of these can switch off the method / path / header / content-type / body-parser / arg-count checks. Use the schema knobs for that.
+
+Load-time (applied once at worker start, used by `coreruleset_fix.lua`):
 - `remove_variable_from_rule_conditions` `{rule_id, variable_name}`.
 - `remove_variable_rx` `{name, rx}` — drop variables whose key matches a regex (libinjection header FPs).
 - `remove_target_rule_by_pattern` `{rule_id, pattern}`, `remove_target_tag_by_pattern` `{tag, pattern}`.

@@ -18,6 +18,25 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   with `ipMatch` and in `%{}` macros (`set_log_fields`, `set_variable`, Redis
   keys). `REMOTE_ADDR` was mapped in the SecLang parser but had no resolver
   behind it, so every rule targeting the client IP silently never matched.
+- Rule control `remove_rules_by_tag` (`ctl:ruleRemoveByTag=<tag>`): drop every
+  rule carrying a tag for the rest of the request. Previously this existed only
+  as a load-time control for `coreruleset_fix.lua`; the SecLang parser ignored
+  the directive outright, so a CRS exclusion plugin or a `custom_secrules` rule
+  using it did nothing.
+- Rule control `detection_only` (`ctl:ruleEngine=DetectionOnly`): rules keep
+  matching, logging and running their side effects, but every terminal action is
+  suppressed for that request — `fixed_response`, the `rate_limit` 429, and
+  `fix_matched_parts` sanitising. The audit log reports `engine.mode: "detection"`
+  and `action: "detect"` so the record matches what actually happened. Use it to
+  put one host or path in observe-only mode without a second Kong service.
+- Rule control `body_access_off` (`ctl:requestBodyAccess=Off`): stop inspecting
+  the request body for the rest of the request. `request.body`, the parsed body
+  namespaces (json / xml / urlencode / multipart / files) and the body half of
+  `request.arg.value` all resolve empty, while query args, path, headers and
+  cookies are still inspected; `request.body.processor` stays set because it
+  derives from `Content-Type`. Body-only rules are skipped outright rather than
+  walked to an empty result. Intended for file-upload endpoints where scanning
+  megabytes of payload buys nothing.
 
 ### Changed
 
@@ -29,7 +48,28 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   now that it resolves both, a Karna behind a local reverse proxy would be one
   upstream change away from a ruleset-wide kill switch. Karna does not front
   Apache, so the exceptions are dropped rather than left armed.
+- The three copies of the `rule_control` applier (two in `handler.lua`, one in
+  `ka_engine.lua`) are collapsed into one, in `ka_engine`. They had to be kept
+  byte-identical by hand, and a directive added to only one of them was a silent
+  no-op on the other paths.
 
+### Fixed
+
+- `engine_off` (`ctl:ruleEngine=Off`) set by a rule now stops the rest of the
+  rule list it was set from, not just the lists evaluated after it. `loop_rules`
+  only checked the flag on entry, so an exclusion living in `rules_request`
+  alongside detection rules bypassed the CRS as intended but let the remaining
+  local rules keep firing. The global pack never showed it, because its controls
+  run as a separate earlier pass and the entry check catches those.
+  `loop_rule_controls_pass` already broke mid-loop; the two now behave the same.
+- `remove_target_rule_by_tag` (`ctl:ruleRemoveTargetByTag=<tag>;<target>`) now
+  works for any tag. The reader was an unreferenced stub with a TODO, so only the
+  `OWASP_CRS` special case did anything and an exclusion written against, say,
+  `attack-sqli` was silently a no-op — the exact failure mode that keeps a false
+  positive alive while the config says it was excluded. Removal is name-based and
+  namespace-gated, identical to the by-id path, so an `ARGS`-scoped exclusion
+  still cannot silence a header or cookie of the same name. `tag: "OWASP_CRS"`
+  keeps its documented "all rules" meaning and its flat fast path.
 ## [1.4.4] - 2026-07-29
 
 ### Added

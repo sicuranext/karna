@@ -292,8 +292,21 @@ running on the WordPress admin path:
 }
 ```
 
-These use the same `ctl:ruleRemove*` controls as the plugins. See
-[Rule Control Functions](#rule-control-functions) for the full list.
+These use the same `ctl:*` controls as the plugins. The parser recognises:
+
+| SecLang directive | Effect |
+| --- | --- |
+| `ctl:ruleRemoveById=<id>` | Skip that rule. A hyphen range works too (`920100-920199`). |
+| `ctl:ruleRemoveByTag=<tag>` | Skip every rule carrying the tag. |
+| `ctl:ruleRemoveTargetById=<id>;<target>` | Drop one variable target from one rule. |
+| `ctl:ruleRemoveTargetByTag=<tag>;<target>` | Drop one variable target from every rule carrying the tag. |
+| `ctl:ruleEngine=Off` | Skip all remaining rule evaluation. |
+| `ctl:ruleEngine=DetectionOnly` | Match and log, suppress every terminal action. |
+| `ctl:requestBodyAccess=Off` | Stop inspecting the request body. |
+
+Anything else (`ctl:auditEngine`, `ctl:ruleRemoveByMsg`, …) is parsed and ignored
+rather than failing the rule. See [Rule Control Functions](#rule-control-functions)
+for the JSON equivalents and the semantics of each.
 
 ## Rate limiting
 
@@ -931,6 +944,30 @@ use `remove_variable_rx` rule controls:
 
 ## Rule Control Functions
 
+A rule's `rule_control` array modifies rules — itself or others, by id or by tag.
+There are two families, and the difference matters:
+
+**Per-request controls** are the `ctl:*` surface. When a rule carrying one
+matches, it applies to every rule evaluated *after* it in that request and
+nothing persists. This is what an exclusion rule in a global pack or in
+`rules_request` uses: `remove_rule`, `remove_rules_by_tag`,
+`remove_target_from_rule_by_id`, `remove_target_rule_by_tag`, `engine_off`,
+`detection_only`, `body_access_off`.
+
+**Load-time controls** rewrite the cached rule pack once at worker start. They
+are what `coreruleset_fix.lua` uses to patch FP-prone CRS rules:
+`change_rule_action`, `change_condition_tfunc`, `change_condition_value`,
+`replace_condition`, `remove_condition`, `add_condition`,
+`remove_variable_from_rule_conditions`, `remove_variable_rx`,
+`remove_target_rule_by_pattern`, `remove_target_tag_by_pattern`.
+
+> **The always-on validation gates cannot be reached from a rule control.** The
+> method, path, denied-header, content-type/charset, body-parser and
+> argument-count checks all run *before* the first rule is evaluated, so neither
+> `engine_off` nor `detection_only` nor `body_access_off` can switch them off. To
+> loosen those, use the plugin schema (`request_content_type_enforce`,
+> `limit_arg_num`, `request_methods_allowed`, …).
+
 ### `change_rule_action`
 
 ```json
@@ -1058,9 +1095,102 @@ use `remove_variable_rx` rule controls:
 
 ### `remove_rules_by_tag`
 
+Skip every rule carrying the tag. Per-request when applied from a matching rule
+(`ctl:ruleRemoveByTag`), load-time when declared in the CRS-fix pack.
+
 ```json
 "rule_control": [
     { "remove_rules_by_tag": { "tag": "injection" } }
+]
+```
+
+### `remove_target_from_rule_by_id`
+
+Drop one variable target from one rule, for this request only
+(`ctl:ruleRemoveTargetById=<id>;<target>`). The workhorse of CRS exclusions:
+whitelist one argument on one endpoint without disabling the rule everywhere.
+
+Removal is by field **name**, gated by namespace — so an `ARGS`-scoped exclusion
+can never silence a header or cookie that happens to share the name.
+
+```json
+"rule_control": [
+    {
+        "remove_target_from_rule_by_id": {
+            "rule_id": "942100",
+            "target": "request.arg.value:pwd"
+        }
+    }
+]
+```
+
+### `remove_target_rule_by_tag`
+
+Same, but for every rule carrying a tag (`ctl:ruleRemoveTargetByTag=<tag>;<target>`).
+
+`tag: "OWASP_CRS"` is special-cased to mean **all rules**, custom ones included —
+that is the historical meaning and it is also the cheap path (a flat list instead
+of walking the tag list of every rule). Any other tag scopes the removal to the
+rules actually carrying it.
+
+```json
+"rule_control": [
+    {
+        "remove_target_rule_by_tag": {
+            "tag": "attack-sqli",
+            "name": "request.header.value:user-agent"
+        }
+    }
+]
+```
+
+### `engine_off`
+
+Skip all remaining rule evaluation for this request (`ctl:ruleEngine=Off`). The
+bluntest instrument here: no rule fires, nothing is logged as a match.
+
+```json
+"rule_control": [
+    { "engine_off": true }
+]
+```
+
+### `detection_only`
+
+Turn this request into an observe-only one (`ctl:ruleEngine=DetectionOnly`), even
+on a service running with `engine_blocking_mode = true`. Rules keep matching,
+keep logging and keep running their side effects (`set_variable`,
+`set_log_fields`, `redis_*`); every **terminal** action is suppressed —
+`fixed_response`, the `rate_limit` 429, and `fix_matched_parts` sanitising.
+
+The audit log tells the truth about what happened: `engine.mode` reads
+`detection` and the match's `action` reads `detect` instead of `block`.
+
+Use it to put one host or one path in monitoring mode without standing up a
+second Kong service just to carry a different `engine_blocking_mode`.
+
+```json
+"rule_control": [
+    { "detection_only": true }
+]
+```
+
+### `body_access_off`
+
+Stop inspecting the request body for the rest of this request
+(`ctl:requestBodyAccess=Off`). `request.body`, every parsed body namespace
+(json / xml / urlencode / multipart / files) and the body half of
+`request.arg.value` all resolve empty. Query arguments, path, headers and cookies
+are **not** affected, and `request.body.processor` stays populated because it
+derives from `Content-Type`, not from the bytes.
+
+Rules that can only match on body variables are skipped outright rather than
+walked to an empty result, so this is also the cheap way to keep a file-upload
+endpoint from paying for a full scan of megabytes that will never match anything.
+
+```json
+"rule_control": [
+    { "body_access_off": true }
 ]
 ```
 

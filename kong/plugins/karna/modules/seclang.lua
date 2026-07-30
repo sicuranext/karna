@@ -714,25 +714,40 @@ end
 -- …) to whitelist app-specific param names / disable rules on known
 -- endpoints. Supported directives:
 --   ctl:ruleRemoveById=<id|range>            → drop the rule entirely
+--   ctl:ruleRemoveByTag=<tag>                → drop every rule tagged <tag>
 --   ctl:ruleRemoveTargetById=<id>;<target>   → drop one target from <id>
 --   ctl:ruleRemoveTargetByTag=<tag>;<target> → drop one target from rules tagged <tag>
 --   ctl:ruleEngine=Off                       → bypass WAF for this request
+--   ctl:ruleEngine=DetectionOnly             → match + log, suppress terminal actions
+--   ctl:requestBodyAccess=Off                → stop inspecting the request body
 -- Unrecognised directives are ignored (forward-compat with future CRS
 -- additions; matches our defensive parsing posture for malformed input).
 function seclang.__get_rule_controls(actions)
     local controls = {}
     if not actions or actions == "" then return controls end
 
-    -- ctl:ruleEngine=Off — must check before generic ctl: gmatch so
-    -- the casing is preserved and we can match the literal "Off".
+    -- ctl:ruleEngine=Off / =DetectionOnly — matched before the generic ctl:
+    -- gmatch so the casing is preserved and the literal value is checked.
+    -- `Off` is the stronger of the two, so it wins if a rule somehow declares
+    -- both.
     if actions:match("ctl:ruleEngine%s*=%s*Off") then
         table.insert(controls, { engine_off = true })
+    elseif actions:match("ctl:ruleEngine%s*=%s*DetectionOnly") then
+        table.insert(controls, { detection_only = true })
+    end
+
+    -- ctl:requestBodyAccess=Off — same reason: the literal value matters.
+    -- `=On` is the default state, so there is nothing to record for it.
+    if actions:match("ctl:requestBodyAccess%s*=%s*Off") then
+        table.insert(controls, { body_access_off = true })
     end
 
     for directive_arg in actions:gmatch("ctl:([^,]+)") do
         local name, rhs = directive_arg:match("^([%w_]+)%s*=%s*(.+)$")
         if name and rhs then
-            if name == "ruleRemoveById" then
+            if name == "ruleRemoveByTag" then
+                table.insert(controls, { remove_rules_by_tag = { tag = rhs } })
+            elseif name == "ruleRemoveById" then
                 -- rhs is either "920100" or "920100-920199" — handler.lua
                 -- does the range expansion at request time.
                 table.insert(controls, { remove_rule = { rule_id = rhs } })

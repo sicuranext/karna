@@ -75,6 +75,8 @@ jobs:
         run: lua ka-unittest/variable_resolution.lua
       - name: WordPress ctl target exclusion (ARGS:name body-param removal + namespace gate)
         run: lua ka-unittest/wordpress_target_exclusion.lua
+      - name: Per-request rule controls (tag removal, tag targets, DetectionOnly, body access)
+        run: lua ka-unittest/rule_control_runtime.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

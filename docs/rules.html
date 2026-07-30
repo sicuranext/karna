@@ -381,12 +381,17 @@
 
     <section id="rule-controls">
       <h2>Rule controls</h2>
-      <p>A rule's <code>rule_control</code> array modifies rules (itself or others by id / tag). Useful for carving out false positives and patching CRS rules without editing the pack.</p>
+      <p>A rule's <code>rule_control</code> array modifies rules (itself or others by id / tag). Useful for carving out false positives and patching CRS rules without editing the pack. When a rule carrying controls matches, they apply to every rule evaluated after it in the same request — this is the same surface SecLang exposes as <code>ctl:*</code>, and what an exclusion rule in a global pack or in <code>rules_request</code> uses.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Control</th><th>Effect</th></tr></thead>
         <tbody>
-          <tr><td class="name"><code>remove_rule</code></td><td>Skip a rule entirely (<code>{ "rule_id": "1234" }</code>).</td></tr>
-          <tr><td class="name"><code>remove_rules_by_tag</code></td><td>Skip all rules with a tag.</td></tr>
+          <tr><td class="name"><code>remove_rule</code></td><td>Skip a rule entirely (<code>{ "rule_id": "1234" }</code>); a hyphen range works too (<code>"920100-920199"</code>). ← <code>ctl:ruleRemoveById</code></td></tr>
+          <tr><td class="name"><code>remove_rules_by_tag</code></td><td>Skip every rule carrying a tag (<code>{ "tag": "attack-sqli" }</code>). ← <code>ctl:ruleRemoveByTag</code></td></tr>
+          <tr><td class="name"><code>remove_target_from_rule_by_id</code></td><td>Drop one variable target from one rule (<code>{ "rule_id": "942100", "target": "request.arg.value:pwd" }</code>). ← <code>ctl:ruleRemoveTargetById</code></td></tr>
+          <tr><td class="name"><code>remove_target_rule_by_tag</code></td><td>Drop one variable target from every rule carrying a tag (<code>{ "tag": "attack-sqli", "name": "request.header.value:user-agent" }</code>). <code>tag: "OWASP_CRS"</code> is special-cased to mean <em>all</em> rules, custom ones included. ← <code>ctl:ruleRemoveTargetByTag</code></td></tr>
+          <tr><td class="name"><code>engine_off</code></td><td><code>true</code> — skip all remaining rule evaluation for this request. ← <code>ctl:ruleEngine=Off</code></td></tr>
+          <tr><td class="name"><code>detection_only</code></td><td><code>true</code> — rules keep matching, logging and running side effects, but every terminal action is suppressed: <code>fixed_response</code>, the <code>rate_limit</code> 429, and <code>fix_matched_parts</code> sanitising. The audit log reports <code>engine.mode: "detection"</code> and <code>action: "detect"</code>. ← <code>ctl:ruleEngine=DetectionOnly</code></td></tr>
+          <tr><td class="name"><code>body_access_off</code></td><td><code>true</code> — stop inspecting the request body: <code>request.body</code>, the parsed body namespaces (json / xml / urlencode / multipart / files) and the body half of <code>request.arg.value</code> all resolve empty. Query args, path, headers and cookies are unaffected, and <code>request.body.processor</code> stays set (it derives from <code>Content-Type</code>). Useful on file-upload endpoints. ← <code>ctl:requestBodyAccess=Off</code></td></tr>
           <tr><td class="name"><code>remove_variable_from_rule_conditions</code></td><td>Drop a variable from every condition of a rule.</td></tr>
           <tr><td class="name"><code>remove_variable_rx</code></td><td>Drop variables whose key matches a regex (great for libinjection header FPs).</td></tr>
           <tr><td class="name"><code>remove_target_rule_by_pattern</code></td><td>Drop matched-key targets from a rule by Lua pattern.</td></tr>
@@ -397,6 +402,7 @@
           <tr><td class="name"><code>replace_condition</code> / <code>remove_condition</code> / <code>add_condition</code></td><td>Replace, delete, or append a condition.</td></tr>
         </tbody>
       </table>
+      <div class="note"><span class="lbl">Not reachable from a rule control</span>The always-on validation gates (method, path, denied headers, content-type / charset, body parser, argument count) run <em>before</em> any rule has been evaluated, so no control — not <code>engine_off</code>, not <code>detection_only</code>, not <code>body_access_off</code> — can switch them off. Loosen those through the plugin schema instead (<code>request_content_type_enforce</code>, <code>limit_arg_num</code>, <code>request_methods_allowed</code>, …).</div>
       <div class="code-card">
         <div class="code-head"><span>carve out libinjection header false positives</span><span class="lang">json</span></div>
         <div class="code-body"><pre><span class="prm">"rule_control"</span>: [

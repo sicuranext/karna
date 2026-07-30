@@ -114,6 +114,67 @@ local cases = {
             ok(#controls == 0, "unknown ctl ignored")
         end,
     },
+    {
+        name = "ruleEngine=DetectionOnly",
+        actions = "id:9507108,phase:1,pass,nolog,ctl:ruleEngine=DetectionOnly",
+        check = function(controls)
+            local c = deep_find(controls, function(x) return x.detection_only == true end)
+            ok(c ~= nil, "detection_only=true emitted")
+            ok(deep_find(controls, function(x) return x.engine_off == true end) == nil,
+               "DetectionOnly does not also emit engine_off")
+        end,
+    },
+    {
+        -- Off is the stronger of the two; a rule declaring both must not end up
+        -- merely detection-only.
+        name = "ruleEngine=Off wins over =DetectionOnly",
+        actions = "id:9507109,phase:1,pass,nolog,ctl:ruleEngine=Off,ctl:ruleEngine=DetectionOnly",
+        check = function(controls)
+            ok(deep_find(controls, function(x) return x.engine_off == true end) ~= nil,
+               "engine_off emitted")
+            ok(deep_find(controls, function(x) return x.detection_only == true end) == nil,
+               "detection_only NOT emitted alongside engine_off")
+        end,
+    },
+    {
+        name = "ruleRemoveByTag",
+        actions = "id:9507110,phase:1,pass,nolog,ctl:ruleRemoveByTag=attack-sqli",
+        check = function(controls)
+            local c = deep_find(controls, function(x)
+                return x.remove_rules_by_tag and x.remove_rules_by_tag.tag == "attack-sqli"
+            end)
+            ok(c ~= nil, "remove_rules_by_tag.tag=attack-sqli")
+        end,
+    },
+    {
+        -- CRS 905100 / 905110 shape: remove the whole ruleset by its umbrella tag.
+        name = "ruleRemoveByTag=OWASP_CRS",
+        actions = "id:9507111,phase:1,pass,nolog,ctl:ruleRemoveByTag=OWASP_CRS,ctl:auditEngine=Off",
+        check = function(controls)
+            local c = deep_find(controls, function(x)
+                return x.remove_rules_by_tag and x.remove_rules_by_tag.tag == "OWASP_CRS"
+            end)
+            ok(c ~= nil, "remove_rules_by_tag.tag=OWASP_CRS")
+        end,
+    },
+    {
+        name = "requestBodyAccess=Off",
+        actions = "id:9507112,phase:1,pass,nolog,ctl:requestBodyAccess=Off",
+        check = function(controls)
+            local c = deep_find(controls, function(x) return x.body_access_off == true end)
+            ok(c ~= nil, "body_access_off=true emitted")
+        end,
+    },
+    {
+        -- =On is the default state: nothing to record, and emitting a control
+        -- would make an inert directive look like it did something.
+        name = "requestBodyAccess=On emits nothing",
+        actions = "id:9507113,phase:1,pass,nolog,ctl:requestBodyAccess=On",
+        check = function(controls)
+            ok(deep_find(controls, function(x) return x.body_access_off == true end) == nil,
+               "no body_access_off for =On")
+        end,
+    },
 }
 
 for _, case in ipairs(cases) do
