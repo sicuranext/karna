@@ -37,6 +37,24 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   derives from `Content-Type`. Body-only rules are skipped outright rather than
   walked to an empty result. Intended for file-upload endpoints where scanning
   megabytes of payload buys nothing.
+- Rule action `log_only`: record a **non-terminal** match in the audit log as a
+  real match — the ModSecurity `pass,log` shape. The rule matches, runs its side
+  effects, blocks nothing, and appears in `matches[]` (v2) / `messages[]` (v1)
+  with its id, message, tags and matched value, labelled `action: "log"`. Works
+  in `access` and `header_filter` alike. Before this, `loop_rules` returned only
+  the first *terminal* rule, so a detection-only rule fired its side effects and
+  then vanished: with `auditlog_only_on_match = true` it produced no entry at all
+  in either format, and with it `false` it produced an entry on every request
+  whose match array was empty — the rule was only visible as whatever
+  `set_log_fields` had added. A `log_only` match now also satisfies
+  `auditlog_only_on_match`, so a detection rule is visible without logging every
+  request. `ka_utils` already had the `action: "log"` label for "rule fired
+  without a response action" and could never reach it.
+  Opt-in rather than the default for non-terminal rules, because the CRS is full
+  of `pass`-action helper rules (setvar counters, `ctl:` gates, chain
+  scaffolding) that would otherwise flood the audit log and cannot be filtered
+  out by `log` — `load_rules` sets `log = true` on the whole CRS pack.
+  `rule_action_overrides` do not reach a `log_only` rule.
 
 ### Changed
 
