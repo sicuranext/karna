@@ -58,6 +58,7 @@ banned" check placed first short-circuits the rest.
 - `request.file`, `request.body.multipart.filename`, `request.body.multipart.header.value`.
 - `request.header.referer.{path,query,scheme,host}`.
 - `response.status`, `response.header.value:<name>` / `.name:<name>`, `response.set_cookie.value` / `.name` (header_filter phase; resolvable in conditions).
+- `request.remote_addr` — client IP as seen on the transport (ModSec `REMOTE_ADDR`; same value as the `%{remote_addr}` macro). `request.forwarded_addr` — Kong's forwarded client (`X-Forwarded-For` walked back through Kong's `trusted_ips`, falling back to the peer when the header is absent or the peer is untrusted). Behind a CDN/LB use the second. Pair either with `ipMatch`.
 - `matched.value`, `group:<n>` (chain refs).
 - `tx:<name>` / `var:<name>` (CRS TX vars, e.g. `var:paranoia_level`).
 - `redis.<key>` — inspect a Redis key (read-only). Everything after `redis.` is the key name (macros allowed: `%{remote_addr}`, `%{request.method|host|scheme|path}`, `%{request_headers.X}`). The **operator picks the command**: `isSet`→EXISTS (ban/existence check; `negated:true`→absent), `eq`/`rx`/`contains`/`beginsWith`→GET+compare, `gt`/`lt`/`ge`/`le`→GET+numeric, `redis_sismember`→SISMEMBER, `redis_hexists`→HEXISTS. Needs `redis_inspect_enabled`. (Legacy `redis.key:<macro>` GET form is dead — use `redis.<key>`.)

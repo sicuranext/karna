@@ -160,6 +160,8 @@
           <tr><td class="name"><code>request.path_with_query</code></td><td>Verbatim path plus the query string (CRS <code>REQUEST_URI</code>).</td></tr>
           <tr><td class="name"><code>request.basename</code></td><td>Last segment of the path (e.g. <code>index.php</code>).</td></tr>
           <tr><td class="name"><code>request.method</code></td><td>HTTP method.</td></tr>
+          <tr><td class="name"><code>request.remote_addr</code></td><td>Client IP as seen on the transport — the ModSecurity <code>REMOTE_ADDR</code> equivalent, and the same value the <code>%{remote_addr}</code> macro resolves. Pair with <code>ipMatch</code>.</td></tr>
+          <tr><td class="name"><code>request.forwarded_addr</code></td><td>Client IP as Kong resolves it: <code>X-Forwarded-For</code> walked back through Kong's <code>trusted_ips</code>, falling back to the peer address when the header is absent or the peer is not trusted. Behind a CDN or load balancer this is the one an IP allow/deny list needs.</td></tr>
           <tr><td class="name"><code>request.file</code></td><td>Uploaded file names / multipart param names.</td></tr>
           <tr><td class="name"><code>request.body.multipart.filename</code></td><td>Multipart filenames.</td></tr>
           <tr><td class="name"><code>request.body.multipart.header.value</code></td><td>Multipart part header values.</td></tr>

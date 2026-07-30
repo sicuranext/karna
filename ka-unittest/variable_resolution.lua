@@ -55,8 +55,15 @@ local REQUEST = {
     path_with_query = "/x/../y?a=1",
 }
 
+-- Two distinct client IPs: the transport peer (a load balancer, say) and the
+-- forwarded client Kong derives from X-Forwarded-For + trusted_ips. They must
+-- not collapse into each other — an IP allow-list behind a CDN needs the second.
+local PEER_IP      = "10.0.0.7"
+local FORWARDED_IP = "203.0.113.9"
+
 _G.ngx = {
     get_phase = function() return PHASE end,
+    var = { remote_addr = PEER_IP },
 }
 _G.kong = {
     log = { err = function() end, warn = function() end, debug = function() end },
@@ -66,15 +73,27 @@ _G.kong = {
         get_path_with_query = function() return REQUEST.path_with_query end,
         get_method          = function() return "GET" end,
     },
+    client = {
+        get_forwarded_ip = function() return FORWARDED_IP end,
+    },
 }
 
 local ka_compile = dofile("./kong/plugins/karna/modules/ka_compile.lua")
 
--- Minimal engine stand-in: the resolvers for raw_path/basename delegate to
--- engine helpers, so provide just those.
+-- Minimal engine stand-in: the resolvers for raw_path/basename/the client-IP
+-- family delegate to engine helpers, so provide just those. These mirror the
+-- real getters in ka_engine.lua — if one is renamed there, the resolver calls a
+-- name this table does not have and the test errors out rather than passing on a
+-- stale stub.
 local engine = {
     __get_values_request_raw_path = function()
         return { ["request.raw_path"] = REQUEST.raw_path }, nil
+    end,
+    __get_values_remote_addr = function()
+        return { ["request.remote_addr"] = ngx.var.remote_addr }, nil
+    end,
+    __get_values_forwarded_addr = function()
+        return { ["request.forwarded_addr"] = kong.client.get_forwarded_ip() }, nil
     end,
 }
 
@@ -116,6 +135,33 @@ check("request.path_with_query keeps the querystring",
 local p  = resolve("request.path")["request.path"]
 local rp = resolve("request.raw_path")["request.raw_path"]
 check("path and raw_path stay distinct", p ~= rp, tostring(p) .. " vs " .. tostring(rp))
+
+-- ---------------------------------------------------------------------------
+print("")
+print("client IP variable resolvers:")
+-- ---------------------------------------------------------------------------
+
+-- SecLang maps REMOTE_ADDR to request.remote_addr, and that mapping existed for
+-- a long time with NO resolver behind it: every rule targeting the client IP
+-- (CRS 905100/905110, any IP allow/deny list) silently never matched. Exactly
+-- the failure mode this file exists to catch.
+values, why = resolve("request.remote_addr")
+check("request.remote_addr has a resolver", values ~= nil, tostring(why))
+check("request.remote_addr resolves the transport peer",
+      values and values["request.remote_addr"] == PEER_IP,
+      values and tostring(values["request.remote_addr"]))
+
+values, why = resolve("request.forwarded_addr")
+check("request.forwarded_addr has a resolver", values ~= nil, tostring(why))
+check("request.forwarded_addr resolves Kong's forwarded client",
+      values and values["request.forwarded_addr"] == FORWARDED_IP,
+      values and tostring(values["request.forwarded_addr"]))
+
+-- The whole point of shipping both: behind a proxy they differ, and a rule
+-- author picking one must not silently get the other.
+check("remote_addr and forwarded_addr stay distinct",
+      resolve("request.remote_addr")["request.remote_addr"]
+        ~= resolve("request.forwarded_addr")["request.forwarded_addr"])
 
 -- ---------------------------------------------------------------------------
 print("")

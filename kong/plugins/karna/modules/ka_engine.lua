@@ -961,6 +961,49 @@ _M.__get_values_basename = function()
 
     return values, nil
 end
+-- Client IP, two flavours.
+--
+-- `request.remote_addr` is the transport peer — the same value ModSec's
+-- REMOTE_ADDR carries, the same value the `%{remote_addr}` macro resolves
+-- (`__resolve_reqctx_only`) and the same value `ignore_from_local_ips` matches
+-- on. Keeping all three on ngx.var.remote_addr means a rule and a rate-limit
+-- key never disagree about who the client is.
+--
+-- `request.forwarded_addr` is Kong's forwarded-IP view: X-Forwarded-For walked
+-- back through `trusted_ips`. Behind a CDN or load balancer the peer is the
+-- proxy, so an IP allow/deny list has to match on this one instead. It is
+-- Karna-native — SecLang has no equivalent variable.
+_M.__get_values_remote_addr = function()
+    if get_phase() == "init_worker" then
+        return {}, nil
+    end
+
+    local values = {}
+
+    local remote_addr = ngx.var.remote_addr
+    if remote_addr and remote_addr ~= "" then
+        values["request.remote_addr"] = remote_addr
+    end
+
+    return values, nil
+end
+_M.__get_values_forwarded_addr = function()
+    if get_phase() == "init_worker" then
+        return {}, nil
+    end
+
+    local values = {}
+
+    -- Kong resolves this from X-Forwarded-For honouring `trusted_ips`; it falls
+    -- back to the peer address when the header is absent or the peer is not
+    -- trusted, so there is no spoofing surface Kong hasn't already gated.
+    local ok, forwarded = pcall(kong.client.get_forwarded_ip)
+    if ok and forwarded and forwarded ~= "" then
+        values["request.forwarded_addr"] = forwarded
+    end
+
+    return values, nil
+end
 _M.__get_values_request_raw_query = function()
     if get_phase() == "init_worker" then
         return {}, nil
@@ -2605,6 +2648,12 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
 
                 if variable == "request.raw_query" then
                     values, err = self.__get_values_request_raw_query()
+                end
+
+                if variable == "request.remote_addr" then
+                    values, err = self.__get_values_remote_addr()
+                elseif variable == "request.forwarded_addr" then
+                    values, err = self.__get_values_forwarded_addr()
                 end
 
                 if variable == "request.header.value" then
@@ -4256,6 +4305,16 @@ _M.get_inspection_table = function(self, plugin_conf)
     end]]--
 
     table_insert(kong.ctx.plugin.inspection_table, {["remote_addr"] = tostring(ngx.var.remote_addr)})
+    -- Canonical `request.*` spellings of the two client-IP rule variables, so a
+    -- `%{request.remote_addr}` / `%{request.forwarded_addr}` macro in
+    -- set_log_fields / set_variable / a Redis key resolves to exactly what a
+    -- condition on the same variable saw. `remote_addr` above stays for the
+    -- historical macro spelling.
+    table_insert(kong.ctx.plugin.inspection_table, {["request.remote_addr"] = tostring(ngx.var.remote_addr)})
+    local _ok_fwd, _fwd = pcall(kong.client.get_forwarded_ip)
+    if _ok_fwd and _fwd then
+        table_insert(kong.ctx.plugin.inspection_table, {["request.forwarded_addr"] = tostring(_fwd)})
+    end
 
     local phase = get_phase()
 

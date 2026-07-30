@@ -732,6 +732,8 @@ it for source installs. A plain `luarocks make` with no stamping reports
 | `request.body.multipart.header.value` | Multipart header values | n/a |
 | `request.raw_path` | Path component, not normalized, no querystring | `/t/Abc%20123/parent/..//test/./` |
 | `request.basename` | Last segment of the path | `/index.php?a=b` → `index.php` |
+| `request.remote_addr` | Client IP on the transport (`ngx.var.remote_addr`) — the ModSecurity `REMOTE_ADDR` equivalent, and the same value the `%{remote_addr}` macro resolves | `203.0.113.9` |
+| `request.forwarded_addr` | Client IP as Kong resolves it (`kong.client.get_forwarded_ip()`): `X-Forwarded-For` walked back through Kong's `trusted_ips` | `203.0.113.9` |
 | `response.set_cookie.name` | Array of cookie names from `Set-Cookie` | n/a |
 | `response.set_cookie.value` | Array of cookie values from `Set-Cookie` | n/a |
 
@@ -751,6 +753,43 @@ it for source installs. A plain `luarocks make` with no stamping reports
 | Variable | Description |
 | --- | --- |
 | `request.header_no_fp.value` | Request headers excluding the most FP-prone ones (User-Agent, Referer, etc.) |
+
+### Which client IP should a rule match?
+
+Both IP variables exist because the answer depends on your deployment, and
+getting it wrong is silent — an allow-list that matches nothing looks the same as
+one that was never reached.
+
+- **Karna directly exposed** → `request.remote_addr`. The transport peer *is* the
+  client.
+- **Karna behind a load balancer / CDN, with nginx `real_ip` configured** →
+  `request.remote_addr`. Setting `trusted_ips` in `kong.conf` makes nginx rewrite
+  `remote_addr` to the address from `X-Forwarded-For`, so the peer address is
+  already the real client and this is the simplest correct choice.
+- **Karna behind a proxy with no `real_ip` / `trusted_ips` configured** →
+  neither is the real client. `request.remote_addr` is the proxy, and
+  `request.forwarded_addr` falls back to the peer for exactly the same reason:
+  Kong refuses to believe an `X-Forwarded-For` from an untrusted hop. Configure
+  `trusted_ips` first — trusting the header without it is an IP-spoofing hole,
+  not a config detail.
+
+`request.forwarded_addr` is there for the case where you want Kong's forwarded
+view explicitly, independent of whether nginx rewrote `remote_addr`. Pair either
+with the `ipMatch` operator:
+
+```json
+{
+  "id": "allowlist-webhook-source",
+  "phase": "access",
+  "message": "webhook endpoint restricted to the provider's ranges",
+  "conditions": [
+    { "variables": ["request.raw_path"], "op": "beginsWith", "value": "/webhook/" },
+    { "variables": ["request.remote_addr"], "op": "ipMatch",
+      "value": "149.154.160.0/20,91.108.4.0/22", "negated": true }
+  ],
+  "action": { "fixed_response": { "status_code": 403, "body": "Forbidden\r\n" } }
+}
+```
 
 ## Supported operators
 

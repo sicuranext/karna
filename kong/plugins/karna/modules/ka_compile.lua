@@ -412,6 +412,20 @@ function _M.compile_variable_resolver(variable)
         end
     end
 
+    -- request.remote_addr (transport peer) / request.forwarded_addr (X-Forwarded-For
+    -- walked back through Kong's trusted_ips). Both scalar and cheap, so the RE2
+    -- gate picks them up through this resolver too.
+    if variable == "request.remote_addr" then
+        return function(engine, rule)
+            return engine.__get_values_remote_addr()
+        end
+    end
+    if variable == "request.forwarded_addr" then
+        return function(engine, rule)
+            return engine.__get_values_forwarded_addr()
+        end
+    end
+
     -- request.header.value / request.header.value:<name>
     if variable == "request.header.value" then
         return function(engine, rule)
