@@ -100,23 +100,23 @@ local function would_write(collected, only_on_match, has_external)
     return true
 end
 
-local MATCHES = { { matched_on = "response.header.value:x-octofence-mslc",
-                    matched_value = "lst,my-denylist" } }
+local MATCHES = { { matched_on = "response.header.value:x-app-verdict",
+                    matched_value = "deny,ip-reputation" } }
 
--- The real shape from the converted pack: a header_filter rule whose only action
--- is set_log_fields, now opted in.
-local function waap_rule(log_only)
+-- The shape this action exists for: a header_filter rule reacting to a verdict
+-- the upstream put in a response header, whose only action is set_log_fields.
+local function verdict_rule(log_only)
     local action = {
         set_log_fields = {
-            { name = "waap_event",      value = "Deny List" },
-            { name = "waap_event_code", value = "%{response.header.value:x-octofence-mslc}" },
+            { name = "app_verdict",      value = "Upstream denied the request" },
+            { name = "app_verdict_code", value = "%{response.header.value:x-app-verdict}" },
         },
     }
     if log_only then action.log_only = true end
     return {
-        id = "2102", phase = "header_filter", log = true,
-        message = "Deny List",
-        tags = { "global-pack", "waap-event", "ban", "list" },
+        id = "9001", phase = "header_filter", log = true,
+        message = "Upstream denied the request",
+        tags = { "observability", "upstream-verdict" },
         action = action,
     }
 end
@@ -125,22 +125,22 @@ end
 print("- log_only records a non-terminal match; without it the match is dropped")
 -- ============================================================
 local collected = {}
-ok(handle_match(collected, waap_rule(true), MATCHES) == "recorded",
+ok(handle_match(collected, verdict_rule(true), MATCHES) == "recorded",
    "with log_only → recorded")
 ok(#collected == 1, "one entry filed")
-ok(collected[1].rule.id == "2102", "the rule itself is carried (id survives)")
+ok(collected[1].rule.id == "9001", "the rule itself is carried (id survives)")
 ok(collected[1].part == MATCHES, "matched parts carried (v1 needs them for `data`)")
 ok(collected[1].sanitized == false, "not marked sanitized")
 
 collected = {}
-ok(handle_match(collected, waap_rule(false), MATCHES) == "dropped",
+ok(handle_match(collected, verdict_rule(false), MATCHES) == "dropped",
    "without log_only → dropped (CRS pass helpers stay out of the audit log)")
 ok(#collected == 0, "nothing filed")
 
 -- A truthy-but-not-true value must not opt in: the flag is checked with `== true`
 -- so a stray string from hand-written JSON can't silently enable it.
 collected = {}
-local sloppy = waap_rule(false); sloppy.action.log_only = "yes"
+local sloppy = verdict_rule(false); sloppy.action.log_only = "yes"
 ok(handle_match(collected, sloppy, MATCHES) == "dropped",
    "log_only = \"yes\" does NOT opt in (strict == true)")
 
@@ -149,13 +149,13 @@ print("")
 print("- log_only is non-terminal: it never stops the rule loop")
 -- ============================================================
 collected = {}
-ok(handle_match(collected, waap_rule(true), MATCHES) == "recorded",
+ok(handle_match(collected, verdict_rule(true), MATCHES) == "recorded",
    "a log_only match does not report terminal")
 
 -- A rule carrying both is terminal; log_only is then redundant, and the terminal
 -- path records it anyway (handler.lua does that).
 collected = {}
-local both = waap_rule(true)
+local both = verdict_rule(true)
 both.action.fixed_response = { status_code = 403 }
 ok(handle_match(collected, both, MATCHES) == "terminal",
    "log_only + fixed_response → terminal wins")
@@ -166,12 +166,12 @@ print("")
 print("- a log_only match satisfies auditlog_only_on_match")
 -- ============================================================
 collected = {}
-handle_match(collected, waap_rule(true), MATCHES)
+handle_match(collected, verdict_rule(true), MATCHES)
 ok(would_write(collected, true, false),
    "only_on_match=true + a log_only match → the entry IS written")
 
 collected = {}
-handle_match(collected, waap_rule(false), MATCHES)
+handle_match(collected, verdict_rule(false), MATCHES)
 ok(not would_write(collected, true, false),
    "only_on_match=true, no log_only → nothing written (the old behaviour)")
 ok(would_write(collected, false, false),
@@ -180,7 +180,7 @@ ok(would_write(collected, false, false),
 -- `log: false` on the rule still suppresses it: log_only decides whether the
 -- match is COLLECTED, `log` whether it is LOGGED. Two independent knobs.
 collected = {}
-local quiet = waap_rule(true); quiet.log = false
+local quiet = verdict_rule(true); quiet.log = false
 handle_match(collected, quiet, MATCHES)
 ok(#collected == 1, "collected")
 ok(#loggable(collected) == 0, "but filtered out by log=false")
@@ -191,7 +191,7 @@ print("")
 print("- the audit log labels it `log`, not block / detect / sanitized")
 -- ============================================================
 collected = {}
-handle_match(collected, waap_rule(true), MATCHES)
+handle_match(collected, verdict_rule(true), MATCHES)
 ok(action_label(collected[1], true, false) == "log",
    "blocking service → still `log` (nothing was blocked)")
 ok(action_label(collected[1], false, false) == "log",
@@ -208,12 +208,12 @@ print("- several log_only rules on one request all land")
 -- ============================================================
 -- The loop does not stop on a log_only match, so every matching one is recorded.
 collected = {}
-local r1 = waap_rule(true)
-local r2 = waap_rule(true); r2.id = "2460"; r2.message = "Temporary Ban on Service"
+local r1 = verdict_rule(true)
+local r2 = verdict_rule(true); r2.id = "9002"; r2.message = "Upstream flagged the response"
 handle_match(collected, r1, MATCHES)
 handle_match(collected, r2, MATCHES)
 ok(#collected == 2, "both recorded")
-ok(collected[1].rule.id == "2102" and collected[2].rule.id == "2460",
+ok(collected[1].rule.id == "9001" and collected[2].rule.id == "9002",
    "in match order (v1 takes the last, v2 keeps them all)")
 
 -- ============================================================
@@ -222,7 +222,7 @@ print("- no ka_matched_rules table (access phase was skipped) → no crash")
 -- ============================================================
 -- ignore_from_local_ips / response_from_cache return before the store exists,
 -- and header_filter still runs.
-ok(handle_match(nil, waap_rule(true), MATCHES) == "dropped",
+ok(handle_match(nil, verdict_rule(true), MATCHES) == "dropped",
    "nil collector is tolerated, match is simply not recorded")
 
 print(string.format("\n%d test(s) failed", fails))
