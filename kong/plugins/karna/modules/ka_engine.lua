@@ -148,6 +148,25 @@ local function request_has_body()
     return false
 end
 
+-- ctl:requestBodyAccess=Off, set by a rule control earlier in this request.
+-- Read by the three body getters and by the two rule loops.
+--
+-- The getters fold this into their CACHE KEY rather than clearing the cache: the
+-- always-on `check_request_body_parser` gate parses the body before any rule
+-- control exists, so by the time the flag flips the "raw"/"b64" entries are
+-- already warm. A distinct key means a flag set halfway through a request is
+-- still honoured, with no invalidation logic to get wrong.
+local function body_access_off()
+    local rc = kong.ctx and kong.ctx.plugin and kong.ctx.plugin.rule_controls
+    return (rc and rc.body_access_off) == true
+end
+local function body_cache_key(try_b64)
+    if body_access_off() then
+        return try_b64 and "b64:nobody" or "raw:nobody"
+    end
+    return try_b64 and "b64" or "raw"
+end
+
 local response_get_headers              = kong.service.response.get_headers
 local response_get_status               = kong.service.response.get_status
 local response_exit                     = kong.response.exit
@@ -563,7 +582,7 @@ _M.__get_values_request_body = function(try_b64)
     end
 
     -- cache lookup: avoid re-parsing the body on every condition that reads it
-    local cache_key = try_b64 and "b64" or "raw"
+    local cache_key = body_cache_key(try_b64)
     if kong.ctx.plugin then
         if not kong.ctx.plugin.body_values_cache then
             kong.ctx.plugin.body_values_cache = {}
@@ -577,7 +596,10 @@ _M.__get_values_request_body = function(try_b64)
     local result_values = values
     local result_err = nil
 
-    if request_has_body() then
+    -- ctl:requestBodyAccess=Off — the body exists but is not inspected. Every
+    -- body namespace (urlencoded / json / xml / multipart / files) resolves
+    -- empty, which also takes the body out of the merged ARGS map below.
+    if request_has_body() and not body_access_off() then
 
         -- get request body
         local request_body = request_get_raw_body()
@@ -703,8 +725,16 @@ _M.__get_values_request_body_scalars = function()
         return {}
     end
 
-    if kong.ctx.plugin and kong.ctx.plugin.body_scalars_cache then
-        return kong.ctx.plugin.body_scalars_cache
+    -- Keyed like the other two body getters so ctl:requestBodyAccess=Off gets its
+    -- own entry rather than reading back a warm one that still carries the body.
+    local scalars_key = body_cache_key(false)
+    if kong.ctx.plugin then
+        if not kong.ctx.plugin.body_scalars_cache then
+            kong.ctx.plugin.body_scalars_cache = {}
+        end
+        if kong.ctx.plugin.body_scalars_cache[scalars_key] ~= nil then
+            return kong.ctx.plugin.body_scalars_cache[scalars_key]
+        end
     end
 
     local values = {}
@@ -733,7 +763,11 @@ _M.__get_values_request_body_scalars = function()
             end
         end
     end
-    if request_has_body() then
+    -- `request.body.processor` above stays populated under
+    -- ctl:requestBodyAccess=Off — it is derived from Content-Type, not from the
+    -- bytes, and CRS helper rules key ctl gates off it. The raw body and its
+    -- length are what the control suppresses.
+    if request_has_body() and not body_access_off() then
         local request_body = request_get_raw_body()
         if not request_body then
             local body_file = ngx_req_get_body_file()
@@ -764,7 +798,7 @@ _M.__get_values_request_body_scalars = function()
     end
 
     if kong.ctx.plugin then
-        kong.ctx.plugin.body_scalars_cache = values
+        kong.ctx.plugin.body_scalars_cache[scalars_key] = values
     end
     return values
 end
@@ -846,7 +880,10 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
     -- branch on top of the cached base, which is still cheaper than
     -- rebuilding from scratch.
     local has_ignore = (rule_control and rule_control.ignore_variables) and true or false
-    local cache_key = try_b64 and "b64" or "raw"
+    -- body_cache_key so a request flipped to ctl:requestBodyAccessOff gets its own
+    -- merged map (query only) instead of reading back one that still has the body
+    -- args folded in.
+    local cache_key = body_cache_key(try_b64)
     if kong.ctx.plugin then
         if not kong.ctx.plugin.args_values_cache then
             kong.ctx.plugin.args_values_cache = {}
@@ -1149,13 +1186,20 @@ end
 
 
 
--- Apply the side-effects of a non-terminal pass-rule's `rule_control`
--- list onto the per-request `kong.ctx.plugin.rule_controls` store.
--- Called inline by `loop_rules` when a matched rule has only side
--- effects (no fixed_response / fix_matched_parts / rate_limit) so a
--- later rule iteration in the same pass sees the accumulated state.
--- Mirrors handler.lua:apply_rule_controls but lives in the engine
--- module so the engine doesn't need a callback indirection.
+-- Apply the side-effects of a matched rule's `rule_control` list onto the
+-- per-request `kong.ctx.plugin.rule_controls` store.
+--
+-- THE single applier. It used to exist in three copies (this one, plus
+-- `apply_rule_controls` and an inline block in `evaluate_rules`, both in
+-- handler.lua) that had to be kept byte-identical by hand; adding a directive
+-- meant editing three places and a miss was a silent no-op on one path. Both
+-- handler.lua entry points now delegate here.
+--
+-- Called from:
+--   * loop_rules, when a matched rule is non-terminal, so later iterations in
+--     the same pass see the accumulated state
+--   * handler.lua:apply_rule_controls (the pass-rule / exclusion path)
+--   * handler.lua:evaluate_rules (a terminal rule that also carries controls)
 _M.__apply_rule_controls_inline = function(controls)
     if not controls or not kong.ctx.plugin or not kong.ctx.plugin.rule_controls then
         return
@@ -1197,7 +1241,35 @@ _M.__apply_rule_controls_inline = function(controls)
                 else
                     table_insert(rc.tags[rt.tag].target, rt.name)
                 end
+                -- Arm the reader in __match_rule_conditions_impl. Without this
+                -- flag the tag walk there never runs (it is gated so benign
+                -- traffic doesn't pay for it).
+                rc._has_tag_targets = true
             end
+        end
+
+        -- ctl:ruleRemoveByTag=<tag> — drop every rule carrying <tag> for the rest
+        -- of this request. Read by __rule_control_rule_removed, which runs for
+        -- every rule of every request, hence the `_has_removed_tags` gate: with
+        -- no tag control armed the reader costs one boolean test instead of
+        -- walking ~10 tags across ~300 rules.
+        if control.remove_rules_by_tag and control.remove_rules_by_tag.tag then
+            rc.removed_tags[control.remove_rules_by_tag.tag] = true
+            rc._has_removed_tags = true
+        end
+
+        -- ctl:ruleEngine=DetectionOnly — keep matching and logging, suppress
+        -- every terminal action (fixed_response / rate_limit 429 /
+        -- fix_matched_parts). Read by handler.lua:rule_blocking_enabled.
+        if control.detection_only then
+            rc.detection_only = true
+        end
+
+        -- ctl:requestBodyAccess=Off — stop inspecting the request body. Read by
+        -- the body getters (which fold it into their cache key) and by the two
+        -- rule loops (a `_needs_body` rule is skipped outright).
+        if control.body_access_off then
+            rc.body_access_off = true
         end
 
         if control.engine_off then
@@ -1225,7 +1297,10 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
     -- Body presence, resolved once: Content-Length > 0 mirrors the body
     -- parser's gate, so a _needs_body rule skipped here is behaviour-identical
     -- to letting it resolve an empty values-table and bail.
-    local has_body = request_has_body()
+    -- ctl:requestBodyAccess=Off makes the body invisible to rules, so it lands
+    -- here too: a body-only rule then cannot fire, and skipping it saves the
+    -- resolution instead of walking it to an empty result.
+    local has_body = request_has_body() and not body_access_off()
 
     -- ctl:ruleEngine=Off short-circuit: a previously-applied control
     -- in this same evaluator pass could have flipped this on. Respect
@@ -1264,8 +1339,15 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
     -- set this when its match condition fired, signalling "skip the
     -- entire WAF for this request". Honor it by returning immediately
     -- — no rule fires, no audit log row, request flows through.
-    if kong.ctx.plugin and kong.ctx.plugin.rule_controls
-       and kong.ctx.plugin.rule_controls.engine_off then
+    --
+    -- `_rc` is also re-read per iteration below: a rule INSIDE this same list
+    -- can set engine_off (a `rules_request` exclusion, which gets no
+    -- controls/detection split — only the global pack does), and without the
+    -- per-iteration check the remaining rules of the list kept evaluating. The
+    -- global pack never hit it because its controls run as a separate earlier
+    -- pass, so the entry check above catches them; local rules did.
+    local _rc = kong.ctx.plugin and kong.ctx.plugin.rule_controls
+    if _rc and _rc.engine_off then
         return
     end
 
@@ -1304,7 +1386,9 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
         -- parser's own gate (`__get_values_request_body`), so skipping such a
         -- rule here is behaviour-identical to letting it resolve an empty
         -- values-table and bail (CRS regression empty-diff confirmed).
-        local has_body = request_has_body()
+        -- ctl:requestBodyAccess=Off has the same effect on a body-only rule:
+        -- the body getters return empty, so the rule cannot fire either way.
+        local has_body = request_has_body() and not body_access_off()
 
         -- Per-service CRS ruleset-type switches (coreruleset_rulesets): a set of
         -- disabled category codes for THIS service, or nil when all enabled
@@ -1313,6 +1397,9 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
         local crs_disabled = crs_disabled_categories(plugin_conf)
 
         for _,rule in pairs(raw_rules) do
+            -- A rule earlier in THIS list may have just flipped engine_off.
+            -- One local-field read per rule; mirrors loop_rule_controls_pass.
+            if _rc and _rc.engine_off then break end
             if rule._needs_body and not has_body then
                 goto continue
             end
@@ -2337,6 +2424,36 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
         end
     end
 
+    -- Per-request `ctl:ruleRemoveTargetByTag=<tag>;<target>` for a tag OTHER than
+    -- OWASP_CRS. The applier (handler.lua:apply_rule_controls /
+    -- __apply_rule_controls_inline) files those under
+    -- `rule_controls.tags[<tag>].target`; this is the only reader. Before this,
+    -- the reader was an unreferenced stub with a TODO, so every non-OWASP_CRS
+    -- tag exclusion was silently a no-op.
+    --
+    -- OWASP_CRS keeps its own fast path (`remove_target_from_all_rules`): every
+    -- CRS rule carries that tag, so routing it here would mean walking the tag
+    -- list of ~300 rules to reach the same answer a flat list already gives —
+    -- and it stays "all rules", custom ones included, which is the documented
+    -- historical behaviour.
+    --
+    -- Gated on `_has_tag_targets` so the normal request pays one boolean test:
+    -- this block runs per rule per request, and the tag walk is only worth
+    -- entering once some exclusion has actually registered a tag target.
+    local rc_tag_names
+    local _rc = kong.ctx and kong.ctx.plugin and kong.ctx.plugin.rule_controls
+    if _rc and _rc._has_tag_targets and rule.tags then
+        for _, rule_tag in pairs(rule.tags) do
+            local entry = _rc.tags[rule_tag]
+            if entry and entry.action == "remove_target" and entry.target then
+                for _, t in pairs(entry.target) do
+                    rc_tag_names = rc_tag_names or {}
+                    rc_tag_names[#rc_tag_names + 1] = t
+                end
+            end
+        end
+    end
+
 
     --[[
         ██╗██╗██╗    ██╗ █████╗ ██████╗ ███╗   ██╗██╗███╗   ██╗ ██████╗ ██╗██╗
@@ -3045,6 +3162,16 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 end
                 if values and rc_remove_names then
                     for _, nm in pairs(rc_remove_names) do
+                        remove_ctl_target(values, nm, variable)
+                    end
+                end
+                -- ctl:ruleRemoveTargetByTag on a non-OWASP_CRS tag, collected at
+                -- the top of this function from rule_controls.tags for the tags
+                -- THIS rule carries. Same name-based, namespace-gated removal
+                -- the by-id and OWASP_CRS paths use, so an exclusion and a rule
+                -- always look at exactly the same keys.
+                if values and rc_tag_names then
+                    for _, nm in pairs(rc_tag_names) do
                         remove_ctl_target(values, nm, variable)
                     end
                 end
@@ -3798,25 +3925,29 @@ _M.__rule_control_rule_removed = function(self, rule)
                     end
                 end
             end
+
+            -- ctl:ruleRemoveByTag=<tag>. This function is on the hottest path
+            -- there is — called once per rule per request, ~300 CRS rules deep —
+            -- so the tag walk sits behind `_has_removed_tags`. With no tag
+            -- control armed (the overwhelmingly common case) the cost is a single
+            -- table lookup, not ~10 string compares per rule.
+            local rc = kong.ctx.plugin.rule_controls
+            if rc._has_removed_tags and rule.tags then
+                for _, rule_tag in pairs(rule.tags) do
+                    if rc.removed_tags[rule_tag] then
+                        return true
+                    end
+                end
+            end
         end
     end
     return false
 end
-_M.__rule_control_remove_target = function(self, rule)
-    if kong.ctx and kong.ctx.plugin then
-        if kong.ctx.plugin.rule_controls then
-            if kong.ctx.plugin.rule_controls.tags then
-                -- rule.tags -> table with all rule's tags
-                -- TODO: IMPLEMENT A WAY TO REMOVE FROM TAGS
-                -- 
-                -- change the "expected" behavior on OWASP_CRS
-                -- cause it means "remove all rules" and not remove that tag!
-                -- that's stupid and consume a lot of CPU instead of having
-                -- remove_all_rules meaning remove this <target variable> from all rules
-            end
-        end
-    end
-end
+-- (`__rule_control_remove_target` used to live here as an unreferenced stub with
+-- a TODO. Per-request `ctl:ruleRemoveTargetByTag` on a non-OWASP_CRS tag is now
+-- read inside __match_rule_conditions_impl, next to the by-id and
+-- remove_target_from_all_rules filtering, so exclusion and rule share one
+-- removal helper. See `rc_tag_names` there.)
 
 
 -- OLD

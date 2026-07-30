@@ -366,54 +366,37 @@ end
 -- per-request `kong.ctx.plugin.rule_controls`. Extracted so both the
 -- standard evaluate_rules path (first-match-wins) and the CRS-plugins
 -- multi-match path can apply controls without duplicating dispatch.
+-- Single applier for `rule_control` side effects, in ka_engine so the engine's
+-- own inline call site (loop_rules, non-terminal matches) and the two handler
+-- call sites share one implementation. See
+-- ka_engine:__apply_rule_controls_inline for the directive list.
 local apply_rule_controls = function(controls)
-  if not controls then return end
-  for _, control in pairs(controls) do
-    if control.remove_rule and control.remove_rule.rule_id then
-      local id_spec = control.remove_rule.rule_id
-      local lo, hi = string.match(id_spec, "^(%d+)%-(%d+)$")
-      if lo and hi then
-        local lo_n, hi_n = tonumber(lo), tonumber(hi)
-        if lo_n and hi_n then
-          for n = lo_n, hi_n do
-            kong.ctx.plugin.rule_controls.ids[tostring(n)] = { action = "remove" }
-          end
-        end
-      else
-        kong.ctx.plugin.rule_controls.ids[id_spec] = { action = "remove" }
-      end
-    end
+  engine.__apply_rule_controls_inline(controls)
+end
 
-    if control.remove_target_from_rule_by_id then
-      local r = control.remove_target_from_rule_by_id
-      if r.rule_id and r.target then
-        if not kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] then
-          kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] = {}
-        end
-        table.insert(kong.ctx.plugin.rule_controls.ids_targets[r.rule_id], r.target)
-      end
-    end
+-- True when a rule has flipped this request to detection-only via
+-- ctl:ruleEngine=DetectionOnly. Detection-only means "observe, don't alter the
+-- transaction": rules still match, still run their side effects
+-- (set_variable / set_log_fields / redis_*) and still land in the audit log, but
+-- nothing that changes what upstream or the client sees is allowed to run.
+--
+-- Separate from `engine_blocking_mode` on purpose. `fix_matched_parts` has
+-- always sanitized regardless of the service's blocking mode, and that is not
+-- changed here — only the rule control suppresses it.
+local detection_only_active = function()
+  local rc = kong.ctx.plugin and kong.ctx.plugin.rule_controls
+  return (rc and rc.detection_only) == true
+end
 
-    if control.remove_target_rule_by_tag and control.remove_target_rule_by_tag.tag then
-      local rt = control.remove_target_rule_by_tag
-      if rt.tag == "OWASP_CRS" then
-        table.insert(kong.ctx.plugin.rule_controls.remove_target_from_all_rules, rt.name)
-      else
-        if not kong.ctx.plugin.rule_controls.tags[rt.tag] then
-          kong.ctx.plugin.rule_controls.tags[rt.tag] = {
-            action = "remove_target",
-            target = { rt.name }
-          }
-        else
-          table.insert(kong.ctx.plugin.rule_controls.tags[rt.tag].target, rt.name)
-        end
-      end
-    end
-
-    if control.engine_off then
-      kong.ctx.plugin.rule_controls.engine_off = true
-    end
-  end
+-- Terminal blocking (fixed_response, the rate_limit 429) fires only when the
+-- service is in blocking mode AND this request has not been flipped to
+-- detection-only.
+--
+-- Note the always-on validation gates in ka_engine read plugin_conf directly:
+-- they run before any rule control exists, so they cannot be turned off here.
+local rule_blocking_enabled = function(plugin_conf)
+  if not plugin_conf.engine_blocking_mode then return false end
+  return not detection_only_active()
 end
 
 -- Evaluate a pack of `pass`-action rules (CRS exclusion plugins +
@@ -495,9 +478,16 @@ local evaluate_rules = function(plugin_conf, rules, phase)
     -- removed. Takes precedence over `fixed_response` when both are
     -- declared on the same rule — sanitize wins because it preserves
     -- the user journey.
+    --
+    -- Under ctl:ruleEngine=DetectionOnly the strip is skipped: sanitizing is
+    -- disruptive (it rewrites what upstream receives), and detection-only means
+    -- observe without altering the transaction. The match is still logged, as
+    -- `detect` rather than `sanitized`.
     if rule_matched_obj.action and rule_matched_obj.action.fix_matched_parts and matches_info then
-      engine:__fix_matching_parts(rule_matched_obj, matches_info)
-      match_entry.sanitized = true
+      if not detection_only_active() then
+        engine:__fix_matching_parts(rule_matched_obj, matches_info)
+        match_entry.sanitized = true
+      end
       -- skip the block branch; sanitize already mutated the upstream
       -- request and the response should be whatever upstream returns.
       return
@@ -537,7 +527,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       match_entry.rate_limit_key = full_key
       match_entry.rate_limited = (count ~= nil and limit > 0 and count > limit)
 
-      if plugin_conf.engine_blocking_mode and match_entry.rate_limited then
+      if rule_blocking_enabled(plugin_conf) and match_entry.rate_limited then
         local resp = rl.response or {}
         -- "ratelimit" variant: default_ratelimit_response_* slots between
         -- the rule's own response and the block-page defaults, so throttled
@@ -557,8 +547,8 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       return
     end
 
-    -- if blocking mode enabled, exit with error
-    if plugin_conf.engine_blocking_mode then
+    -- if blocking mode enabled (and no ctl:ruleEngine=DetectionOnly), exit with error
+    if rule_blocking_enabled(plugin_conf) then
       if rule_matched_obj.action then
 
         if rule_matched_obj.action.fixed_response then
@@ -596,73 +586,11 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       end
     end
 
+    -- A terminal rule can also carry rule_control (e.g. a blocking rule that
+    -- additionally drops a noisy CRS id). Same single applier the pass-rule path
+    -- and the engine's inline call site use.
     if rule_matched_obj.rule_control then
-      for _,control in pairs(rule_matched_obj.rule_control) do
-
-        if control.remove_rule then
-          if control.remove_rule.rule_id then
-            -- `rule_id` can be a single id ("920273") or a hyphen-range
-            -- ("9507100-9507999") — CRS exclusion plugins use ranges to
-            -- disable the entire id block when the plugin is opted out.
-            local id_spec = control.remove_rule.rule_id
-            local lo, hi = string.match(id_spec, "^(%d+)%-(%d+)$")
-            if lo and hi then
-              local lo_n = tonumber(lo)
-              local hi_n = tonumber(hi)
-              if lo_n and hi_n then
-                for n = lo_n, hi_n do
-                  kong.ctx.plugin.rule_controls.ids[tostring(n)] = { action = "remove" }
-                end
-              end
-            else
-              kong.ctx.plugin.rule_controls.ids[id_spec] = { action = "remove" }
-            end
-          end
-        end
-
-        -- ctl:ruleRemoveTargetById=<id>;<target> — drop a specific
-        -- variable target from a specific rule, for this request only.
-        -- Used heavily by CRS exclusion plugins (wordpress, drupal, …)
-        -- to whitelist known-good arg/header names per app endpoint.
-        if control.remove_target_from_rule_by_id then
-          local r = control.remove_target_from_rule_by_id
-          if r.rule_id and r.target then
-            if not kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] then
-              kong.ctx.plugin.rule_controls.ids_targets[r.rule_id] = {}
-            end
-            table.insert(kong.ctx.plugin.rule_controls.ids_targets[r.rule_id], r.target)
-          end
-        end
-
-        if control.remove_target_rule_by_tag then
-          if control.remove_target_rule_by_tag.tag then
-
-            -- this means remove all rules
-            if control.remove_target_rule_by_tag.tag == "OWASP_CRS" then
-              table.insert(kong.ctx.plugin.rule_controls.remove_target_from_all_rules, control.remove_target_rule_by_tag.name)
-            else
-              -- normal behavior
-              if not kong.ctx.plugin.rule_controls.tags[control.remove_target_rule_by_tag.tag] then
-                kong.ctx.plugin.rule_controls.tags[control.remove_target_rule_by_tag.tag] = {
-                  action = "remove_target",
-                  target = { control.remove_target_rule_by_tag.name }
-                }
-              else
-                table.insert(kong.ctx.plugin.rule_controls.tags[control.remove_target_rule_by_tag.tag].target, control.remove_target_rule_by_tag.name)
-              end
-            end
-
-          end
-        end
-
-        -- ctl:ruleEngine=Off — disable rule evaluation entirely for
-        -- this request. Used by CRS exclusion plugins on endpoints
-        -- that need to bypass the WAF (e.g. file-manager pages).
-        if control.engine_off then
-          kong.ctx.plugin.rule_controls.engine_off = true
-        end
-
-      end
+      apply_rule_controls(rule_matched_obj.rule_control)
     end
 
   end
@@ -851,12 +779,28 @@ function plugin:access(plugin_conf)
   --   tags[<tag>]                    = { action = "remove_target", target = [...] }
   --   remove_target_from_all_rules   = [target1, target2, …]  → drop globally for this request
   --   engine_off                     = bool                   → ctl:ruleEngine=Off; skips all subsequent rules
+  --   detection_only                 = bool                   → ctl:ruleEngine=DetectionOnly; rules still
+  --                                                             match and log, terminal actions suppressed
+  --   removed_tags[<tag>]            = true                   → ctl:ruleRemoveByTag; drop every rule
+  --                                                             carrying <tag> for this request
+  --   body_access_off                = bool                   → ctl:requestBodyAccess=Off; the request body
+  --                                                             is not inspected for the rest of the request
+  --   _has_removed_tags              = bool                   → gate for the per-rule tag walk (perf)
+  --   _has_tag_targets               = bool                   → gate for the per-rule tag-target walk (perf)
+  --
+  -- The always-on validation gates (method / path / headers / content-type /
+  -- body-parser / arg-count) run BEFORE this store exists, so no rule control —
+  -- engine_off, detection_only or body_access_off — can switch them off. To
+  -- loosen those, use the schema knobs.
   kong.ctx.plugin.rule_controls = {
     ids = {},
     ids_targets = {},
     tags = {},
+    removed_tags = {},
     remove_target_from_all_rules = {},
     engine_off = false,
+    detection_only = false,
+    body_access_off = false,
   }
 
   -- get the CRS rule pack (loaded from disk at init_worker)
@@ -1114,7 +1058,9 @@ function plugin:log(plugin_conf)
 
       if plugin_conf.auditlog_modsec then
         json_log["transaction"]["producer"] = {}
-        if plugin_conf.engine_blocking_mode then
+        -- ctl:ruleEngine=DetectionOnly reports as DetectionOnly here too, which
+        -- is exactly the ModSecurity label this field mirrors.
+        if rule_blocking_enabled(plugin_conf) then
           json_log["transaction"]["producer"]["secrules_engine"] = "Enabled"
         else
           json_log["transaction"]["producer"]["secrules_engine"] = "DetectionOnly"

@@ -652,16 +652,24 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             -- - rate_limited: rule had rate_limit and the Redis counter
             --   exceeded the configured limit (returned 429)
             -- - block: blocking mode + fixed_response → 403 returned
-            -- - detect: monitoring mode + fixed_response → 200 logged
+            -- - detect: monitoring mode (or ctl:ruleEngine=DetectionOnly) +
+            --   fixed_response → 200 logged
             -- - log: rule fired without a response action (pass / setvar
             --   / under-threshold rate_limit increment)
+            --
+            -- `rate_limited` is set by the handler only when the counter went
+            -- over; under DetectionOnly the 429 is suppressed but the counter
+            -- still tripped, so the label stays truthful about what the rule saw.
+            local detection_only = (kong.ctx.plugin
+                                    and kong.ctx.plugin.rule_controls
+                                    and kong.ctx.plugin.rule_controls.detection_only) == true
             local action_label = "log"
             if matched.sanitized then
                 action_label = "sanitized"
             elseif matched.rate_limited then
                 action_label = "rate_limited"
             elseif rule.action and rule.action.fixed_response then
-                if plugin_conf.engine_blocking_mode then
+                if plugin_conf.engine_blocking_mode and not detection_only then
                     action_label = "block"
                 else
                     action_label = "detect"
@@ -760,7 +768,13 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             name = "karna",
             version = ka_version.version,
             commit = ka_version.commit,
-            mode = plugin_conf.engine_blocking_mode and "blocking" or "detection",
+            -- A rule that fired ctl:ruleEngine=DetectionOnly turns this request
+            -- into a detection-only one regardless of the service setting, so
+            -- report what actually applied.
+            mode = (plugin_conf.engine_blocking_mode
+                    and not (kong.ctx.plugin and kong.ctx.plugin.rule_controls
+                             and kong.ctx.plugin.rule_controls.detection_only))
+                   and "blocking" or "detection",
             paranoia_level = tonumber(plugin_conf.paranoia_level) or 1
         },
         matches = matches,
