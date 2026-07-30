@@ -1498,6 +1498,37 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                         return true, rule, matches, nil
                     end
 
+                    -- `log_only`: record this non-terminal match so it reaches the
+                    -- audit log as a real entry in `matches[]` (v2) /
+                    -- `messages[]` (v1), with its id, message, tags, severity and
+                    -- matched parts — the ModSecurity `pass,log` shape. Because
+                    -- `loggable_matches` is then non-empty, the rule also SATISFIES
+                    -- `auditlog_only_on_match`, so a detection-only rule no longer
+                    -- needs the whole service to log every request to be visible.
+                    -- `ka_utils.get_auditlog_v2` labels it `action: "log"` — the
+                    -- branch it always had for "rule fired without a response
+                    -- action" and could never reach.
+                    --
+                    -- Opt-in on purpose. Collecting EVERY non-terminal match would
+                    -- pull in the CRS `pass` helper rules (setvar counters, ctl
+                    -- gates, chain scaffolding), and those cannot be filtered out
+                    -- by `log` because `load_rules` sets `rule.log = true` on the
+                    -- whole CRS pack. One flag per rule keeps the audit log the
+                    -- operator's decision.
+                    --
+                    -- Note: `rule_action_overrides` are applied in
+                    -- handler.lua:evaluate_rules on the rule it gets back from
+                    -- here, so they do not reach a `log_only` match. Promoting one
+                    -- to blocking means editing the rule.
+                    if action.log_only == true and kong.ctx.plugin
+                       and kong.ctx.plugin.ka_matched_rules then
+                        table_insert(kong.ctx.plugin.ka_matched_rules, {
+                            rule      = rule,
+                            part      = matches,
+                            sanitized = false,
+                        })
+                    end
+
                     -- non-terminal pass: apply rule_control inline so
                     -- multiple helper rules can contribute to
                     -- kong.ctx.plugin.rule_controls in one pass
