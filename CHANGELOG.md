@@ -7,6 +7,29 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Client IP is now a rule variable. `request.remote_addr` is the address on the
+  transport — the ModSecurity `REMOTE_ADDR` equivalent, and the same value the
+  `%{remote_addr}` macro already resolved. `request.forwarded_addr` is Kong's
+  forwarded view: `X-Forwarded-For` walked back through Kong's `trusted_ips`,
+  falling back to the peer when the header is absent or the peer is not trusted —
+  the one an IP allow/deny list needs behind a CDN or load balancer. Both work
+  with `ipMatch` and in `%{}` macros (`set_log_fields`, `set_variable`, Redis
+  keys). `REMOTE_ADDR` was mapped in the SecLang parser but had no resolver
+  behind it, so every rule targeting the client IP silently never matched.
+
+### Changed
+
+- CRS 905100 and 905110 (the Apache "common exceptions" — SSL pinger and internal
+  dummy connection) are now removed by `coreruleset_fix.lua`. Both chain
+  `REMOTE_ADDR @ipMatch 127.0.0.1,::1` with `ctl:ruleRemoveByTag=OWASP_CRS`, i.e.
+  they disable the entire rule set for a loopback-sourced request. They were
+  inert only because Karna resolved neither the variable nor the directive;
+  now that it resolves both, a Karna behind a local reverse proxy would be one
+  upstream change away from a ruleset-wide kill switch. Karna does not front
+  Apache, so the exceptions are dropped rather than left armed.
+
 ## [1.4.4] - 2026-07-29
 
 ### Added

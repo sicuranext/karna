@@ -209,6 +209,22 @@ _M.global_fps = {
         log = false,
         conditions = {},
         unconditional_match_rule_control = {
+            -- Apache-only "common exceptions" that turn the WHOLE CRS off for a
+            -- request coming from 127.0.0.1 / ::1 (both chain on
+            -- `REMOTE_ADDR @ipMatch 127.0.0.1,::1` +
+            -- `ctl:ruleRemoveByTag=OWASP_CRS`):
+            --   905100 Apache SSL pinger        — cond1 is `REQUEST_LINE @streq "GET /"`,
+            --                                     i.e. an HTTP/0.9-style line
+            --   905110 Apache internal dummy connection — needs a User-Agent ending
+            --                                     in "(internal dummy connection)"
+            -- Neither shape can be produced through nginx, so they were already
+            -- inert — but Karna now resolves REMOTE_ADDR and honours
+            -- ctl:ruleRemoveByTag, so they are one upstream-proxy change away from
+            -- disabling the entire rule set for every loopback-sourced request.
+            -- Karna does not front Apache. Remove them rather than leave a
+            -- ruleset-wide kill switch armed behind a spoofable-looking predicate.
+            { remove_rule = { rule_id = "905100" } }, -- Apache SSL pinger exception
+            { remove_rule = { rule_id = "905110" } }, -- Apache internal dummy connection
             -- protocol well-formedness (nginx/Kong already enforce)
             { remove_rule = { rule_id = "920100" } }, -- Invalid HTTP Request Line
             { remove_rule = { rule_id = "920160" } }, -- Content-Length not numeric
