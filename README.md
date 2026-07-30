@@ -1243,6 +1243,60 @@ endpoint from paying for a full scan of megabytes that will never match anything
 }
 ```
 
+## Detection-only rules (`log_only`)
+
+`set_log_fields` adds fields to a log entry that something else caused to be
+written. When the rule itself is the whole point — "notice this and record it,
+don't touch the request" — add `log_only`:
+
+```json
+{
+    "id": "3900",
+    "phase": "header_filter",
+    "message": "Upstream flagged this response",
+    "tags": ["observability"],
+    "log": true,
+    "conditions": [
+        { "op": "rx", "value": "^deny,", "variables": ["response.header.value:x-app-verdict"] }
+    ],
+    "action": {
+        "log_only": true,
+        "set_log_fields": [
+            { "name": "app_verdict", "value": "%{response.header.value:x-app-verdict}" }
+        ]
+    }
+}
+```
+
+This is the ModSecurity `pass,log` shape. The rule matches, runs its side
+effects, does **not** block, and lands in the audit log as a real match — with its
+id, message, tags and matched value — labelled `action: "log"`. It works in both
+log formats (`matches[]` in v2, `messages[]` in v1) and in every phase, `access`
+and `header_filter` alike.
+
+Two things follow from it being a real match:
+
+- It **satisfies `auditlog_only_on_match`**. Without `log_only` a non-terminal
+  rule is invisible under that setting: the match fires but nothing gets written,
+  so the only way to see it was to log every request.
+- Several `log_only` rules can fire on one request and all of them are recorded —
+  nothing stops the rule loop. v2 keeps them all in `matches[]`; v1 is
+  last-match-wins by design.
+
+`log_only` is opt-in rather than the default for non-terminal rules on purpose:
+the CRS is full of `pass`-action helper rules (setvar counters, `ctl:` gates,
+chain scaffolding) that would otherwise flood the audit log, and they cannot be
+filtered out by `log` because every CRS rule carries `log = true`.
+
+`log` and `log_only` are independent knobs: `log_only` decides whether the match
+is **collected**, `log` whether it is **written**. `log_only: true` with
+`log: false` collects nothing useful — the pair is contradictory, and `log: false`
+wins.
+
+One limitation: `rule_action_overrides` are applied to the rule the engine hands
+back after a terminal match, so they do not reach a `log_only` rule. Promoting one
+to blocking means editing the rule.
+
 ## Request enrichment
 
 When a sibling plugin (geoip resolver, ASN matcher, fingerprint module,

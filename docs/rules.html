@@ -267,6 +267,7 @@
           <tr><td class="name"><code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code></td><td>Write cluster-wide state on a match: set a key (with optional TTL), add a member to a set, or delete a key. The auto-ban primitive.</td></tr>
           <tr><td class="name"><code>set_variable</code></td><td>Write a value into <code>kong.ctx.shared</code> or <code>kong.ctx.plugin</code> for sibling plugins / later phases.</td></tr>
           <tr><td class="name"><code>set_log_fields</code></td><td>Add custom fields to the audit log entry.</td></tr>
+          <tr><td class="name"><code>log_only</code></td><td><code>true</code> — record this non-terminal match in the audit log as a real match (the ModSecurity <code>pass,log</code> shape). Nothing is blocked or rewritten. See <a class="link" href="#a-logonly">log_only</a>.</td></tr>
         </tbody>
       </table>
 
@@ -345,6 +346,20 @@
   ]
 }</pre></div>
       </div>
+
+      <h3 id="a-logonly">log_only</h3>
+      <p>A rule whose job is to notice something and record it, without touching the request. The ModSecurity <code>pass,log</code> shape. The match lands in the audit log as a real entry &mdash; id, message, tags, matched value &mdash; labelled <code>action: "log"</code>, in both formats (<code>matches[]</code> in v2, <code>messages[]</code> in v1) and in both the <code>access</code> and <code>header_filter</code> phases.</p>
+      <div class="code-card">
+        <div class="code-head"><span>action</span><span class="lang">json</span></div>
+        <div class="code-body"><pre><span class="prm">"action"</span>: {
+  <span class="prm">"log_only"</span>: <span class="kw">true</span>,
+  <span class="prm">"set_log_fields"</span>: [
+    { <span class="prm">"name"</span>: <span class="str">"app_verdict"</span>, <span class="prm">"value"</span>: <span class="str">"%{response.header.value:x-app-verdict}"</span> }
+  ]
+}</pre></div>
+      </div>
+      <p>Because the match is real, it <strong>satisfies <code>auditlog_only_on_match</code></strong>. Without <code>log_only</code> a non-terminal rule is invisible under that setting: it fires, but nothing is written, so the only way to see it was to log every request. Several <code>log_only</code> rules can fire on one request and all are recorded &mdash; nothing stops the rule loop.</p>
+      <div class="note"><span class="lbl">Why opt-in</span>Collecting every non-terminal match would pull in the CRS <code>pass</code> helper rules (setvar counters, <code>ctl:</code> gates, chain scaffolding), and those cannot be filtered out by <code>log</code> because every CRS rule carries <code>log = true</code>. One flag per rule keeps the audit log the operator's decision. Note also that <code>log_only</code> decides whether the match is <em>collected</em> and <code>log</code> whether it is <em>written</em> &mdash; <code>log: false</code> still suppresses it &mdash; and that <code>rule_action_overrides</code> do not reach a <code>log_only</code> rule, so promoting one to blocking means editing the rule.</div>
     </section>
 
     <section id="redis-inspect">
