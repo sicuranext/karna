@@ -28,6 +28,10 @@ local string_sub  = string.sub
 -- ============================================================
 -- SUT — copy from ka_engine.lua:remove_ctl_target
 -- ============================================================
+local function escape_lua_pattern(s)
+    return (string.gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
 local function remove_ctl_target(values, target, variable)
     if not values or type(target) ~= "string" then return end
     if values[target] ~= nil then values[target] = nil end
@@ -40,8 +44,9 @@ local function remove_ctl_target(values, target, variable)
     local vcolon = string_find(variable, ":", 1, true)
     local var_ns = vcolon and string_sub(variable, 1, vcolon - 1) or variable
     if t_ns ~= var_ns then return end
+    local t_esc = escape_lua_pattern(t_name)
     for k in pairs(values) do
-        if string_find(k, "%." .. t_name .. "$") or string_find(k, ":" .. t_name .. "$") then
+        if string_find(k, "%." .. t_esc .. "$") or string_find(k, ":" .. t_esc .. "$") then
             values[k] = nil
         end
     end
@@ -111,6 +116,33 @@ remove_ctl_target(v, "request.arg.value:pwd", "request.arg.value")
 ok(has(v, "request.body.urlencode.value:password"), "password NOT removed")
 ok(has(v, "request.body.urlencode.value:mypwd"),    "mypwd NOT removed")
 ok(not has(v, "request.body.urlencode.value:pwd"),  "pwd removed")
+
+-- ============================================================
+-- names carrying Lua pattern metacharacters
+--
+-- The target name is spliced into a suffix pattern, so it has to be escaped.
+-- Unescaped, `g-recaptcha-response` reads as "g, zero or more -"… and removed
+-- NOTHING, while a name like `wc-ajax` removed the wrong field (`wcajax`).
+-- Application parameter names are not ours to choose, so escaping is the fix.
+-- ============================================================
+print("- names with pattern metacharacters")
+v = { ["request.query.value:g-recaptcha-response"] = "token",
+      ["request.query.value:grecaptcharesponse"]   = "decoy" }
+remove_ctl_target(v, "request.arg.value:g-recaptcha-response", "request.arg.value")
+ok(not has(v, "request.query.value:g-recaptcha-response"), "hyphenated name removed")
+ok(has(v, "request.query.value:grecaptcharesponse"),       "hyphen-free sibling NOT removed")
+
+v = { ["request.body.urlencode.value:data[wp_autosave]"] = "blob",
+      ["request.body.urlencode.value:dataXwp_autosaveY"] = "decoy" }
+remove_ctl_target(v, "request.arg.value:data[wp_autosave]", "request.arg.value")
+ok(not has(v, "request.body.urlencode.value:data[wp_autosave]"), "bracketed name removed")
+ok(has(v, "request.body.urlencode.value:dataXwp_autosaveY"),     "character-class decoy NOT removed")
+
+v = { ["request.body.json.value:payer.name.surname"] = "Rossi",
+      ["request.body.json.value:payerXnameXsurname"] = "decoy" }
+remove_ctl_target(v, "request.arg.value:payer.name.surname", "request.arg.value")
+ok(not has(v, "request.body.json.value:payer.name.surname"), "dotted name removed")
+ok(has(v, "request.body.json.value:payerXnameXsurname"),     "any-char decoy NOT removed")
 
 -- ============================================================
 -- degenerate inputs don't crash

@@ -18,6 +18,14 @@
 
 local _M = {}
 
+-- Escape Lua pattern magic characters in a field NAME before splicing it into a
+-- suffix pattern. Mirrors escape_lua_pattern in ka_engine.lua, where the full
+-- rationale lives: without it a hyphenated argument name (`wc-ajax`) resolves
+-- the wrong argument, because `c-` is a Lua quantifier.
+local function escape_lua_pattern(s)
+    return (string.gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
 -- Stage 1 source template, compiled once at module load time. Each
 -- rule instantiates this chunk by calling _stage1_chunk(rule); the
 -- chunk's vararg becomes the closure's captured upvalue.
@@ -266,6 +274,7 @@ function _M.compile_variable_resolver(variable)
     if string.find(variable, "^request%.arg%.value%:") then
         local arg_name = string.match(variable, "^request%.arg%.value%:(.*)")
         if arg_name == nil then return nil end
+        arg_name = escape_lua_pattern(arg_name)
         local suffix1 = "%." .. arg_name .. "$"
         local suffix2 = ":" .. arg_name .. "$"
         return function(engine, rule)
@@ -315,7 +324,7 @@ function _M.compile_variable_resolver(variable)
         end
     end
     if string.find(variable, "^request%.query%.value%:") then
-        local arg_name = string.match(variable, "^request%.query%.value%:(.*)")
+        local arg_name = escape_lua_pattern(string.match(variable, "^request%.query%.value%:(.*)"))
         local suffix = ":" .. arg_name .. "$"
         return function(engine, rule)
             local qvals = engine.__get_values_request_query_value(false)

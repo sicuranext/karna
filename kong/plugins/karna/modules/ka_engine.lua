@@ -66,6 +66,25 @@ local string_len                        = string.len
 local string_find                       = string.find
 local string_sub                        = string.sub
 
+-- Escape Lua pattern magic characters in a field NAME before it is spliced
+-- into a suffix pattern.
+--
+-- Argument and target names come from rules and from the application's own
+-- parameters, so they routinely contain characters that mean something in a Lua
+-- pattern. A hyphen is the dangerous one: in `wc-ajax` the `c-` is read as
+-- "zero or more c", so the pattern `:wc-ajax$` does NOT match the key
+-- `…:wc-ajax` and DOES match `…:wcajax` — the selector silently resolved the
+-- wrong argument, and a `ctl:ruleRemoveTargetById=…;ARGS:g-recaptcha-response`
+-- exclusion silently removed nothing. `[` `]` did the same for the
+-- `data[wp_autosave][excerpt]` style of WordPress parameter, and `.` matched any
+-- character instead of a literal dot (harmless but wider than declared).
+--
+-- Every place that builds `":" .. name .. "$"` must escape first. Mirrored in
+-- ka_compile.lua for the compiled resolvers.
+local function escape_lua_pattern(s)
+    return (string_gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
 -- Remove a ctl exclusion target from a resolved `values` map.
 --
 -- Historically this was an exact key lookup (`values[target] = nil`),
@@ -110,8 +129,9 @@ local function remove_ctl_target(values, target, variable)
 
     -- suffix match, identical to the rule-side ARGS expansion, so exclusion
     -- and rule look at EXACTLY the same keys (no bypass, no over-removal).
+    local t_esc = escape_lua_pattern(t_name)
     for k in pairs(values) do
-        if string_find(k, "%." .. t_name .. "$") or string_find(k, ":" .. t_name .. "$") then
+        if string_find(k, "%." .. t_esc .. "$") or string_find(k, ":" .. t_esc .. "$") then
             values[k] = nil
         end
     end
@@ -2667,7 +2687,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     end
                     err = all_err
                 elseif string_find(variable, "^request%.arg%.value%:") then
-                    local arg_name = string_match(variable, "^request%.arg%.value%:(.*)")
+                    local arg_name = escape_lua_pattern(string_match(variable, "^request%.arg%.value%:(.*)"))
                     local all_values, all_err = self:__get_values_request_args(false, rule.rule_control)
                     if all_values then
                         values = {}
@@ -2713,7 +2733,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         if next(values) == nil then values = nil end
                     end
                 elseif string_find(variable, "^request%.query%.value%:") then
-                    local arg_name = string_match(variable, "^request%.query%.value%:(.*)")
+                    local arg_name = escape_lua_pattern(string_match(variable, "^request%.query%.value%:(.*)"))
                     local qvals = _M.__get_values_request_query_value(false)
                     if qvals then
                         values = {}

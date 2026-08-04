@@ -95,6 +95,19 @@ local engine = {
     __get_values_forwarded_addr = function()
         return { ["request.forwarded_addr"] = kong.client.get_forwarded_ip() }, nil
     end,
+    -- Flattened ARGS as the body parser emits them: source-prefixed keys, one
+    -- per field. The names deliberately carry Lua pattern metacharacters, each
+    -- paired with a decoy whose name is what the unescaped pattern would match.
+    __get_values_request_args = function()
+        return {
+            ["request.query.value:wc-ajax"]                    = "checkout",
+            ["request.query.value:wcajax"]                     = "decoy-hyphen",
+            ["request.body.urlencode.value:data[wp_autosave]"] = "blob",
+            ["request.body.urlencode.value:dataXwp_autosaveY"] = "decoy-bracket",
+            ["request.body.json.value:payer.name.surname"]     = "Rossi",
+            ["request.body.json.value:payerXnameXsurname"]     = "decoy-dot",
+        }, nil
+    end,
 }
 
 local failures = 0
@@ -162,6 +175,45 @@ check("request.forwarded_addr resolves Kong's forwarded client",
 check("remote_addr and forwarded_addr stay distinct",
       resolve("request.remote_addr")["request.remote_addr"]
         ~= resolve("request.forwarded_addr")["request.forwarded_addr"])
+
+-- ---------------------------------------------------------------------------
+print("")
+print("argument selector, names with Lua pattern metacharacters:")
+-- ---------------------------------------------------------------------------
+
+-- The selector name is spliced into a suffix pattern, so it has to be escaped
+-- first. Unescaped, `wc-ajax` reads as "w, zero or more c, ajax": the selector
+-- missed the argument it named AND resolved one it did not
+-- (`?wcajax=` matched `request.arg.value:wc-ajax`). Same class of bug on the
+-- removal side, where a `ctl:...;ARGS:g-recaptcha-response` exclusion removed
+-- nothing. Application parameter names are not ours to choose — wc-ajax,
+-- g-recaptcha-response and data[wp_autosave] are all real — so escaping is the
+-- only fix.
+local function keys_of(t)
+    local out = {}
+    for k in pairs(t or {}) do out[#out + 1] = k end
+    table.sort(out)
+    return table.concat(out, ",")
+end
+
+values = resolve("request.arg.value:wc-ajax")
+check("hyphenated name resolves the argument it names",
+      keys_of(values) == "request.query.value:wc-ajax", keys_of(values))
+
+values = resolve("request.arg.value:wcajax")
+check("...and does not steal the hyphen-free sibling",
+      keys_of(values) == "request.query.value:wcajax", keys_of(values))
+
+values = resolve("request.arg.value:data[wp_autosave]")
+check("bracketed name matches literally, not as a character class",
+      keys_of(values) == "request.body.urlencode.value:data[wp_autosave]", keys_of(values))
+
+values = resolve("request.arg.value:payer.name.surname")
+check("dotted name matches a literal dot, not any character",
+      keys_of(values) == "request.body.json.value:payer.name.surname", keys_of(values))
+
+values = resolve("request.arg.value:nosuchargument")
+check("a name that matches nothing resolves to nothing", keys_of(values) == "", keys_of(values))
 
 -- ---------------------------------------------------------------------------
 print("")
