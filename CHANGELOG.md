@@ -9,6 +9,24 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- Argument names are now escaped before being spliced into the suffix pattern
+  that resolves and removes them. The name went in verbatim, so any Lua pattern
+  metacharacter changed its meaning — and the hyphen is the common case: in
+  `wc-ajax` the `c-` reads as "zero or more c", so a condition on
+  `request.arg.value:wc-ajax` did **not** match the argument it named and **did**
+  match `wcajax`, while a `ctl:ruleRemoveTargetById=…;ARGS:g-recaptcha-response`
+  exclusion removed nothing. Bracketed WordPress names
+  (`data[wp_autosave][excerpt]`) became a character class and never matched, and a
+  dotted JSON path matched any character instead of a literal dot. Application
+  parameter names are not ours to choose, so every exclusion or rule targeting a
+  hyphenated argument was silently inert, or silently pointed at a different
+  argument. Fixed in all five places that build such a pattern: the
+  `request.arg.value:<name>` and `request.query.value:<name>` resolvers in both
+  the engine and the compiled path, and `remove_ctl_target`. Covered by
+  `ka-unittest/variable_resolution.lua` (real resolvers, with decoys for what the
+  unescaped pattern used to match) and
+  `ka-unittest/wordpress_target_exclusion.lua`. CRS regression unchanged
+  (2757/2757).
 - The compiled resolver for `request.arg.value:<name>` was dead code: its guard
   compared a 19-character slice against the 18-character prefix
   `request.arg.value:`, which can never be equal, so every ARGS-by-name selector
