@@ -7,6 +7,14 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- The compiled resolver for `request.arg.value:<name>` was dead code: its guard
+  compared a 19-character slice against the 18-character prefix
+  `request.arg.value:`, which can never be equal, so every ARGS-by-name selector
+  fell back to the engine's table-walk. It now uses the same anchored pattern test
+  as the engine — identical behaviour, one less per-request table scan.
+
 ## [1.5.0] - 2026-07-30
 
 ### Added

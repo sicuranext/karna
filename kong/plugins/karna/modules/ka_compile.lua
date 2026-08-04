@@ -258,13 +258,13 @@ function _M.compile_variable_resolver(variable)
 
     -- request.arg.value:<name> — single ARGS entry by name. Suffix
     -- patterns precomputed; the closure only iterates and filters.
-    if string.sub(variable, 1, 19) == "request.arg.value:" then
-        local arg_name = string.sub(variable, 19)
-        -- The leading `:` in the substring boundary: variable is
-        -- "request.arg.value:<name>" (no `:` index 19 because string
-        -- indexes are 1-based — `request.arg.value:` is 18 chars).
-        -- Recompute precisely:
-        arg_name = string.match(variable, "^request%.arg%.value%:(.*)")
+    --
+    -- The guard used to be `string.sub(variable, 1, 19) == "request.arg.value:"`,
+    -- which can never be true: that prefix is 18 characters, so a 19-character
+    -- slice never equals it. The branch was dead and every ARGS-by-name selector
+    -- fell back to the engine's table-walk. Same test as the engine uses now.
+    if string.find(variable, "^request%.arg%.value%:") then
+        local arg_name = string.match(variable, "^request%.arg%.value%:(.*)")
         if arg_name == nil then return nil end
         local suffix1 = "%." .. arg_name .. "$"
         local suffix2 = ":" .. arg_name .. "$"
