@@ -7,8 +7,47 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-08-05
+
+### Security
+
+- An audit log record can no longer be made undecodable by the client. Every
+  record is now validated as UTF-8 immediately before it is written, and any byte
+  that is not part of a well-formed sequence is rewritten as the literal text
+  `\xNN`. `cjson` does not validate UTF-8 — it copies bytes `>= 0x80` through
+  untouched and reports no error — so a single bad byte produced a JSON Lines
+  record that every UTF-8-strict consumer (Filebeat, Fluent Bit, Vector,
+  Elasticsearch, a plain `json.loads`, `jq`) silently dropped. The bytes in a
+  record are attacker-controlled, which made this an on-demand audit-trail
+  suppression primitive: `?p=<script>alert(1)</script>%c3%28` was blocked with a
+  403 whose record could not be read, and a request carrying
+  `X-Evil: abc\xc3(def` corrupted its own record with **no rule match at all**.
+  The same corruption occurred without any client intent, because `matched_value`
+  is clipped with a byte-based `string.sub(v, 1, 100)`: a multibyte codepoint
+  straddling byte 100 left an orphan lead byte, so any request whose payload
+  carried an emoji, an accent, a typographic quote or non-Latin text near the cut
+  fell out of the log pipeline. Escaping rather than dropping keeps the record
+  forensically honest — the reader sees which byte arrived, and a clipped value
+  now ends in a visible `\xc3` instead of losing its tail silently. The check
+  runs in `ka_utils.write_auditlog`, inside the `ngx.timer.at()` callback: it is
+  the single choke point every record passes through, it also covers the fields
+  no truncation site touches (request and response headers, the URI, gate
+  `logdata`, `external_matches`), and it costs nothing on the request path.
+  Pure-ASCII records — the vast majority of traffic — leave after one C-level
+  scan with no allocation. Covered by `ka-unittest/auditlog_utf8_sanitize.lua`
+  (overlong forms, UTF-16 surrogate halves, values beyond U+10FFFF, stray
+  continuation bytes, every clip offset inside a 4-byte codepoint, all 256 byte
+  values), asserted against an independent UTF-8 validator. CRS regression
+  unchanged (2757/2757).
+
 ### Fixed
 
+- Removed the dead `gsub("[\r\n]", "")` from the audit log writer. It claimed to
+  strip embedded CR/LF so the record stays one physical line, but it ran on the
+  already-encoded JSON, where `cjson` has escaped every control character (keys
+  included) — so it never matched anything. Code that looks like a safety net and
+  is not one is worse than no net at all; the real invariant is now enforced by
+  the UTF-8 validation above, at the same choke point.
 - Argument names are now escaped before being spliced into the suffix pattern
   that resolves and removes them. The name went in verbatim, so any Lua pattern
   metacharacter changed its meaning — and the hyphen is the common case: in
@@ -703,7 +742,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/sicuranext/karna/compare/v1.5.0...v1.5.1
 [1.1.5]: https://github.com/sicuranext/karna/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/sicuranext/karna/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/sicuranext/karna/compare/v1.1.2...v1.1.3

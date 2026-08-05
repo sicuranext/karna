@@ -12,6 +12,11 @@ local request_get_method            = kong.request.get_method
 local request_get_http_version      = kong.request.get_http_version
 
 local string_match                  = string.match
+local string_byte                   = string.byte
+local string_sub                    = string.sub
+local string_find                   = string.find
+local string_format                 = string.format
+local table_concat                  = table.concat
 
 local ka_version            = require "kong.plugins.karna.version"
 
@@ -788,6 +793,125 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     return json_log
 end
 
+-- Rewrite every byte that is not part of a well-formed UTF-8 sequence as the
+-- literal text \xNN, so an emitted record is always valid UTF-8 and therefore
+-- ingestable by every UTF-8-strict log consumer (Filebeat / Fluent Bit /
+-- Vector / Elasticsearch / a plain `json.loads`). cjson does NOT validate
+-- UTF-8: it copies bytes >= 0x80 through untouched and reports no error, so
+-- without this guard a single bad byte silently produces a line that the
+-- collector drops — i.e. the request looks like it was never logged.
+--
+-- This is a security control, not log cosmetics: the bad byte is
+-- attacker-controlled. `?p=<script>alert(1)</script>%c3%28` is blocked with a
+-- 403 whose audit record is then unreadable, and a benign request carrying
+-- `X-Evil: abc\xc3(def` corrupts its own record with no rule match at all.
+-- Left unfixed, that is an on-demand audit-trail suppression primitive.
+--
+-- Why it runs here, on the already-encoded line, rather than at the ~30
+-- `string.sub(value, 1, 100)` truncation sites in ka_engine:
+--   * those sites run in the access phase, on the request path; this runs in
+--     the ngx.timer.at() callback, after the response has left;
+--   * they only cover matched values. Invalid bytes also reach the record via
+--     request/response headers, the URI, gate logdata and external_matches,
+--     none of which pass through a truncation site.
+-- Post-encode is safe because cjson escapes every control character (keys
+-- included), so the only non-ASCII left sits inside JSON string literals,
+-- where inserting ASCII cannot break the syntax.
+--
+-- Escaping rather than dropping keeps the record forensically honest: the
+-- reader sees exactly which byte arrived. A value cut mid-character by the
+-- 100-byte truncation therefore ends in a visible \xc3 instead of silently
+-- losing its tail.
+_M.sanitize_utf8 = function(s)
+    -- Pure-ASCII records — the vast majority of traffic — leave after a
+    -- single C-level scan, with no Lua loop and no allocation.
+    if not string_find(s, "[\128-\255]") then
+        return s
+    end
+
+    local len = #s
+    local out          -- built lazily: only an actually invalid byte costs us
+    local n   = 0
+    local run = 1      -- first byte of the pending verbatim run
+    local i   = 1
+
+    while i <= len do
+        local c = string_byte(s, i)
+        local seq_len = 0
+
+        if c < 0x80 then
+            seq_len = 1
+        elseif c >= 0xC2 and c <= 0xDF then
+            seq_len = 2
+        elseif c >= 0xE0 and c <= 0xEF then
+            seq_len = 3
+        elseif c >= 0xF0 and c <= 0xF4 then
+            seq_len = 4
+        end
+        -- 0x80-0xBF (stray continuation), 0xC0-0xC1 (overlong two-byte forms)
+        -- and 0xF5-0xFF (beyond U+10FFFF) leave seq_len at 0 == invalid lead.
+
+        local ok = seq_len > 0
+
+        if ok and seq_len > 1 then
+            if i + seq_len - 1 > len then
+                ok = false                      -- sequence runs off the end
+            else
+                for k = 1, seq_len - 1 do
+                    local cc = string_byte(s, i + k)
+                    if cc < 0x80 or cc > 0xBF then
+                        ok = false
+                        break
+                    end
+                end
+
+                if ok then
+                    -- Reject the encodings that are structurally well-formed
+                    -- but still illegal: overlong forms (a decoder that
+                    -- accepts them can be tricked past a byte-level filter),
+                    -- UTF-16 surrogate halves, and anything above U+10FFFF.
+                    local c1 = string_byte(s, i + 1)
+                    if c == 0xE0 and c1 < 0xA0 then
+                        ok = false
+                    elseif c == 0xED and c1 > 0x9F then
+                        ok = false
+                    elseif c == 0xF0 and c1 < 0x90 then
+                        ok = false
+                    elseif c == 0xF4 and c1 > 0x8F then
+                        ok = false
+                    end
+                end
+            end
+        end
+
+        if ok then
+            i = i + seq_len
+        else
+            if not out then out = {} end
+            if i > run then
+                n = n + 1
+                out[n] = string_sub(s, run, i - 1)
+            end
+            -- Two backslashes on the wire so the decoded value reads \xc3.
+            n = n + 1
+            out[n] = string_format("\\\\x%02x", c)
+            i = i + 1
+            run = i
+        end
+    end
+
+    if not out then
+        return s        -- every high byte was well-formed UTF-8
+    end
+
+    if run <= len then
+        n = n + 1
+        out[n] = string_sub(s, run, len)
+    end
+
+    return table_concat(out, "", 1, n)
+end
+
 _M.write_auditlog = function(premature, json_log, auditlog_path, timestamp, worker_id)
     if premature then return end
 
@@ -804,12 +928,16 @@ _M.write_auditlog = function(premature, json_log, auditlog_path, timestamp, work
     kong.log.debug("Karna: writing audit log to file: ", filename)
     local file = io.open(filename, "a")
     if file then
-        -- Strip any embedded CR/LF so the record is a single physical line,
-        -- then terminate it with one trailing newline. This is the JSON Lines
-        -- (NDJSON) convention log collectors expect — Filebeat / Fluent Bit /
-        -- Vector / Promtail split on newline and parse one object per line.
-        local json_log_no_newlines = cjson.encode(json_log):gsub("[\r\n]","")
-        file:write(json_log_no_newlines, "\n")
+        -- One record per physical line, terminated by a single newline: the
+        -- JSON Lines (NDJSON) convention log collectors expect — Filebeat /
+        -- Fluent Bit / Vector / Promtail split on newline and parse one object
+        -- per line. cjson already escapes every CR/LF (and every other control
+        -- character, keys included), so the encoded record can never contain a
+        -- raw newline; what it CAN contain is a byte that is not valid UTF-8,
+        -- which sanitize_utf8 rewrites as text. This is the single choke point
+        -- for both invariants: nothing reaches disk without passing here.
+        local line = _M.sanitize_utf8(cjson.encode(json_log))
+        file:write(line, "\n")
         file:close()
     else
         kong.log.err("Karna: failed to write audit log to file: ", filename)
