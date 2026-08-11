@@ -3250,11 +3250,30 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
             end
 
             if kong.ctx and kong.ctx.plugin then
-                if values and #kong.ctx.plugin.rule_controls.remove_target_from_all_rules > 0 then
+                -- The ctl:* store is created by handler.lua:access, and access has
+                -- early exits that return before it exists — the sibling-cache
+                -- short-circuit, the reserved /.well-known/karna path, the
+                -- profiling trigger, the ignore_from_local_ips skip. `header_filter`
+                -- runs for those requests anyway, so a response-phase rule reached
+                -- this block with `rule_controls` nil and the two sub-blocks below
+                -- indexed a field of it: a hard error inside header_filter, which
+                -- nginx cannot turn into a response because the headers were never
+                -- flushed. The client saw the connection hang and die with no status
+                -- line at all — on exactly one path, which reads like a protocol
+                -- fault rather than a nil field.
+                --
+                -- Bound once and guarded here rather than initialised earlier in
+                -- access: the store is created AFTER the always-on validation gates
+                -- on purpose, so no ctl:* directive can switch them off, and that
+                -- ordering is a security property worth more than the two lines it
+                -- saves here. No store simply means no controls to apply.
+                local _rc = kong.ctx.plugin.rule_controls
+
+                if _rc and values and #_rc.remove_target_from_all_rules > 0 then
                     -- Drop every ctl-excluded target (ruleRemoveTargetByTag on
                     -- the OWASP_CRS tag → applies to all rules). Name-based +
                     -- namespace-gated match (see remove_ctl_target).
-                    for _,remove_target in pairs(kong.ctx.plugin.rule_controls.remove_target_from_all_rules) do
+                    for _,remove_target in pairs(_rc.remove_target_from_all_rules) do
                         remove_ctl_target(values, remove_target, variable)
                     end
                     if next(values) == nil then values = nil end
@@ -3264,9 +3283,9 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- populates rule_controls.ids_targets[<id>] = { target1, target2, ... }
                 -- in handler.lua when a plugin rule fires. Drop those target
                 -- entries from `values` so the current rule never sees them.
-                if values and kong.ctx.plugin.rule_controls.ids_targets
-                   and kong.ctx.plugin.rule_controls.ids_targets[rule.id] then
-                    for _, t in pairs(kong.ctx.plugin.rule_controls.ids_targets[rule.id]) do
+                if _rc and values and _rc.ids_targets
+                   and _rc.ids_targets[rule.id] then
+                    for _, t in pairs(_rc.ids_targets[rule.id]) do
                         remove_ctl_target(values, t, variable)
                     end
                     if next(values) == nil then values = nil end

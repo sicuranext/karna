@@ -166,6 +166,30 @@ note "handler.lua short-circuits GET /.well-known/karna in access BEFORE the rul
 note "loop. It never reaches upstream, but an ACL cannot suppress it either."
 assert "[KNOWN]   B11 /.well-known/karna, no key" 200 "http://$PROXY/.well-known/karna"
 
+say "B12 — an early exit from access must not break the response phase"
+note "access returns before kong.ctx.plugin.rule_controls exists on four paths (the"
+note "sibling-cache short-circuit, this reserved path, the profiling trigger, the"
+note "ignore_from_local_ips skip), yet header_filter runs for those requests. A"
+note "response-phase rule then reached the ctl:* target-removal block and indexed a"
+note "field of a nil store: a hard error inside header_filter, which cannot become a"
+note "response because the headers were never flushed. The client got a hang and a"
+note "dead connection with no status line — only on that one path. Needs a"
+note "header_filter-phase rule to reproduce, which is why a default config missed it."
+B12=$(cat <<'JSON'
+{"id":"b12_hf","phase":"header_filter","message":"response-phase rule",
+ "conditions":[{"variables":["response.status"],"op":"eq","value":"999"}],
+ "action":{"fixed_response":{"status_code":418}}}
+JSON
+)
+configure "{\"coreruleset_enabled\":false,\"rules_request\":$(rules_json "$B12")}"
+assert "[GUARD]   B12a normal request, hf rule present"  200 "http://$PROXY/get"
+assert "[GUARD]   B12b reserved path, hf rule present"   200 "http://$PROXY/.well-known/karna"
+note "Same class, different early exit: with the local-IP skip on, access returns even"
+note "sooner. A request from a local IP must still complete."
+configure '{"ignore_from_local_ips":true}'
+assert "[GUARD]   B12c local-IP skip, hf rule present"   200 "http://$PROXY/get"
+configure '{"ignore_from_local_ips":false}'
+
 # ===========================================================================
 say "C — bypass: negated isSet on a rule carrying rule_control"
 note "THE vector the fix opens. A matching control rule applies its ctl:* side"
