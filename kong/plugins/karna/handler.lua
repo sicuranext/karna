@@ -84,6 +84,22 @@ local load_plugin_dynamic_rules = function(plugin_conf)
   return out
 end
 
+-- The parsed dynamic rules, pre-split into the two evaluator paths and cached
+-- with the parse. Same shape and same reason as the global rules pack:
+-- `controls` (exclusions — only rule_control, no action) go on the multi-match
+-- pass path, `detection` (anything carrying a real action) on the standard
+-- first-terminal-match-wins path.
+--
+-- Before this split, everything here went to the pass path only, which
+-- deliberately ignores `fixed_response` — so an inline `SecRule ... "deny"` in
+-- `custom_secrules` was parsed, matched, and had its terminal action silently
+-- discarded. The rules were already being evaluated on every request; only the
+-- result was thrown away.
+--
+-- Splitting here rather than per request means it is paid once per (worker,
+-- plugin_conf): Kong hands us a new plugin_conf table on every Admin API write,
+-- so the cache key invalidates itself. Mirrors get_local_request_rules, which
+-- precomputes its own per-phase subsets for the same reason.
 local get_plugin_dynamic_rules = function(plugin_conf)
   local key = "plugin_dyn_rules:" .. tostring(plugin_conf)
   local cached = ka_rules:get(key)
@@ -93,8 +109,25 @@ local get_plugin_dynamic_rules = function(plugin_conf)
   -- passed so private_debug source dumps respect the per-service flag.
   -- See ka_compile.compile_rule for the contract.
   ka_compile.compile_rules(parsed, plugin_conf)
-  ka_rules:set(key, parsed)
-  return parsed
+
+  local split = {
+    all = parsed,
+    controls  = { access = {}, header_filter = {} },
+    detection = { access = {}, header_filter = {} },
+  }
+  for _, rule in ipairs(parsed) do
+    local bucket = ka_compile.is_control_only(rule) and split.controls or split.detection
+    local phase_list = bucket[rule.phase]
+    -- A phase this channel never evaluates (body_filter, mcp_event, or a typo
+    -- in `phase:N`) lands nowhere rather than being parked where it would never
+    -- run. seclang maps phase:1/2 to access and phase:3 to header_filter.
+    if phase_list then
+      phase_list[#phase_list + 1] = rule
+    end
+  end
+
+  ka_rules:set(key, split)
+  return split
 end
 
 -- Parse + compile the rules carried inline by `plugin_conf.rules_request`
@@ -845,8 +878,17 @@ function plugin:access(plugin_conf)
   -- — every matching pass-rule contributes its ctl:* side-effects
   -- (the wp-rule-exclusions plugin alone fires multiple rules per
   -- WordPress endpoint, each whitelisting a different ARGS target).
+  --
+  -- Detection rules from the same source (an inline `SecRule ... "deny"`, or a
+  -- CRS plugin rule that blocks rather than excludes) run right after their own
+  -- exclusions, in this same slot. That puts them AHEAD of global, local and CRS
+  -- rules: a rule an operator wrote by hand for this specific service wins over
+  -- the shipped packs, and its ctl:* siblings have already been applied.
   local plugin_dyn_rules = get_plugin_dynamic_rules(plugin_conf)
-  apply_pass_rule_controls(plugin_conf, plugin_dyn_rules, "access")
+  apply_pass_rule_controls(plugin_conf, plugin_dyn_rules.controls.access, "access")
+  if #plugin_dyn_rules.detection.access > 0 then
+    evaluate_rules(plugin_conf, plugin_dyn_rules.detection.access, "access")
+  end
 
   -- Diagnostic dump of the resolved rule_controls. This used to run
   -- unconditionally on every access request (a full inspect-library
@@ -914,7 +956,20 @@ function plugin:header_filter(plugin_conf)
   -- generate global inspection table
   engine:get_inspection_table(plugin_conf)
 
-  -- Global rules first (same precedence and controls-then-detection split as
+  -- CRS exclusion plugins + inline custom_secrules, response phase. seclang maps
+  -- `phase:3` to header_filter, but before the controls/detection split this
+  -- channel was only ever evaluated in access, so such a rule did nothing at
+  -- all. Same order as the access phase: this rule's own exclusions, then its
+  -- detection, then the shipped packs.
+  local plugin_dyn_rules = get_plugin_dynamic_rules(plugin_conf)
+  if #plugin_dyn_rules.controls.header_filter > 0 then
+    apply_pass_rule_controls(plugin_conf, plugin_dyn_rules.controls.header_filter, "header_filter")
+  end
+  if #plugin_dyn_rules.detection.header_filter > 0 then
+    evaluate_rules(plugin_conf, plugin_dyn_rules.detection.header_filter, "header_filter")
+  end
+
+  -- Global rules next (same precedence and controls-then-detection split as
   -- the access phase: see the comment there). Uses the pack snapshot pinned by
   -- :access; requests that skipped access (cache hit) skip here too via the
   -- response_from_cache guard above.

@@ -7,6 +7,50 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- An inline `custom_secrules` rule with a disruptive action never blocked. Rules
+  from that channel (and from the CRS exclusion-plugin `.conf` files) were handed
+  to a single evaluator, the multi-match controls path, which deliberately ignores
+  `fixed_response` because it exists to collect `ctl:*` side effects. So a
+  hand-written `SecRule ... "id:1,phase:1,block"` was parsed, evaluated on every
+  request, matched — and had its terminal action discarded. `schema.lua` described
+  the intended behaviour ("added to the global rule pool"), but nothing wired it
+  up. Nothing was wrong with the parsed rule: `REQUEST_URI` resolves, `phase:1`
+  maps to access, and `__get_action` already emits `fixed_response` for both
+  `block` and `deny` — CRS rules come out of the same parser and do block.
+  - The channel is now pre-split into `controls` and `detection` and both halves
+    are evaluated, reusing the classifier the global rules pack already uses
+    (`rule_control` with no action → controls; anything with a real action →
+    detection, so a rule carrying `rule_control` next to `setvar` / `set_variable`
+    does not lose its side effects). The split is computed once per (worker,
+    plugin_conf) and cached with the parse, so there is no per-request cost —
+    Kong hands out a new `plugin_conf` table on every Admin API write, which
+    invalidates the cache by itself.
+  - Net effect on throughput is neutral to positive: these rules were already
+    being evaluated on every request, just to no purpose. The controls half costs
+    what it did before, and the detection half now runs on the first-terminal-
+    match-wins path, which can exit early where the multi-match path could not.
+  - Detection rules run in the same slot as their own exclusions, ahead of global,
+    local and CRS rules: a rule an operator wrote by hand for one service wins
+    over the shipped packs.
+  - `phase:3` rules from this channel now run. seclang has always mapped `phase:3`
+    to header_filter, but the channel was only ever evaluated in access, so such a
+    rule did nothing at all.
+- A matching `custom_secrules` / CRS-plugin rule now reaches the audit log. The
+  log phase gates each record on `rule.log`, and only the CRS loader set it
+  (`ka_engine.lua:531`) — rules parsed through `seclang.parse_isolated` never went
+  through that loader, so they matched, acted, and left no trace. seclang now reads
+  ModSec's logging flags off the action list: `auditlog` on, `noauditlog` off,
+  `nolog` off, default on, with `noauditlog` tested first because `auditlog` is a
+  substring of it. `nolog,auditlog` — the CRS idiom for "no error log, yes audit
+  log" — logs, since the audit log is the only log Karna has. Flags are matched on
+  comma boundaries so the free text in `msg:'…'` and `logdata:'…'` is not read as
+  a flag.
+- Covered by `ka-unittest/custom_secrules_split.lua` (the classifier truth table
+  both copies must implement, bucketing including author order and dropped phases,
+  and the logging flags). CRS regression 2757/2757, unchanged.
+
 ### Security
 
 - `isSet` with `negated: true` — the documented way to spell "this variable is

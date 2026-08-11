@@ -592,6 +592,24 @@ end
 -- negated isSet (see the note at seclang.lua:847), so CRS, custom_secrules and
 -- the CRS exclusion-plugin files cannot produce this shape. Only hand-written
 -- JSON (rules_request, global rules) can.
+-- Exclusion rules (only `rule_control`, no action) belong on the multi-match
+-- controls path; everything else keeps the standard action dispatch. A rule
+-- carrying `rule_control` NEXT TO a real action stays in detection, because the
+-- controls path deliberately does not run action side effects (set_variable /
+-- set_log_fields / redis_incr_key would be silently lost).
+--
+-- Used by every channel that mixes exclusions and detection in one list: the
+-- global rules pack and the per-plugin dynamic rules (CRS exclusion plugins +
+-- inline `custom_secrules`). One definition so a rule is filed the same way
+-- whichever channel it arrives on.
+function _M.is_control_only(rule)
+    if type(rule.rule_control) ~= "table" then return false end
+    local action = rule.action
+    if action == nil then return true end
+    if type(action) ~= "table" then return false end
+    return next(action) == nil
+end
+
 -- Is this condition the "variable is absent" form? Canonical shape is
 -- `{op = "isSet", negated = true}`; the ModSec-style legacy `{op = "!isSet"}`
 -- is still accepted on input and normalized later in the engine, so both are
