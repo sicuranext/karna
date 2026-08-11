@@ -688,6 +688,27 @@ function plugin:init_worker()
 end
 
 function plugin:access(plugin_conf)
+  -- Per-request scratch context, initialised BEFORE anything can leave this
+  -- function. `access` has four early exits — the cache short-circuit below, the
+  -- self-identification path, the profiling trigger, and the local-IP skip — and
+  -- all of them used to return with `kong.ctx.plugin` still empty while
+  -- `header_filter`, `body_filter` and `log` ran anyway, for this plugin and for
+  -- every other plugin in the chain. Karna's own later phases are nil-guarded, so
+  -- a Karna-only deployment never noticed; a chained one can, and the symptom is
+  -- ugly and hard to trace (no response headers, the stream dies, only on the one
+  -- path that exits early). Initialising first costs four empty tables and makes
+  -- the invariant simple: whatever happens next, the context exists.
+  --
+  -- Deliberately NOT hoisted: `kong.ctx.plugin.rule_controls`, which is created
+  -- after the always-on validation gates precisely so no `ctl:*` directive can
+  -- switch them off. See the comment at its assignment below.
+  kong.ctx.plugin.ka_value_cache = {}
+  kong.ctx.plugin.ka_variable_cache = {}
+  kong.ctx.plugin.ka_matched_rules = {}
+  kong.ctx.plugin.rule_variables = {}
+  -- Variables that can be overwritten by rules
+  kong.ctx.plugin.enable_check_arg_len = true
+
   -- skip access phase if response sent from cache
   if kong.ctx.shared.response_from_cache then
     return
@@ -744,9 +765,7 @@ function plugin:access(plugin_conf)
     end
   end
 
-  -- value cache
-  kong.ctx.plugin.ka_value_cache = {}
-  kong.ctx.plugin.ka_variable_cache = {}
+  -- (ka_value_cache / ka_variable_cache initialised at the top of this function)
 
   -- MCP detection + JSON-RPC envelope parsing. No-op when mcp_enabled=false.
   -- Populates kong.ctx.plugin.mcp consumed later by the variable resolver
@@ -756,11 +775,8 @@ function plugin:access(plugin_conf)
     ka_mcp.parse_request(plugin_conf)
   end
 
-  -- Rule Evaluation (access phase)
-  kong.ctx.plugin.ka_matched_rules = {}
-
-  -- Variables that can be overwritten by rules
-  kong.ctx.plugin.enable_check_arg_len = true
+  -- Rule Evaluation (access phase). ka_matched_rules and enable_check_arg_len
+  -- are initialised at the top of this function.
 
   -- check if method is allowed
   engine:method_allowed(plugin_conf)
@@ -792,8 +808,7 @@ function plugin:access(plugin_conf)
   -- can't pin the worker.
   local ka_arg_limit_exceeded = engine:check_request_arg_count(plugin_conf)
 
-  -- set local variables
-  kong.ctx.plugin.rule_variables = {}
+  -- (rule_variables initialised at the top of this function)
 
   -- set transaction variables (for setvar support + CRS-setup-style
   -- config knobs). Karna users configure via plugin_conf; we mirror the
