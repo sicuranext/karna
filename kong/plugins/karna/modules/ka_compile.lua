@@ -579,6 +579,41 @@ end
 -- per-condition precompiled artifacts (transform chain — stage 2).
 -- Returns (compiled_count, total_count) so callers can log coverage at
 -- init_worker / dynamic-rule load time.
+-- `!isSet` on a rule that also carries `rule_control` is refused at load.
+--
+-- A matching rule applies its ctl:* side effects, so such a rule can switch
+-- detection rules OFF for the request. Keyed on absence, its trigger is the
+-- DEFAULT state of ordinary traffic: a single typo'd or over-broad target
+-- silently disables the WAF for everything, and it looks harmless in testing
+-- because nothing appears to happen. Every other way of writing an exclusion
+-- has to name something the request actually carries.
+--
+-- Refusing at load is safe for the rule packs we ship: seclang never emits a
+-- negated isSet (see the note at seclang.lua:847), so CRS, custom_secrules and
+-- the CRS exclusion-plugin files cannot produce this shape. Only hand-written
+-- JSON (rules_request, global rules) can.
+-- Is this condition the "variable is absent" form? Canonical shape is
+-- `{op = "isSet", negated = true}`; the ModSec-style legacy `{op = "!isSet"}`
+-- is still accepted on input and normalized later in the engine, so both are
+-- recognised here. Lives in ka_compile because ka_engine requires ka_compile
+-- (never the other way round) and both need one definition.
+function _M.is_negated_isset(condition)
+    if type(condition) ~= "table" then return false end
+    local op = condition.op
+    if type(op) ~= "string" then return false end
+    if op == "!isSet" then return true end
+    return op == "isSet" and condition.negated == true
+end
+
+local function refuses_negated_isset_control(rule)
+    if not rule.rule_control then return false end
+    if type(rule.conditions) ~= "table" then return false end
+    for _, condition in ipairs(rule.conditions) do
+        if _M.is_negated_isset(condition) then return true end
+    end
+    return false
+end
+
 function _M.compile_rules(rules, plugin_conf)
     local compiled = 0
     local total = 0
@@ -586,6 +621,15 @@ function _M.compile_rules(rules, plugin_conf)
     for _, rule in pairs(rules) do
         if type(rule) == "table" then
             total = total + 1
+            if refuses_negated_isset_control(rule) then
+                rule._ka_rejected = "negated isSet on a rule carrying rule_control"
+                kong.log.err("karna: refusing rule ", tostring(rule.id),
+                             " — a condition uses isSet with negated:true while the",
+                             " rule carries rule_control. An exclusion keyed on the",
+                             " ABSENCE of a variable fires on ordinary traffic and",
+                             " would disable detection for every request. Key the",
+                             " exclusion on something the request carries instead.")
+            end
             compile_rule_conditions(rule)
             local closure = _M.compile_rule(rule, plugin_conf)
             if closure then

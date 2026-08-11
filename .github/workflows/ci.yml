@@ -65,6 +65,8 @@ jobs:
         run: lua ka-unittest/default_block_response.lua
       - name: Op negation normalization (canonical vs legacy)
         run: lua ka-unittest/op_negation_normalization.lua
+      - name: Negated isSet absence (ctl vs absent, Redis three states, load-time refusal)
+        run: lua ka-unittest/negated_isset_absence.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)
         run: lua ka-unittest/json_in_urlencoded.lua
       - name: Redis inspection read helper (whitelist + connection behavior)
