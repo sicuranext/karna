@@ -67,6 +67,8 @@ jobs:
         run: lua ka-unittest/op_negation_normalization.lua
       - name: Negated isSet absence (ctl vs absent, Redis three states, load-time refusal)
         run: lua ka-unittest/negated_isset_absence.lua
+      - name: custom_secrules controls/detection split (+ nolog/auditlog flags)
+        run: lua ka-unittest/custom_secrules_split.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)
         run: lua ka-unittest/json_in_urlencoded.lua
       - name: Redis inspection read helper (whitelist + connection behavior)

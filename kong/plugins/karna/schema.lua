@@ -178,11 +178,20 @@ local schema = {
           { crs_plugins_enabled = { type = "array", elements = { type = "string" }, default = {} } },
 
           -- Inline SecLang rule strings. Each entry is a single SecRule
-          -- (or chained block) in ModSec syntax. Parsed via seclang at
-          -- init_worker and added to the global rule pool. Use it for
-          -- one-off exclusions or custom detection without dropping a
-          -- .conf file on disk. JSON local rules in `rules_request`
-          -- remain available for the same purpose; the two coexist.
+          -- (or chained block) in ModSec syntax. Use it for one-off
+          -- exclusions or custom detection without dropping a .conf file
+          -- on disk. JSON local rules in `rules_request` remain available
+          -- for the same purpose; the two coexist.
+          --
+          -- Parsed once per (worker, plugin_conf) and pre-split into the two
+          -- evaluator paths, the same way the global rules pack is: a rule
+          -- carrying only `ctl:*` / `setvar:*` goes on the multi-match
+          -- controls path, and a rule with a disruptive action (`block` /
+          -- `deny`) on the standard first-terminal-match-wins path. Both run
+          -- BEFORE global, local and CRS rules, so an inline rule written for
+          -- this specific service wins over the shipped packs and its
+          -- exclusions land in time to affect everything after it.
+          -- `phase:1`/`phase:2` run in access, `phase:3` in header_filter.
           { custom_secrules = { type = "array", elements = { type = "string" }, default = {} } },
 
           -- All custom rules live here regardless of phase; the engine

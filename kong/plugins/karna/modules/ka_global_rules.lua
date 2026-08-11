@@ -360,6 +360,13 @@ end
 -- carrying `rule_control` NEXT TO a real action stays in detection, because
 -- the controls path deliberately does not run action side effects
 -- (set_variable / set_log_fields / redis_incr_key would be silently lost).
+--
+-- Duplicated on purpose: `ka_compile.is_control_only` is the canonical copy and
+-- is what handler.lua uses to split the per-plugin dynamic rules. This module
+-- deliberately requires neither ka_compile nor the engine (both are injected via
+-- init()) so it stays requirable from plain-Lua unit tests, so it carries its
+-- own. The two MUST stay in lockstep — a rule has to be filed the same way
+-- whichever channel it arrives on. Covered by ka-unittest/custom_secrules_split.lua.
 local function is_control_only(rule)
     if type(rule.rule_control) ~= "table" then return false end
     local action = rule.action

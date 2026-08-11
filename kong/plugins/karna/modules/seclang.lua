@@ -617,6 +617,32 @@ function seclang.__get_phase(actions)
     end
 end
 
+-- Does a match on this rule earn an audit-log entry? `handler.lua` gates the
+-- record on `rule.log`, and the CRS loader sets it for every rule it loads
+-- (`ka_engine.lua:531`). Rules arriving through `parse_isolated` — inline
+-- `custom_secrules` and the CRS exclusion-plugin files — never went through that
+-- loader, so they matched, acted, and left no trace.
+--
+-- ModSec spelling: `nolog` suppresses logging, `auditlog` forces the audit log,
+-- and CRS writes `nolog,auditlog` to mean "no error log, yes audit log". Karna
+-- has only the audit log, so `auditlog` wins over `nolog` and the default is on.
+-- Matched on comma boundaries, the same convention `__get_action` uses for
+-- block/deny: the actions string also carries `msg:'…'` and `logdata:'…'`, whose
+-- free text must not be mistaken for a flag. `noauditlog` is tested before
+-- `auditlog` because it contains it.
+function seclang.__get_log(actions)
+    -- Pad with commas so a flag is found the same way at any position, and use a
+    -- plain (non-pattern) find since these flags carry no magic characters.
+    local padded = "," .. (actions or "") .. ","
+    local function has(flag)
+        return string.find(padded, "," .. flag .. ",", 1, true) ~= nil
+    end
+    if has("noauditlog") then return false end
+    if has("auditlog") then return true end
+    if has("nolog") then return false end
+    return true
+end
+
 function seclang.__get_message(actions)
     local msg = actions:match("msg:'([^']+)'")
     if msg then
@@ -874,6 +900,7 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
             action = seclang.__get_action(actions),
             message = seclang.__get_message(actions),
             logdata = seclang.__get_logdata(actions),
+            log = seclang.__get_log(actions),
             paranoia_level = "1"
         }
     end
