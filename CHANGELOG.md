@@ -7,6 +7,27 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- The access phase now initialises its per-request context before anything can
+  leave the function. It has four early exits — the sibling-cache short-circuit,
+  the reserved `/.well-known/karna` self-identification path, the profiling
+  trigger, and the `ignore_from_local_ips` skip — and each returned with
+  `kong.ctx.plugin` still empty, while `header_filter`, `body_filter` and `log`
+  ran anyway, for this plugin and for every other plugin in the chain. Karna's own
+  later phases are nil-guarded, so a Karna-only deployment never noticed. A chained
+  deployment can, and the symptom is both ugly and hard to trace: no response
+  headers at all, the connection dies (`INTERNAL_ERROR` on HTTP/2, a plain reset or
+  a hang on HTTP/1.1), and only ever on the one path that exits early — which reads
+  like a protocol problem rather than a state problem. Every other terminal path (a
+  rule block, the rate-limit 429) already ran well past the initialisation, which
+  is why blocking worked while the identification endpoint did not. Initialising
+  first costs four empty tables and one boolean, and makes the invariant simple:
+  whatever happens next, the context exists. `rule_controls` is deliberately NOT
+  hoisted — it is created after the always-on validation gates precisely so no
+  `ctl:*` directive can switch them off, and that ordering is a security property.
+  CRS regression 2757/2757, unchanged.
+
 ## [1.5.2] - 2026-08-11
 
 ### Fixed
