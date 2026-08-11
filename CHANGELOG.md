@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-11
+
 ### Fixed
 
 - An inline `custom_secrules` rule with a disruptive action never blocked. Rules
@@ -844,7 +846,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/sicuranext/karna/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/sicuranext/karna/compare/v1.5.0...v1.5.1
 [1.1.5]: https://github.com/sicuranext/karna/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/sicuranext/karna/compare/v1.1.3...v1.1.4
