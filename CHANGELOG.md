@@ -9,6 +9,27 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- A response-phase rule no longer crashes `header_filter` on a request whose access
+  phase exited early. `ka_engine`'s `ctl:*` target-removal block guarded
+  `kong.ctx.plugin` but then indexed `kong.ctx.plugin.rule_controls.…`, and that
+  store is created by `access` — which returns before it exists on four paths (the
+  sibling-cache short-circuit, the reserved `/.well-known/karna` path, the profiling
+  trigger, the `ignore_from_local_ips` skip). `header_filter` runs for those requests
+  anyway, so indexing a field of a nil store threw inside `header_filter`, where
+  nginx cannot turn the error into a response because the headers were never
+  flushed: the client got no status line at all, the connection hung for the proxy's
+  read timeout and then died (`INTERNAL_ERROR` on HTTP/2, a reset or a plain hang on
+  HTTP/1.1). Only on the one path that exits early, which reads like a protocol
+  fault rather than a nil field.
+  - Reproducing it needs a `header_filter`-phase rule, which a default configuration
+    does not have — that is why it showed up on a deployment carrying a converted
+    rule pack and not on a plain stack. Now pinned by `B12` in
+    `ka-integration-tests/001_negated_isset_bypass.sh`, which configures a
+    response-phase rule and then checks the reserved path and the local-IP skip.
+  - The store is still created after the always-on validation gates, not hoisted:
+    that ordering is what stops any `ctl:*` directive from switching those gates off.
+    The block now binds it once and treats "no store" as "no controls to apply".
+  - CRS regression 2757/2757, unchanged.
 - The access phase now initialises its per-request context before anything can
   leave the function. It has four early exits — the sibling-cache short-circuit,
   the reserved `/.well-known/karna` self-identification path, the profiling
