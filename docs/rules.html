@@ -221,6 +221,9 @@
 }</pre></div>
       </div>
       <p>Semantics: a negated condition fires when the positive match fails <strong>and</strong> the value is present. A missing variable does not satisfy a negated condition. The one exception is <code>isSet</code> with <code>negated: true</code>, which is the way to spell "variable is absent" and so fires on a missing variable.</p>
+      <p>Three things count as "not absent", so a negated <code>isSet</code> does <strong>not</strong> fire on them: a target removed by a <code>ctl:ruleRemoveTargetById</code> / <code>ruleRemoveTargetByTag</code> exclusion (an excluded target is not a missing variable), an unreadable Redis key, and a Redis read with <code>redis_inspect_enabled</code> off. See <a href="#redis">Redis variables</a> for how <code>redis_on_error</code> resolves the last two.</p>
+      <p>Two things do count as absent, and both block every request when you did not mean them to: a variable name no resolver recognises (a typo &mdash; Karna does not validate variable names), and a <code>response.*</code> variable used by an <code>access</code>-phase rule. Both show up on the first request after deploy.</p>
+      <p>A rule that carries <code>rule_control</code> cannot also use a negated <code>isSet</code>: it is <strong>refused at load</strong> with an error naming the rule id. Such a rule applies its <code>ctl:*</code> side effects when it matches, so it can switch detection rules off &mdash; and keyed on absence it would fire on ordinary traffic, disabling detection for every request. Key the exclusion on something the request actually carries.</p>
       <p>For back-compat the engine still accepts <code>"op": "!rx"</code>, but new rules should use <code>negated</code>.</p>
     </section>
 
@@ -368,7 +371,7 @@
       <table class="doc-table">
         <thead><tr><th class="mono">Operator</th><th class="mono">Redis command</th><th>Meaning</th></tr></thead>
         <tbody>
-          <tr><td class="name"><code>isSet</code></td><td class="mono">EXISTS</td><td>Key exists. <code>negated: true</code> fires on absence (allowlist). The canonical ban / ACL-TTL check.</td></tr>
+          <tr><td class="name"><code>isSet</code></td><td class="mono">EXISTS</td><td>Key exists. <code>negated: true</code> fires on absence (allowlist). The canonical ban / ACL-TTL check. An unreadable Redis is neither present nor absent: the condition then matches only when <code>redis_on_error</code> is <code>fail_closed</code>, whichever way the rule is written, so an allowlist rule does not turn a Redis outage into a total outage. <code>redis_inspect_enabled: false</code> behaves the same as an unreachable Redis.</td></tr>
           <tr><td class="name"><code>eq</code> / <code>rx</code> / <code>contains</code> / <code>beginsWith</code></td><td class="mono">GET</td><td>Read the value, then compare with the operator. An absent key never matches.</td></tr>
           <tr><td class="name"><code>gt</code> / <code>lt</code> / <code>ge</code> / <code>le</code></td><td class="mono">GET</td><td>Read the value and compare numerically (counters / scores stored as strings).</td></tr>
           <tr><td class="name"><code>redis_sismember</code></td><td class="mono">SISMEMBER</td><td><code>value</code> is a member of the set. Negatable.</td></tr>

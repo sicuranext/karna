@@ -1332,7 +1332,8 @@ _M.loop_rule_controls_pass = function(self, plugin_conf, raw_rules, phase)
 
     for _, rule in pairs(raw_rules) do
         if kong.ctx.plugin.rule_controls.engine_off then break end
-        if not (rule._needs_body and not has_body)
+        if not rule._ka_rejected
+           and not (rule._needs_body and not has_body)
            and rule.phase == phase then
             local rule_pl = tonumber(rule.paranoia_level) or 1
             local cfg_pl = tonumber(plugin_conf.paranoia_level) or 1
@@ -1420,6 +1421,10 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
             -- A rule earlier in THIS list may have just flipped engine_off.
             -- One local-field read per rule; mirrors loop_rule_controls_pass.
             if _rc and _rc.engine_off then break end
+            -- Refused at load (see refuses_negated_isset_control in ka_compile).
+            if rule._ka_rejected then
+                goto continue
+            end
             if rule._needs_body and not has_body then
                 goto continue
             end
@@ -2022,6 +2027,11 @@ local function _negate(variable_name, value_to_match_on, positive_match)
     }
 end
 
+-- "Is this the variable-is-absent form?" — needed before the `!op` → `negated`
+-- normalization in __match_rule_conditions runs, by the Redis resolver and the
+-- absence check. Single definition in ka_compile (required above).
+local is_negated_isset = ka_compile.is_negated_isset
+
 _M.__match_op_beginswith_negative = function(variable_name, value_to_match_on, condition_value)
     local m, _ = _M.__match_op_beginswith(variable_name, value_to_match_on, condition_value)
     return _negate(variable_name, value_to_match_on, m)
@@ -2547,6 +2557,11 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
             end
 
             local values, err = nil
+
+            -- Set by the Redis resolver when the shared state could not be read
+            -- (unreachable Redis, or the feature switched off). Distinguishes
+            -- "unknown" from "absent" for `!isSet` — see `resolved_absent` below.
+            local _ka_redis_unknown = false
 
             -- `ka_variable_cache` read — copy-on-read variant. The
             -- previous implementation cached the `values` table by
@@ -3134,8 +3149,34 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         elseif rop == "isSet" then
                             local res, rerr = utils:redis_inspect_read(rconf, "exists", key)
                             if rerr then
-                                -- absent({}) is the no-match shape; fail_closed forces present
-                                values = (rconf.on_error == "fail_closed") and { [variable] = "1" } or {}
+                                -- Three states, not two. Mapping an unreadable
+                                -- Redis onto present/absent was safe while only
+                                -- the positive `isSet` existed (a ban check:
+                                -- fail_closed → pretend the ban is there → deny).
+                                -- It inverts under negation: an allowlist rule
+                                -- (`!isSet` on redis.allow:<ip>) would deny on
+                                -- `skip`/`fail_open` — turning a Redis outage into
+                                -- a total outage — and allow on `fail_closed`,
+                                -- the opposite of both settings. So flag the read
+                                -- as unknown and let the operator decide per
+                                -- `on_error`, in terms of the rule's decision
+                                -- rather than the key's presence.
+                                local negated_form = is_negated_isset(condition)
+                                if rconf.on_error == "fail_closed" then
+                                    -- Make the condition MATCH, whichever way it
+                                    -- is written. The negated form matches on
+                                    -- absence, so hand it absence and let the
+                                    -- absence path stay armed.
+                                    values = negated_form and {} or { [variable] = "1" }
+                                    _ka_redis_unknown = false
+                                else
+                                    -- skip / fail_open: the condition must NOT
+                                    -- match. An empty map already blocks the
+                                    -- positive form; the flag disarms the
+                                    -- absence path for the negated one.
+                                    values = {}
+                                    _ka_redis_unknown = true
+                                end
                             else
                                 values = (res == 1) and { [variable] = "1" } or {}
                             end
@@ -3149,7 +3190,14 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                             end
                         end
                     else
+                        -- Feature switched off: the key was never consulted, so
+                        -- this is "unknown" for the same reason an unreachable
+                        -- Redis is. Folding it into absence would make an
+                        -- allowlist rule deny every request the moment someone
+                        -- flips redis_inspect_enabled off — a config change far
+                        -- away from the rule, with no signal tying the two.
                         values = nil
+                        _ka_redis_unknown = true
                     end
                 end
                 end  -- close `if not _used_resolver` (stage 3)
@@ -3175,6 +3223,31 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
             end
 
             --kong.log.inspect(values)
+
+            -- "The variable resolved to nothing", captured BEFORE the rule-control
+            -- removal block below. That block deletes ctl-excluded keys from
+            -- `values` and then collapses an emptied table to `nil`, so after it
+            -- runs "nothing to match on" is ambiguous: it means either the request
+            -- genuinely carries no such variable, or an exclusion took the target
+            -- away. Only the first is absence.
+            --
+            -- `!isSet` (the documented way to spell "variable is absent", see
+            -- docs/rules.html) is the one operator that has to tell them apart:
+            -- absence must fire it, an exclusion must keep skipping the condition
+            -- exactly as it does for every other operator. Everything reaching
+            -- here with no values — an unrecognised variable name, a response.*
+            -- variable read in the access phase — counts as absence; Karna does
+            -- not validate variable names anywhere and does not start here.
+            --
+            -- Redis is the exception, and it sets this flag itself: an unreachable
+            -- Redis (or `redis_inspect_enabled = false`) is "unknown", not
+            -- "absent", so folding it into absence would turn a Redis outage into
+            -- a total outage and would invert the configured `redis_on_error`.
+            local resolved_absent = (values == nil)
+                                    or (type(values) == "table" and next(values) == nil)
+            if _ka_redis_unknown then
+                resolved_absent = false
+            end
 
             if kong.ctx and kong.ctx.plugin then
                 if values and #kong.ctx.plugin.rule_controls.remove_target_from_all_rules > 0 then
@@ -3227,6 +3300,38 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     end
                 end
                 if values and next(values) == nil then values = nil end
+            end
+
+            -- `!isSet` — the absence match. This is the one operator whose match
+            -- IS "the variable resolved to nothing", so it cannot be evaluated
+            -- inside the per-value loop below: that loop never runs when there
+            -- are no values. Handled here, after the rule-control removal block
+            -- has had its say (an excluded target is not an absent variable) and
+            -- before the value machinery that has nothing to chew on.
+            --
+            -- Counting mirrors the positive path exactly: one increment per
+            -- condition (never per variable — see condition_already_counted), so
+            -- several variables in one condition read as "at least one absent".
+            -- Then `break` moves on to the NEXT condition instead of jumping to
+            -- the end, which is what makes `!isSet` usable as one link of a
+            -- chain; the jump only happens once every condition is satisfied.
+            if resolved_absent and is_negated_isset(condition) then
+                matches[#matches+1] = {
+                    matched_on = table.concat(condition.variables, ","),
+                    matched_value = ""
+                }
+                if private_debug_enabled then
+                    kong.log.debug("----> Rule " .. tostring(rule.id) .. " matched condition "
+                                   .. tostring(i) .. " on ABSENT variable " .. tostring(variable))
+                end
+                if not condition_already_counted then
+                    matched_conditions = matched_conditions + 1
+                    condition_already_counted = true
+                end
+                if matched_conditions == #rule.conditions then
+                    goto all_conditions_matched
+                end
+                break
             end
 
             -- Macro-presence flags, computed ONCE per condition and
@@ -3722,22 +3827,12 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     end
                 end
 
-                if loop_counter == 0 then
-                    if op_base == "isSet" and negated then
-                        matches[#matches+1] = {
-                            matched_on = table.concat(condition.variables, ","),
-                            matched_value = ""
-                        }
-                        if private_debug_enabled then
-                            kong.log.debug("----> Rule " .. tostring(rule.id) .. " matched on condition " .. tostring(i))
-                        end
-                        if not condition_already_counted then
-                            matched_conditions = matched_conditions + 1
-                            condition_already_counted = true
-                        end
-                        goto all_conditions_matched
-                    end
-                end
+                -- (The `!isSet` absence match used to live here, guarded by
+                -- `loop_counter == 0`. It was unreachable: the rule-control block
+                -- collapses an emptied values table to nil, so `values` truthy
+                -- always means at least one value and this loop always ran at
+                -- least once. It also jumped straight to the end of the rule,
+                -- which broke chains. Both are fixed at the absence check above.)
             else
                 if private_debug_enabled then
                     kong.log.debug("No values found for variable " .. tostring(variable) .. " in condition " .. tostring(i) .. " of rule " .. tostring(rule.id))

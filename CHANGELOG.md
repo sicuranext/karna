@@ -7,6 +7,64 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- `isSet` with `negated: true` — the documented way to spell "this variable is
+  absent" — now actually fires on a missing variable. It never could: the
+  rule-control removal block collapses an emptied values table to `nil`, so by
+  the time the operator was dispatched `values` truthy always meant "at least one
+  value", and the branch that handled absence sat behind `loop_counter == 0`,
+  which that collapse had already made unreachable. The operator failed silently
+  and in the unsafe direction: a rule that reads as an access control ("deny
+  unless this API key header is present") matched nothing and allowed everything,
+  while looking armed in the config. The Redis allowlist form documented in
+  `docs/rules.html` (`negated: true` on a `redis.<key>` variable, presented as the
+  canonical ban / ACL-TTL check) was dead for the same reason. A rule of that shape
+  that was inert before will start enforcing after this upgrade.
+  - Absence is now distinguished from three states that are not absence. A target
+    deleted by a `ctl:ruleRemoveTargetById` / `ruleRemoveTargetByTag` exclusion
+    keeps skipping the condition, as it does for every other operator — the flag
+    is captured before the removal block, not after. A `response.*` variable read
+    in the access phase, and a variable name no resolver claims, both read as
+    absent: Karna does not validate variable names anywhere and does not start
+    here, so a typo makes the condition always true and blocks every request,
+    which is visible on the first request after deploy.
+  - Redis is now a third state, "unknown", rather than being folded into
+    present/absent. Mapping an unreadable Redis onto presence was safe while only
+    the positive `isSet` existed (a ban check with `redis_on_error = fail_closed`
+    pretends the ban is there and denies), but it inverts under negation: an
+    allowlist rule would have denied every request on `skip` — the default —
+    turning a Redis outage into a total outage, and allowed every request on
+    `fail_closed`, the opposite of both settings. `redis_on_error` is now honoured
+    in terms of the rule's decision rather than the key's presence, and
+    `redis_inspect_enabled = false` counts as unknown too, so switching the
+    feature off no longer denies everything.
+  - A rule that carries `rule_control` **and** a negated `isSet` condition is now
+    refused at load, with an error naming the rule id. A matching rule applies its
+    `ctl:*` side effects, so it can switch detection rules off for the request;
+    keyed on absence its trigger is the default state of ordinary traffic, meaning
+    one such rule silently disables the WAF for everything. Every other way of
+    writing an exclusion has to name something the request actually carries. Safe
+    for the shipped rule packs: SecLang never emits a negated `isSet`, so CRS,
+    `custom_secrules` and the CRS exclusion-plugin files cannot produce this
+    shape — only hand-written JSON in `rules_request` or a global rules pack can.
+  - Fixed along the way: the absence branch used to jump straight to the end of
+    the rule after counting its condition, so a chained rule with a negated
+    `isSet` link could never reach `matched_conditions == #conditions`. It now
+    moves on to the next condition, and several variables in one condition read as
+    "at least one absent", matching the per-condition counting the positive path
+    uses.
+  - Covered by `ka-unittest/negated_isset_absence.lua` (recognition of both input
+    shapes, absence vs values present, the non-table-value guard, the Redis
+    three-state matrix including an assertion that the old inverted mapping is
+    gone, and the load-time refusal) and by
+    `ka-integration-tests/001_negated_isset_bypass.sh`, an adversarial suite of 39
+    cases run against a live Kong: header-name casing and duplication, token
+    comparison games, paths that skip the rule loop, the `rule_control`
+    activation vector, ModSec parity for every other negated operator on an absent
+    variable, the Redis outage matrix, and the `count:` workaround's limits. CRS
+    regression 2757/2757 (100%), unchanged.
+
 ## [1.5.1] - 2026-08-05
 
 ### Security

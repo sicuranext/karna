@@ -73,6 +73,12 @@ Not implemented (rules skipped with WARN at parse): `@ipMatchFromFile`, `@verify
 Canonical: `"negated": true` (separate boolean, not a `!` prefix). Legacy `"op": "!rx"` still accepted on input; prefer `negated`.
 A negated condition fires when the positive fails AND the value is present. Exception: `isSet` + `negated:true` is how you spell "variable absent" and fires on a missing variable.
 
+`isSet` + `negated:true` specifics:
+- Does NOT fire on: a target removed by a `ctl:ruleRemoveTargetById`/`ByTag` exclusion (excluded is not missing); an unreadable Redis key; a Redis read with `redis_inspect_enabled` off. For the Redis cases the condition matches only under `redis_on_error: fail_closed`, whichever way the rule is written, so an allowlist rule does not turn a Redis outage into a total outage.
+- DOES fire on: a variable name no resolver recognises (typos are not validated, so the rule blocks every request), and a `response.*` variable in an `access`-phase rule. Both are visible on the first request after deploy.
+- Refused at load on a rule that also carries `rule_control`: such a rule applies its `ctl:*` side effects when it matches, and keyed on absence it fires on ordinary traffic, disabling detection for every request. Key the exclusion on something the request carries.
+- Usable as one link of a chain; several variables in one condition mean "at least one absent".
+
 ## Transformations (in `transform`, applied in order; no implicit transforms)
 `lowercase`, `urlDecodeUni`(=`urlDecode`), `hexSequenceDecode`, `htmlEntityDecode`, `jsDecode`, `cssDecode`, `escapeSeqDecode`, `base64Decode`(=`base64decode`), `removeNulls`, `removeWhitespace`, `compressWhitespace`, `replaceComments`, `removeCommentsChar`, `normalisePath`(=`normalizePath`), `normalizePathWin`, `cmdLine`, `utf8toUnicode`, `length` (→ number), `sha1`, `hexEncode`.
 
