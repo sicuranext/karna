@@ -199,9 +199,9 @@ jobs:
             | tee regression.log
           PASS=$(grep -oE 'Passed tests:[[:space:]]+[0-9]+' regression.log \
                   | grep -oE '[0-9]+' | head -1)
-          # Floor = 2500 / 2757. Current HEAD sits at 2509 = 91.0%. The
-          # floor leaves a small margin for harness flakes (which the
-          # suite occasionally has on slower CI runners).
+          # Floor = 2500 out of the 2875 PL1 tests CRS 4.28 ships. HEAD is
+          # clean locally (2875/2875); the floor leaves margin for harness
+          # flakes, which the suite occasionally has on slower CI runners.
           FLOOR=2500
           echo "PL1 pass count: ${PASS}, floor: ${FLOOR}"
           if [ -z "${PASS}" ] || [ "${PASS}" -lt "${FLOOR}" ]; then

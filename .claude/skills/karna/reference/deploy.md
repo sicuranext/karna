@@ -24,7 +24,7 @@ docker compose -f docker/docker-compose.prod.yml up -d --build
 
 The image bakes in `KONG_PLUGINS=bundled,karna` and the PCRE backtracking cap
 `KONG_NGINX_HTTP_LUA_REGEX_MATCH_LIMIT=100000`. Build args (overridable):
-`LIBINJECTION_REF` (default `v3.10.0`), `CRS_VERSION` (default `4.26.0`).
+`LIBINJECTION_REF` (default `v3.10.0`), `CRS_VERSION` (default `4.28.0`).
 
 ## Path B — Install into an existing Kong
 
@@ -46,7 +46,7 @@ cd libinjection/src && gcc -shared -fPIC -O2 -o /usr/local/lib/libinjection.so \
 
 # 4. OWASP CoreRuleSet
 mkdir -p /opt/coreruleset
-curl -fsSL https://github.com/coreruleset/coreruleset/archive/refs/tags/v4.26.0.tar.gz \
+curl -fsSL https://github.com/coreruleset/coreruleset/archive/refs/tags/v4.28.0.tar.gz \
     | tar -xz --strip-components=1 -C /opt/coreruleset
 
 # 5. native scanners (optional — graceful fallback to pure Lua if absent)

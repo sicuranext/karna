@@ -140,7 +140,7 @@ transport. See the `mcp_*` configuration fields below.
 ## OWASP CRS compatibility
 
 Karna ships with full support for loading OWASP CRS 4.x as the
-default rule pack. CRS 4.26.0 is what the regression suite tracks.
+default rule pack. CRS 4.28.0 is what the regression suite tracks.
 
 Karna is **100% compatible** with the OWASP Core Rule Set. On the
 in-scope CRS regression suite (`engine_blocking_mode=true`,
@@ -149,10 +149,10 @@ but a couple of documented residuals at PL3+:
 
 | Paranoia level | Pass rate | Tests (cumulative) |
 |---|---|---|
-| PL1 | 100% | 2757 / 2757 |
-| PL2 | 100% | 4071 / 4071 |
-| PL3 | 99.9% | 4604 / 4608 |
-| PL4 | 99.9% | 4670 / 4674 |
+| PL1 | 100% | 2875 / 2875 |
+| PL2 | 100% | 4286 / 4286 |
+| PL3 | 99.9% | 4869 / 4872 |
+| PL4 | 99.9% | 4936 / 4939 |
 
 PL1 is the recommended production posture, and it's clean in both
 directions: no missed detections and no false positives. Higher levels
@@ -196,15 +196,15 @@ You can verify the numbers locally. The harness lives in
 
 ```sh
 cd crs-regression-test
-./fetch-tests.sh                # PL1 test set (CRS 4.26.0)
+./fetch-tests.sh                # PL1 test set (CRS 4.28.0)
 ./configure-kong.sh             # configure Kong + Karna
 python3 start.py --testfile tests/
-# -> PL1 100% (2757/2757)
+# -> PL1 100% (2875/2875)
 
 CRS_MAX_PL=4 ./fetch-tests.sh   # extend through PL4
 PARANOIA=4 ./configure-kong.sh
 python3 start.py --testfile tests/
-# -> 100% (4674/4674)
+# -> 99.9% (4936/4939)
 ```
 
 `start.py` lists every rule and test Karna treats as removed,
@@ -554,7 +554,7 @@ The path is overridable via the env var `KARNA_LIBINJECTION_SO`
 
 ```sh
 mkdir -p /opt/coreruleset
-curl -fsSL https://github.com/coreruleset/coreruleset/archive/refs/tags/v4.26.0.tar.gz \
+curl -fsSL https://github.com/coreruleset/coreruleset/archive/refs/tags/v4.28.0.tar.gz \
   | tar -xz --strip-components=1 -C /opt/coreruleset
 ```
 

@@ -7,6 +7,23 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- Bundled OWASP CoreRuleSet moves from 4.26.0 to 4.28.0 (`CRS_VERSION` build arg
+  in `docker/Dockerfile`, the default in `scripts/install.sh`, and the version the
+  regression suite fetches). 629 rules, up from 626: `932290` (uninitialized-variable
+  spacer in the RCE evasion prefix, PL3), `934210` and `934220` (ORM lookup operator
+  injection, PL3 / PL2). Nothing was removed.
+  - Two CRS 4.28 security fixes land with it: XML attribute values are now inspected
+    across the attack-detection rules (`XML://@*` goes from 14 rules to 176), and a
+    handful of patterns lose catastrophic backtracking (`933160`, `933161`, `933180`,
+    `941140`, `942522`, the unix-shell evasion prefix). The XML one changes nothing
+    for Karna, which already scanned attribute values under both `XML:/*` and
+    `XML://@*` — the CRS gap it closes was never a Karna gap.
+  - No SecLang parse warning at `init_worker`, so the new rule syntax needs no
+    parser work. Regression re-measured on the baked image: PL1 2875/2875, PL2
+    4286/4286, PL3 4869/4872, PL4 4936/4939.
+
 ### Fixed
 
 - A response-phase rule no longer crashes `header_filter` on a request whose access

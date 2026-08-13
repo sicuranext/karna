@@ -25,8 +25,8 @@ reports how many tests pass / fail / are skipped. Use it to:
 ## Paranoia level
 
 By default `fetch-tests.sh` filters tests to rules tagged
-`paranoia-level/1`. CRS 4.26 ships **626 rules** spread across four
-levels (PL1: 498 — PL2: 89 — PL3: 30 — PL4: 9), and the official
+`paranoia-level/1`. CRS 4.28 ships **629 rules** spread across four
+levels (PL1: 498 — PL2: 90 — PL3: 32 — PL4: 9), and the official
 test suite carries cases for all four.
 
 - `CRS_MAX_PL=1` (default) — PL1 only. The recommended bench for the

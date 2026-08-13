@@ -10,20 +10,20 @@
 # anyway. The filter is `CRS_MAX_PL=0` to disable (= keep everything).
 #
 # The version must match the CRS version baked into docker/kong/Dockerfile
-# (CRS_VERSION arg). At the time of writing that's 4.26.0.
+# (CRS_VERSION arg). At the time of writing that's 4.28.0.
 #
 # Usage:
-#   ./fetch-tests.sh                       # default: CRS 4.26.0, only PL1 tests
+#   ./fetch-tests.sh                       # default: CRS 4.28.0, only PL1 tests
 #   CRS_MAX_PL=2 ./fetch-tests.sh          # keep PL1+PL2 tests
 #   CRS_MAX_PL=0 ./fetch-tests.sh          # keep everything (no filter)
-#   CRS_VERSION=4.27.0 ./fetch-tests.sh    # different CRS version
+#   CRS_VERSION=4.29.0 ./fetch-tests.sh    # different CRS version
 
 set -euo pipefail
 
-CRS_VERSION="${CRS_VERSION:-4.26.0}"
-# sha256 of the v4.26.0 source tarball. If you bump CRS_VERSION, set CRS_SHA256
+CRS_VERSION="${CRS_VERSION:-4.28.0}"
+# sha256 of the v4.28.0 source tarball. If you bump CRS_VERSION, set CRS_SHA256
 # to the new tarball's hash (the assert below fails closed on a mismatch).
-CRS_SHA256="${CRS_SHA256:-d923e991e671d2665cd73758b8dc3df6c3b0a9df96d798e98f088d5a81a76dc0}"
+CRS_SHA256="${CRS_SHA256:-d8acc96f25ad07c8e3a595a23c797324f6d77e59ddf9e26e90dd95ebd2e676ce}"
 CRS_MAX_PL="${CRS_MAX_PL:-1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="${SCRIPT_DIR}/tests"

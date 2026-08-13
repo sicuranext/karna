@@ -108,7 +108,7 @@ docker compose -f docker/docker-compose.dev.yml down -v    # also wipe Postgres 
 The image bakes in:
 
 - **libinjection** — `client9/libinjection` tag `v3.10.0`
-- **OWASP CoreRuleSet** — `v4.26.0`
+- **OWASP CoreRuleSet** — `v4.28.0`
 
 Both are overridable at build time:
 

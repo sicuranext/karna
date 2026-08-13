@@ -14,7 +14,7 @@
 #   sudo ./scripts/install.sh
 #
 # Override defaults with env vars:
-#   CRS_VERSION=4.26.0  CRS_PATH=/opt/coreruleset  LIBINJECTION_REF=v3.10.0
+#   CRS_VERSION=4.28.0  CRS_PATH=/opt/coreruleset  LIBINJECTION_REF=v3.10.0
 #   LIB_PREFIX=/usr/local/lib
 #
 # Skip pieces you already have:
@@ -25,7 +25,7 @@
 #
 set -euo pipefail
 
-CRS_VERSION="${CRS_VERSION:-4.26.0}"
+CRS_VERSION="${CRS_VERSION:-4.28.0}"
 CRS_PATH="${CRS_PATH:-/opt/coreruleset}"
 LIBINJECTION_REF="${LIBINJECTION_REF:-v3.10.0}"
 LIB_PREFIX="${LIB_PREFIX:-/usr/local/lib}"
