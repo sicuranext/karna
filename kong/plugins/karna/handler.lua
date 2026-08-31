@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.2",
+  VERSION = "1.5.3",
 }
 
 local ngx                 = ngx
@@ -1119,11 +1119,17 @@ function plugin:log(plugin_conf)
       -- v2 format: structured JSON with all matches in a single log entry
       json_log = utils:get_auditlog_v2(loggable_matches, plugin_conf)
     else
-      -- v1 format: legacy format (last matched rule wins)
-      json_log = utils:get_auditlog(nil, nil)
+      -- v1 format: legacy format (last matched rule wins). Sibling-plugin
+      -- entries from kong.ctx.shared.karna.log_entries are appended to
+      -- transaction.messages[] inside get_auditlog, so a request with no rule
+      -- match but a queued external event still produces a document.
+      -- Called once: building the document flattens every request and
+      -- response header, so the old build-then-rebuild cost that twice.
       if #loggable_matches > 0 then
         local last_match = loggable_matches[#loggable_matches]
         json_log = utils:get_auditlog(last_match.rule, last_match.part)
+      else
+        json_log = utils:get_auditlog(nil, nil)
       end
 
       if plugin_conf.auditlog_modsec then

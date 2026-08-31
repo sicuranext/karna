@@ -85,6 +85,8 @@ jobs:
         run: lua ka-unittest/log_only_action.lua
       - name: Audit log UTF-8 sanitisation (attacker cannot make its record undecodable)
         run: lua ka-unittest/auditlog_utf8_sanitize.lua
+      - name: External plugin log entries in audit log v1 (transaction.messages mapping)
+        run: lua ka-unittest/external_log_entries_v1.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
