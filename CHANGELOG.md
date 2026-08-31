@@ -7,6 +7,34 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Sibling-plugin log entries (`kong.ctx.shared.karna.log_entries`) now reach the
+  audit log in the **v1** format too, as extra `transaction.messages[]` elements.
+  Until now they were published only under `external_matches[]` in v2, so a
+  deployment still on `auditlog_format = "v1"` silently lost every event a
+  sibling plugin recorded — including the ones from plugins that terminate the
+  response themselves (an HTML-to-Markdown transformer calling
+  `kong.response.exit()` in the response phase has no other way into the audit
+  trail).
+  - The v1 mapping reuses the message shape Karna already emits for a rule
+    match, so no new key appears anywhere in the document and an existing v1
+    consumer needs no change: `rule_id` → `details.ruleId`, `tags` →
+    `details.tags` (empty array when absent), `source` → `details.data` as
+    `"Source: <source>"` (v1's free-text detail slot, and the marker that the
+    message came from a sibling plugin rather than a rule).
+  - `metadata` is **not** emitted in v1: there is no structured slot for it, and
+    flattening arbitrary sibling-plugin data into a free-text field is how
+    secrets end up in logs. v2 still passes it through unchanged.
+  - Validation, clipping (100 / 100 / 1000 bytes) and the drop-the-malformed
+    rule are the same `build_external_matches` code v2 uses, so the two formats
+    cannot drift on what a valid entry is. v2 output is unchanged, and a v1
+    document without external entries is identical to what it was before.
+  - A rule match and external entries coexist: the Karna message stays first and
+    untouched, the external ones follow in queue order. `auditlog_only_on_match`
+    keeps writing the record when the only thing that happened was an external
+    event.
+
 ### Changed
 
 - Bundled OWASP CoreRuleSet moves from 4.26.0 to 4.28.0 (`CRS_VERSION` build arg

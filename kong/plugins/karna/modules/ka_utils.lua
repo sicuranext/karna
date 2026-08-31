@@ -384,6 +384,36 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
         end
     end
 
+    -- Sibling-plugin log entries (kong.ctx.shared.karna.log_entries) land in v1
+    -- as extra transaction.messages[] elements, next to the rule match. Same
+    -- source of truth as the v2 external_matches contract — see
+    -- build_v1_external_messages for the field mapping. Nothing is appended
+    -- when no sibling plugin logged anything, so a v1 document without
+    -- external entries is byte-identical to what Karna produced before.
+    local raw_external = nil
+    if kong.ctx and kong.ctx.shared and kong.ctx.shared.karna then
+        raw_external = kong.ctx.shared.karna.log_entries
+    end
+    local external_messages = self:build_v1_external_messages(raw_external)
+    if external_messages then
+        -- Build a fresh array instead of appending in place. `messages` is
+        -- either the rule-match table or cjson.empty_array — and empty_array
+        -- is a LIGHTUSERDATA, not an empty table: `ipairs` on it throws, and
+        -- an error in log_by_lua costs the whole record silently. Hence the
+        -- type guard, not a bare loop.
+        local merged = {}
+        local existing = json_log.transaction.messages
+        if type(existing) == "table" then
+            for _, m in ipairs(existing) do
+                merged[#merged + 1] = m
+            end
+        end
+        for _, m in ipairs(external_messages) do
+            merged[#merged + 1] = m
+        end
+        json_log.transaction.messages = merged
+    end
+
     return json_log
 end
 
@@ -589,6 +619,51 @@ _M.build_external_matches = function(self, raw_entries)
     end
     if #out == 0 then
         return cjson.empty_array
+    end
+    return out
+end
+
+-- Map sibling-plugin log entries onto audit log v1 `transaction.messages[]`.
+-- Validation, clipping and the drop-the-malformed rule are delegated to
+-- build_external_matches, so v1 and v2 can never disagree on what a valid
+-- entry is.
+--
+-- The emitted shape is the one Karna already produces for a rule match
+-- (`message` + `details.ruleId` / `details.data` / `details.tags`) — no new
+-- keys anywhere in the document, so an existing v1 consumer (Vector,
+-- Elasticsearch, a ModSecurity-shaped pipeline) needs no mapping change.
+-- Mapping decisions:
+--   * `source`   -> `details.data` as "Source: <source>". v1 has no field of
+--                   its own for the producer, and `data` is its free-text
+--                   detail slot (Karna puts the matched parts there). It also
+--                   doubles as the marker that tells an operator this message
+--                   came from a sibling plugin, not from a Karna rule.
+--   * `rule_id`  -> `details.ruleId`, verbatim.
+--   * `tags`     -> `details.tags`, passed through; empty array when absent.
+--   * `metadata` -> deliberately NOT emitted. v2 has a structured slot for it;
+--                   v1 does not, and flattening arbitrary sibling-plugin data
+--                   into a free-text field is how secrets end up in logs.
+--
+-- Returns nil when there is nothing to add, so the caller can leave the
+-- document exactly as it was.
+_M.build_v1_external_messages = function(self, raw_entries)
+    local cjson = require "cjson"
+
+    local normalized = self:build_external_matches(raw_entries)
+    if type(normalized) ~= "table" or #normalized == 0 then
+        return nil
+    end
+
+    local out = {}
+    for _, e in ipairs(normalized) do
+        out[#out + 1] = {
+            message = e.message,
+            details = {
+                ruleId = e.rule_id,
+                data   = "Source: " .. e.source,
+                tags   = e.tags or cjson.empty_array,
+            }
+        }
     end
     return out
 end

@@ -1415,8 +1415,42 @@ Behaviour notes:
   for the rest of the request.
 - `source`, `rule_id` and `message` are clipped at 100 / 100 / 1000 bytes
   respectively. `tags` and `metadata` are passed through unchanged.
-- `external_matches` is a v2-only feature. The v1 (ModSecurity-compatible)
-  format is unaffected.
+
+### Audit log v1
+
+`external_matches` is a v2 field. With `auditlog_format = "v1"` the same
+entries are emitted as extra `transaction.messages[]` elements, in the
+message shape v1 already uses for a rule match, so nothing new appears in
+the document and an existing v1 consumer needs no mapping change:
+
+```json
+{
+    "transaction": {
+        "messages": [
+            {
+                "message": "Served stale entry while revalidating",
+                "details": {
+                    "ruleId": "cache-stale-served",
+                    "data":   "Source: my-cache-plugin",
+                    "tags":   ["cache", "stale-while-revalidate"]
+                }
+            }
+        ]
+    }
+}
+```
+
+- `rule_id` becomes `details.ruleId`, `tags` becomes `details.tags`
+  (empty array when absent), and `source` goes into `details.data` —
+  v1's free-text detail slot, and the marker that tells the reader the
+  message came from a sibling plugin rather than a Karna rule.
+- `metadata` is **not** emitted in v1. There is no structured slot for it,
+  and flattening arbitrary sibling-plugin data into a free-text field is
+  how secrets end up in logs. Use v2 if you need it.
+- Validation, clipping and the drop-the-malformed rule are the same code
+  as v2, so the two formats always agree on what a valid entry is.
+- A rule match and external entries coexist: the Karna message comes
+  first, untouched, then the external ones in queue order.
 
 ## Setting variables from a rule
 
