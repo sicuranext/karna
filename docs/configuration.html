@@ -287,6 +287,7 @@
           <tr><td class="name"><code>auditlog_error_log_on_match</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Also emit a line to the nginx error log on a match.</td></tr>
         </tbody>
       </table>
+      <p><strong>Header names.</strong> Every entry also carries the <em>names</em> of the request headers in the order the client sent them, with the original casing: <code>request.header_names</code> (v2) / <code>transaction.request.header_names</code> (v1), an array of strings, plus <code>header_names_capture</code> next to it. <code>raw</code> means HTTP/1.x, parsed from the wire bytes before any plugin touched the request, duplicates kept as separate entries. <code>normalized</code> means HTTP/2 (no raw view exists): names lowercase, sorted alphabetically, repeated once per value, and describing the header set as seen by Karna, which includes headers injected by plugins that ran earlier in the chain. Names only, never values; <code>request.headers</code> is unchanged. Capped at 128 names / 256 bytes per name. Both fields are absent when nothing could be captured.</p>
     </section>
 
     <section id="redis">

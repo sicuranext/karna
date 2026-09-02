@@ -16,6 +16,7 @@ local ka_mcp            = require "kong.plugins.karna.ka_mcp"
 local ka_compile        = require "kong.plugins.karna.ka_compile"
 local ka_global_rules   = require "kong.plugins.karna.ka_global_rules"
 local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
+local ka_header_names   = require "kong.plugins.karna.ka_header_names"
 local ka_version        = require "kong.plugins.karna.version"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
@@ -708,6 +709,19 @@ function plugin:access(plugin_conf)
   kong.ctx.plugin.rule_variables = {}
   -- Variables that can be overwritten by rules
   kong.ctx.plugin.enable_check_arg_len = true
+
+  -- Request header NAMES in wire order and casing, for the audit log
+  -- (`request.header_names` + `header_names_capture`, both formats). Captured
+  -- here, before every early exit below and before any plugin (this one
+  -- included) rewrites a header, so on HTTP/1.x the list is the wire view.
+  -- Fail-open: an error leaves the two fields absent and touches nothing else.
+  do
+    local ok, names, mode = pcall(ka_header_names.capture)
+    if ok then
+      kong.ctx.plugin.request_header_names         = names
+      kong.ctx.plugin.request_header_names_capture = mode
+    end
+  end
 
   -- skip access phase if response sent from cache
   if kong.ctx.shared.response_from_cache then

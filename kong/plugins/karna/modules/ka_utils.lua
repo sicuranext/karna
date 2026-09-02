@@ -275,6 +275,42 @@ _M.copy_rule_table = function(self, obj, configured_paranoia_lvel)
     return res
 end
 
+-- Request header names for the audit log. Normally captured at the top of
+-- `access` (kong.ctx.plugin.request_header_names / _capture, see handler.lua);
+-- when access never ran for this request (a sibling plugin exited in an earlier
+-- phase) capture now: on HTTP/1.x ngx.req.raw_header still holds the wire bytes
+-- in the log phase. Returns names (a JSON array, `cjson.empty_array` when
+-- empty) and mode, or nil, nil when nothing could be captured — the caller then
+-- leaves both fields out, so "absent" reads as "not captured", never as "no
+-- headers".
+-- The module is required lazily (and under pcall) so ka_utils stays loadable
+-- by the unit tests that stub only the pieces they exercise.
+local ka_header_names
+_M.get_request_header_names = function(self)
+    local cjson = require "cjson"
+    local ctx = kong.ctx.plugin
+    local names, mode
+    if ctx and type(ctx.request_header_names) == "table" then
+        names, mode = ctx.request_header_names, ctx.request_header_names_capture
+    else
+        if not ka_header_names then
+            local okr, mod = pcall(require, "kong.plugins.karna.ka_header_names")
+            if okr then ka_header_names = mod end
+        end
+        if ka_header_names then
+            local ok, n, m = pcall(ka_header_names.capture)
+            if ok then names, mode = n, m end
+        end
+    end
+    if type(names) ~= "table" or type(mode) ~= "string" then
+        return nil, nil
+    end
+    if #names == 0 then
+        names = cjson.empty_array
+    end
+    return names, mode
+end
+
 _M.get_auditlog = function(self, matched_rule, matched_parts)
     local cjson = require "cjson"
 
@@ -342,6 +378,16 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
             messages = cjson.empty_array
         }
     }
+
+    -- Additive: header names in wire order/casing (v1 keeps the same two keys
+    -- as v2, under transaction.request). Absent when not captured.
+    do
+        local hn_names, hn_mode = self:get_request_header_names()
+        if hn_names then
+            json_log.transaction.request.header_names         = hn_names
+            json_log.transaction.request.header_names_capture = hn_mode
+        end
+    end
 
     --json_log.transaction.request.uri = request_uri
     --json_log.transaction.request.headers = request_headers
@@ -863,6 +909,16 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
 
     if enrichment then
         json_log.enrichment = enrichment
+    end
+
+    -- Additive: header names in wire order/casing + capture mode. Names only,
+    -- never values (those are in request.headers). Absent when not captured.
+    do
+        local hn_names, hn_mode = self:get_request_header_names()
+        if hn_names then
+            json_log.request.header_names         = hn_names
+            json_log.request.header_names_capture = hn_mode
+        end
     end
 
     return json_log

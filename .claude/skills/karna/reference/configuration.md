@@ -67,6 +67,7 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 
 ## Audit logging
 - `auditlog_enabled` (bool, `true`), `auditlog_path` (str, `/usr/local/openresty/nginx/logs`, must be kong:kong-writable), `auditlog_format` (`v2`|`v1`, default `v2`), `auditlog_only_on_match` (bool, `false`), `auditlog_modsec` (bool, `false`), `auditlog_error_log_on_match` (bool, `false`).
+- Every audit entry (v1 and v2) also carries `request.header_names` (v1: `transaction.request.header_names`), the request header NAMES in wire order and original casing, plus `header_names_capture`: `raw` (HTTP/1.x, from the raw bytes, duplicates kept) or `normalized` (HTTP/2: lowercase, sorted, one entry per value, = headers as seen by Karna incl. ones injected by earlier plugins). Names only, never values; additive; capped 128 names / 256 B; both absent when not captured.
 
 ## Redis (optional; backs rate_limit, redis_incr_key, redis.<key> inspection, redis_sismember/redis_hexists ops, redis_set/sadd/del write actions)
 - `redis_host` (str, `localhost`), `redis_port` (num, `6379`), `redis_password` (str, optional).

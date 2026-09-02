@@ -7,6 +7,28 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Audit logs (v1 and v2) now record the **request header names in the order the
+  client sent them, with the original casing**: `request.header_names` (v2) /
+  `transaction.request.header_names` (v1), an array of names, plus
+  `header_names_capture` next to it saying how the list was obtained.
+  - `"raw"`: HTTP/1.x. Read from the raw request bytes before Kong or any
+    plugin normalised or rewrote a header; duplicate occurrences are kept as
+    separate entries (`["Host", "Accept", "Accept", "X-Custom-Header",
+    "x-custom-header"]`).
+  - `"normalized"`: HTTP/2, where no raw view exists (or any failure of the raw
+    path). Names lowercase, sorted alphabetically, repeated once per value.
+    This is the header set **as seen by Karna**, so it also contains headers
+    injected by plugins that ran earlier in the chain; the raw view never does.
+  - Names only, never values. Purely additive: `request.headers` is unchanged.
+    Capped at 128 names and 256 bytes per name. Fail-open: when nothing could be
+    captured both fields are absent (absent means "not captured", not "no
+    headers").
+  - New module `ka_header_names.lua` (pure Lua, unit-tested in
+    `ka-unittest/header_names.lua`), wired at the very top of `access` so the
+    capture precedes every early exit and every header rewrite.
+
 ## [1.5.3] - 2026-08-31
 
 ### Added
