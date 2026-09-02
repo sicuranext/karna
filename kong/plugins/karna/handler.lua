@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.3",
+  VERSION = "1.5.4",
 }
 
 local ngx                 = ngx
@@ -16,6 +16,8 @@ local ka_mcp            = require "kong.plugins.karna.ka_mcp"
 local ka_compile        = require "kong.plugins.karna.ka_compile"
 local ka_global_rules   = require "kong.plugins.karna.ka_global_rules"
 local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
+local ka_header_names   = require "kong.plugins.karna.ka_header_names"
+local ka_tls            = require "kong.plugins.karna.ka_tls"
 local ka_version        = require "kong.plugins.karna.version"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
@@ -663,6 +665,15 @@ function plugin:init_worker()
     -- env var is set.
     ka_global_rules.init({ engine = engine, compile = ka_compile.compile_rules })
 
+    -- TLS telemetry / connection id per-worker state: HMAC key from
+    -- KARNA_CONNECTION_ID_HMAC_KEY (random per worker when unset, one warning),
+    -- per-worker nonce, serial -> id LRU. Fail-open: on error the audit log and
+    -- the connection.id variable simply have no connection id.
+    local ok_tls, err_tls = pcall(ka_tls.init)
+    if not ok_tls then
+      kong.log.warn("[karna] ka_tls.init failed, connection ids disabled: ", err_tls)
+    end
+
     -- RE2 @rx gate (engine_re2_scan spike — memory karna-re2-spike). Build the
     -- RE2::Set over gateable CRS @rx once per worker; config-independent, so
     -- built unconditionally (usage is flag-gated at request time). nil when
@@ -708,6 +719,25 @@ function plugin:access(plugin_conf)
   kong.ctx.plugin.rule_variables = {}
   -- Variables that can be overwritten by rules
   kong.ctx.plugin.enable_check_arg_len = true
+
+  -- Request header NAMES in wire order and casing, for the audit log
+  -- (`request.header_names` + `header_names_capture`, both formats). Captured
+  -- here, before every early exit below and before any plugin (this one
+  -- included) rewrites a header, so on HTTP/1.x the list is the wire view.
+  -- Fail-open: an error leaves the two fields absent and touches nothing else.
+  do
+    local ok, names, mode = pcall(ka_header_names.capture)
+    if ok then
+      kong.ctx.plugin.request_header_names         = names
+      kong.ctx.plugin.request_header_names_capture = mode
+    end
+  end
+
+  -- Negotiated TLS telemetry + pseudonymous connection id, read once per
+  -- request into kong.ctx.plugin.tls / .connection_id (ka_tls). Feeds the
+  -- audit log `tls` / `network` blocks and the tls.* / connection.id rule
+  -- variables, so it runs before any rule can ask for them. Fail-open.
+  pcall(ka_tls.populate)
 
   -- skip access phase if response sent from cache
   if kong.ctx.shared.response_from_cache then

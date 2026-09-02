@@ -251,6 +251,63 @@ grep -E 'Passed tests:' regression.log
 ```
 A drop in the pass count is a regression — investigate before shipping.
 
+## TLS fingerprint and connection id (five patterns)
+`tls.fingerprint` is `karna-tls-v1`: SHA-256 of the client-offered cipher list
+(client order, GREASE `0x?a?a` removed, `TLS_EMPTY_RENEGOTIATION_INFO_SCSV` kept),
+present only when `tls.capture_status` is `complete`. Not JA3/JA4. Read real
+values from your audit log (`tls.fingerprint.value`) before writing allow/deny
+lists; the `<fp-…>` below are placeholders. None of these ships enabled.
+
+1. Deny a known-bad fingerprint (scanner cipher lists):
+```json
+{ "id": "tls-deny-fp", "phase": "access",
+  "conditions": [ { "op": "within", "transform": [], "value": "<fp-scanner-A> <fp-scanner-B>",
+                    "variables": ["tls.fingerprint"] } ],
+  "action": { "fixed_response": { "status_code": 403, "body": "Forbidden\r\n" } },
+  "message": "TLS fingerprint on deny list", "tags": ["tls-fingerprint"] }
+```
+2. SNI and Host disagree (log first, CDNs/proxies legitimately differ):
+```json
+{ "id": "tls-sni-host", "phase": "access", "log": true,
+  "conditions": [
+    { "op": "eq", "value": "true", "transform": [], "variables": ["tls.enabled"] },
+    { "op": "rx", "value": "^(.+)$", "transform": ["lowercase"], "variables": ["tls.sni"] },
+    { "op": "eq", "value": "%{group:1}", "negated": true, "transform": ["lowercase"], "variables": ["request.host"] } ],
+  "action": { "log_only": true }, "message": "SNI does not match Host", "tags": ["tls-sni"] }
+```
+3. User-Agent says Chrome, TLS stack does not (feed a scoring step, do not block alone: Chrome behind a TLS-inspecting proxy shows the proxy's fingerprint):
+```json
+{ "id": "tls-ua-mismatch", "phase": "access", "log": true,
+  "conditions": [
+    { "op": "eq", "value": "complete", "transform": [], "variables": ["tls.capture_status"] },
+    { "op": "rx", "value": "Chrome/\\d+", "transform": [], "variables": ["request.header.value:user-agent"] },
+    { "op": "within", "negated": true, "transform": [], "value": "<fp-chrome-desktop> <fp-chrome-android> <fp-chrome-ios>",
+      "variables": ["tls.fingerprint"] } ],
+  "action": { "set_variable": { "type": "shared", "name": "karna_tls_ua_mismatch", "value": "%{tls.fingerprint}" } },
+  "message": "Chrome UA with a non-Chrome TLS stack", "tags": ["tls-fingerprint", "bot"] }
+```
+4. Legacy protocol (or ALPN policy: `{ "op": "eq", "value": "http/1.1", "variables": ["tls.alpn"] }`):
+```json
+{ "id": "tls-legacy-version", "phase": "access",
+  "conditions": [ { "op": "within", "value": "TLSv1 TLSv1.1", "transform": [], "variables": ["tls.protocol"] } ],
+  "action": { "fixed_response": { "status_code": 426, "body": "Upgrade Required\r\n" } },
+  "message": "Legacy TLS version", "tags": ["tls-policy"] }
+```
+5. The guard, plus a per-connection throttle (`%{connection.id}` follows the TCP connection, not the IP: NAT-safe):
+```json
+{ "id": "tls-fp-guarded", "phase": "access",
+  "conditions": [
+    { "op": "eq", "value": "complete", "transform": [], "variables": ["tls.capture_status"] },
+    { "op": "within", "negated": true, "transform": [], "value": "<fp-allowed-app-1> <fp-allowed-app-2>",
+      "variables": ["tls.fingerprint"] } ],
+  "action": { "rate_limit": { "key": "%{connection.id}", "limit": 30, "window_seconds": 60 } },
+  "message": "Unknown TLS client: throttled per connection", "tags": ["tls-fingerprint"] }
+```
+On `partial` captures `tls.fingerprint` is absent and a negated `within` on an
+absent variable does not fire, so rule 5 is safe even without its first
+condition; the explicit `capture_status` check documents the intent. On plain
+HTTP every `tls.*` except `tls.enabled` / `tls.capture_status` is absent.
+
 ## Read the audit log
 Default `auditlog_path`: `/usr/local/openresty/nginx/logs`. Karna writes JSON
 Lines, one file per worker per minute named

@@ -287,6 +287,8 @@
           <tr><td class="name"><code>auditlog_error_log_on_match</code></td><td><span class="badge badge-type">boolean</span> <span class="badge badge-def">false</span></td><td>Also emit a line to the nginx error log on a match.</td></tr>
         </tbody>
       </table>
+      <p><strong>Header names.</strong> Every entry also carries the <em>names</em> of the request headers in the order the client sent them, with the original casing: <code>request.header_names</code> (v2) / <code>transaction.request.header_names</code> (v1), an array of strings, plus <code>header_names_capture</code> next to it. <code>raw</code> means HTTP/1.x, parsed from the wire bytes before any plugin touched the request, duplicates kept as separate entries. <code>normalized</code> means HTTP/2 (no raw view exists): names lowercase, sorted alphabetically, repeated once per value, and describing the header set as seen by Karna, which includes headers injected by plugins that ran earlier in the chain. Names only, never values; <code>request.headers</code> is unchanged. Capped at 128 names / 256 bytes per name. Both fields are absent when nothing could be captured.</p>
+      <p><strong>Connection id and TLS telemetry.</strong> Every entry also carries <code>network.connection_id</code> (v1: <code>transaction.network.connection_id</code>), a pseudonymous identifier <code>kc1_&lt;32 hex&gt;</code> that is identical for every request on the same TCP connection (HTTP/1.1 keep-alive and every HTTP/2 stream), different across connections and not reversible: an HMAC-SHA256 over the nginx connection serial and a per-worker nonce, keyed by <code>KARNA_CONNECTION_ID_HMAC_KEY</code> (see <a class="link" href="#env">Environment variables</a>). No IP, port or TLS session id enters it. Next to it, a <code>tls</code> block (v1: <code>transaction.tls</code>) with the negotiated parameters read from nginx: <code>enabled</code>, <code>capture_status</code> (<code>not_tls</code> / <code>complete</code> / <code>partial</code> / <code>error</code>), <code>protocol</code>, <code>cipher</code>, <code>curve</code>, <code>alpn</code>, <code>sni</code>, <code>session_reused</code>, <code>early_data</code>, and the two lists the client <em>offered</em>, in the client's order, as the colon-separated strings nginx renders (unknown entries as <code>0xNNNN</code>, GREASE included): <code>client_ciphers</code> and <code>client_curves</code>. On plain HTTP the block is just <code>{"enabled": false, "capture_status": "not_tls"}</code>. <code>client_curves</code> is empty on a resumed TLS 1.2 session (nginx exposes it for new sessions only; TLS 1.3 resumption keeps it) and <code>early_data</code> is effectively always <code>false</code> unless nginx has <code>ssl_early_data on</code>, which Kong does not set. Lists are capped at 4096 bytes. On a <code>complete</code> capture the block also carries <code>fingerprint</code> = <code>{"version": "karna-tls-v1", "algorithm": "sha256", "value": "&lt;64 hex&gt;"}</code>, the client fingerprint specified in <a class="link" href="rules.html#tls-fingerprint">Rules &rsaquo; TLS fingerprint</a>. No TLS secret, session id or ticket is ever recorded.</p>
     </section>
 
     <section id="redis">
@@ -346,6 +348,7 @@
           <tr><td class="name"><code>KARNA_REDIS_URL</code></td><td class="mono">unset</td><td>Enables the Redis source of the <a class="link" href="rules.html#global-rules">global rules pack</a>. <code>redis://[user][:pass]@host[:port][/db]</code>, or <code>rediss://</code> for TLS. Unset &rarr; no Redis source, zero overhead.</td></tr>
           <tr><td class="name"><code>KARNA_GLOBAL_RULES_HMAC_KEY</code></td><td class="mono">unset</td><td>Shared HMAC-SHA256 key for global rules pack signatures (generate with <code>openssl rand -hex 32</code>). Set &rarr; unsigned or tampered packs are rejected. Unset &rarr; packs are accepted unsigned, with a loud startup warning.</td></tr>
           <tr><td class="name"><code>KARNA_GLOBAL_RULES_POLL</code></td><td class="mono">30</td><td>Global rules poll interval in seconds (minimum 5). Each poll is one cheap <code>HGET</code> of the version field; the pack is re-fetched only when it changes.</td></tr>
+          <tr><td class="name"><code>KARNA_CONNECTION_ID_HMAC_KEY</code></td><td class="mono">unset</td><td>HMAC-SHA256 key (at least 16 bytes; generate with <code>openssl rand -hex 32</code>) for the pseudonymous <code>connection_id</code> in the audit log and the <code>connection.id</code> rule variable. Set &rarr; ids are stable for a connection across every worker of every instance sharing the key <em>within one instance lifetime</em> (a per-worker nonce is always mixed in). Unset or too short &rarr; a random per-worker key, one startup warning, ids still stable per connection. Rotating the key changes every id; no continuity is promised across rotations or restarts.</td></tr>
         </tbody>
       </table>
       <div class="code-card">
@@ -358,7 +361,8 @@ env KARNA_PROFILE;
 env KARNA_REDIS_URL;
 env KARNA_GLOBAL_RULES_PATH;
 env KARNA_GLOBAL_RULES_HMAC_KEY;
-env KARNA_GLOBAL_RULES_POLL;</pre></div>
+env KARNA_GLOBAL_RULES_POLL;
+env KARNA_CONNECTION_ID_HMAC_KEY;</pre></div>
       </div>
     </section>
 

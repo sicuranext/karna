@@ -59,6 +59,7 @@
     <a href="#overrides">CRS overrides</a>
     <a href="#seclang">SecLang rules</a>
     <a href="#global-rules">Global rules</a>
+    <a href="#tls-fingerprint">TLS fingerprint</a>
     <h5>Examples</h5>
     <a href="#ex-detect">Detect &amp; block</a>
     <a href="#ex-sanitize">Sanitize, don't block</a>
@@ -66,6 +67,7 @@
     <a href="#ex-counter">Counter + threshold</a>
     <a href="#ex-autoban">Distributed auto-ban</a>
     <a href="#ex-chain">Chained rule</a>
+    <a href="#ex-tls">TLS fingerprint &amp; connection</a>
     <h5>Reference</h5>
     <a href="configuration.html">Configuration</a>
   </aside>
@@ -174,6 +176,8 @@
           <tr><td class="name"><code>redis.&lt;key&gt;</code></td><td>Inspect a Redis key (read-only). Everything after <code>redis.</code> is the key name, with macros allowed (<code>redis.ban:%{remote_addr}</code>). The operator picks the command — see <a class="link" href="#redis-inspect">Redis inspection</a>. Needs <code>redis_inspect_enabled</code>.</td></tr>
           <tr><td class="name"><code>geoip.*</code> / <code>asn.*</code></td><td>Enrichment from a sibling plugin (<code>geoip.country_code</code>, <code>asn.org</code>, …), when present.</td></tr>
           <tr><td class="name"><code>mcp.*</code></td><td>MCP fields (<code>mcp.method</code>, <code>mcp.tool.name</code>, …) when <code>mcp_enabled</code>.</td></tr>
+          <tr><td class="name"><code>connection.id</code></td><td>Pseudonymous connection identifier (<code>kc1_&lt;32 hex&gt;</code>): identical for every request on the same TCP connection (HTTP/1.1 keep-alive, HTTP/2 streams), different across connections, not reversible. Also a macro (<code>%{connection.id}</code>), e.g. as a <code>rate_limit</code> key.</td></tr>
+          <tr><td class="name"><code>tls.*</code></td><td>Negotiated TLS telemetry, read-only. <code>tls.enabled</code> (<code>true</code>/<code>false</code>) and <code>tls.capture_status</code> (<code>not_tls</code>/<code>complete</code>/<code>partial</code>/<code>error</code>) always resolve; on a TLS request also <code>tls.protocol</code>, <code>tls.cipher</code>, <code>tls.curve</code>, <code>tls.alpn</code>, <code>tls.sni</code>, <code>tls.session_reused</code>, <code>tls.early_data</code> (booleans as <code>true</code>/<code>false</code>), <code>tls.client_ciphers</code> and <code>tls.client_curves</code> (the lists the client offered, colon-separated, client order). Absent on plain HTTP, so <code>isSet</code> on them is false; an empty list resolves to <code>""</code>, which is distinct from absent. All usable as <code>%{tls.…}</code> macros. <code>tls.fingerprint</code> (64 hex) and <code>tls.fingerprint_version</code> carry the <a href="#tls-fingerprint">karna-tls-v1</a> client fingerprint, only when <code>tls.capture_status</code> is <code>complete</code>.</td></tr>
         </tbody>
       </table>
       <div class="tip"><span class="lbl">Targeting a named arg</span>To match a specific argument by name, prefer <code>request.arg.value:&lt;name&gt;</code> (covers query + urlencoded body).</div>
@@ -569,6 +573,35 @@ openssl rand -hex 32
       </ul>
     </section>
 
+    <section id="tls-fingerprint">
+      <h2>TLS fingerprint: <code>karna-tls-v1</code></h2>
+      <p>Every TLS request carries a client fingerprint in the audit log (<code>tls.fingerprint</code>, both formats) and in the rule variables <code>tls.fingerprint</code> / <code>tls.fingerprint_version</code>. It is a <strong>JA3-like fingerprint reduced to the cipher suites the client offered</strong>: the one piece of ClientHello material nginx exposes in the HTTP phases for new and resumed sessions alike (<code>$ssl_ciphers</code>). It is <strong>not</strong> JA3 and <strong>not</strong> JA4; do not compare it with databases of either. Nothing negotiated enters it, so it is a property of the client stack, not of the server configuration.</p>
+      <p>The version string <code>karna-tls-v1</code> names every detail below. Any change to any of them is a new version; <code>v1</code> never changes.</p>
+      <table class="opts">
+        <thead><tr><th>Step</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Input</td><td><code>$ssl_ciphers</code> as nginx renders it: OpenSSL names for known suites, <code>0xNNNN</code> (lowercase hex) for the rest, colon-separated, in the client's order.</td></tr>
+          <tr><td class="name">GREASE</td><td>Tokens <code>0x0a0a</code>, <code>0x1a1a</code>, &hellip; <code>0xfafa</code> (RFC 8701: both bytes equal, low nibble <code>a</code>) are removed, matched case-insensitively. Every other <code>0xNNNN</code> token is kept: a suite the server does not know is information, not noise.</td></tr>
+          <tr><td class="name">SCSV</td><td><code>TLS_EMPTY_RENEGOTIATION_INFO_SCSV</code> (<code>0x00ff</code>) is kept when present, as JA3 does.</td></tr>
+          <tr><td class="name">Order</td><td>Preserved. Two stacks offering the same set in a different order are different clients.</td></tr>
+          <tr><td class="name">Curves</td><td>Not included, by design: <code>$ssl_curves</code> is empty on a resumed TLS 1.2 session, so the same client would carry two identities. They stay available as <code>tls.client_curves</code>.</td></tr>
+          <tr><td class="name">Canonical string</td><td><code>karna-tls-v1|&lt;c1&gt;,&lt;c2&gt;,&hellip;</code>, or <code>karna-tls-v1|-</code> when nothing is left. Never logged.</td></tr>
+          <tr><td class="name">Hash</td><td>SHA-256 of the canonical string, lowercase hex, 64 characters.</td></tr>
+          <tr><td class="name">When</td><td>Only when <code>tls.capture_status</code> is <code>complete</code>. Absent on partial captures and on plain HTTP. Computed once per distinct list per worker.</td></tr>
+        </tbody>
+      </table>
+      <div class="code-card">
+        <div class="code-head"><span>worked example: Chrome on Kong 3.9 (OpenSSL 3.2)</span><span class="lang">text</span></div>
+        <div class="code-body"><pre><span class="cmt"># $ssl_ciphers as received (GREASE first, then Chrome's 15 suites)</span>
+0x9a9a:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA
+<span class="cmt"># canonical string (GREASE dropped, order kept)</span>
+karna-tls-v1|TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384,ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-RSA-AES128-SHA,ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384,AES128-SHA,AES256-SHA
+<span class="cmt"># tls.fingerprint = sha256(canonical), lowercase hex</span>
+32aad363139a0f2f7d9289b1a380ca95c8d099d8b3da6ceb747ebdb30557d489</pre></div>
+      </div>
+      <div class="note"><span class="lbl">Limits</span>Cipher order alone separates browser families from curl, Python, Go and Java stacks well, but it has less entropy than JA3/JA4: two clients with the same cipher list but different extensions collide. A future <code>karna-tls-v2</code> will add the client's signature algorithms once Kong ships an nginx with <code>$ssl_sigalgs</code> (1.31.2+). Chrome and Firefox change their cipher list rarely, but they do; treat allow-lists as living data. The fingerprint says nothing about what the request contains: use it to add context to a decision, not as the only condition that blocks.</div>
+    </section>
+
     <section id="ex-detect">
       <h2>Example: detect &amp; block</h2>
       <p>Block header-borne SQL injection, with a carve-out for FP-prone headers.</p>
@@ -782,6 +815,65 @@ openssl rand -hex 32
   <span class="prm">"tags"</span>: [<span class="str">"upload"</span>]
 }</pre></div>
       </div>
+    </section>
+
+    <section id="ex-tls">
+      <h2>Example: TLS fingerprint &amp; connection</h2>
+      <p>Five patterns over <code>tls.*</code> and <code>connection.id</code>. They are documentation, not defaults: none ships enabled, and the fingerprints below are placeholders to replace with values read from your own audit log. Rule 5 shows the guard every fingerprint rule should carry.</p>
+      <div class="code-card">
+        <div class="code-head"><span>1. deny a known-bad fingerprint (a scanner's cipher list)</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"id"</span>: <span class="str">"tls-deny-fp"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [ { <span class="prm">"op"</span>: <span class="str">"within"</span>, <span class="prm">"transform"</span>: [],
+                    <span class="prm">"value"</span>: <span class="str">"&lt;fp-of-scanner-A&gt; &lt;fp-of-scanner-B&gt;"</span>,
+                    <span class="prm">"variables"</span>: [<span class="str">"tls.fingerprint"</span>] } ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
+  <span class="prm">"message"</span>: <span class="str">"TLS fingerprint on deny list"</span>, <span class="prm">"tags"</span>: [<span class="str">"tls-fingerprint"</span>] }</pre></div>
+      </div>
+      <div class="code-card">
+        <div class="code-head"><span>2. SNI and Host disagree (domain fronting, misrouted scanners)</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"id"</span>: <span class="str">"tls-sni-host"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>, <span class="prm">"log"</span>: <span class="kw">true</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"true"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"variables"</span>: [<span class="str">"tls.enabled"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"rx"</span>, <span class="prm">"value"</span>: <span class="str">"^(.+)$"</span>, <span class="prm">"transform"</span>: [<span class="str">"lowercase"</span>], <span class="prm">"variables"</span>: [<span class="str">"tls.sni"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"%{group:1}"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"transform"</span>: [<span class="str">"lowercase"</span>], <span class="prm">"variables"</span>: [<span class="str">"request.host"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"log_only"</span>: <span class="kw">true</span> },
+  <span class="prm">"message"</span>: <span class="str">"SNI does not match Host"</span>, <span class="prm">"tags"</span>: [<span class="str">"tls-sni"</span>] }</pre></div>
+      </div>
+      <div class="tip"><span class="lbl">Ports</span><code>request.host</code> may carry a port; strip it with a first <code>rx</code> capture if your clients send one. Start with <code>log_only</code>: CDNs and some corporate proxies legitimately differ here.</div>
+      <div class="code-card">
+        <div class="code-head"><span>3. User-Agent claims a browser, TLS stack does not</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"id"</span>: <span class="str">"tls-ua-mismatch"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>, <span class="prm">"log"</span>: <span class="kw">true</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"complete"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"variables"</span>: [<span class="str">"tls.capture_status"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"rx"</span>, <span class="prm">"value"</span>: <span class="str">"Chrome/\\d+"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"variables"</span>: [<span class="str">"request.header.value:user-agent"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"within"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"transform"</span>: [],
+      <span class="prm">"value"</span>: <span class="str">"&lt;fp-chrome-desktop&gt; &lt;fp-chrome-android&gt; &lt;fp-chrome-ios&gt;"</span>, <span class="prm">"variables"</span>: [<span class="str">"tls.fingerprint"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"set_variable"</span>: { <span class="prm">"type"</span>: <span class="str">"shared"</span>, <span class="prm">"name"</span>: <span class="str">"karna_tls_ua_mismatch"</span>, <span class="prm">"value"</span>: <span class="str">"%{tls.fingerprint}"</span> } },
+  <span class="prm">"message"</span>: <span class="str">"Chrome UA with a non-Chrome TLS stack"</span>, <span class="prm">"tags"</span>: [<span class="str">"tls-fingerprint"</span>, <span class="str">"bot"</span>] }</pre></div>
+      </div>
+      <div class="tip"><span class="lbl">Feed, don't block</span>Headless browsers and HTTP libraries impersonating Chrome are the target; the false positives are Chrome behind a TLS-inspecting proxy, whose fingerprint is the proxy's. Hand the signal to a bot-management or scoring step (<code>set_variable</code> into <code>kong.ctx.shared</code>) rather than blocking on it alone.</div>
+      <div class="code-card">
+        <div class="code-head"><span>4. legacy protocol or ALPN policy</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"id"</span>: <span class="str">"tls-legacy-version"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [ { <span class="prm">"op"</span>: <span class="str">"within"</span>, <span class="prm">"value"</span>: <span class="str">"TLSv1 TLSv1.1"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"variables"</span>: [<span class="str">"tls.protocol"</span>] } ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">426</span>, <span class="prm">"body"</span>: <span class="str">"Upgrade Required\r\n"</span> } },
+  <span class="prm">"message"</span>: <span class="str">"Legacy TLS version"</span>, <span class="prm">"tags"</span>: [<span class="str">"tls-policy"</span>] }</pre></div>
+      </div>
+      <div class="tip"><span class="lbl">ALPN variant</span>Swap the condition for <code>{ "op": "eq", "value": "http/1.1", "variables": ["tls.alpn"] }</code> to single out clients that refuse HTTP/2 on an API where every real client negotiates <code>h2</code>. Kong's <code>ssl_protocols</code> already rejects TLS 1.0/1.1 by default; rule 4 is for deployments that had to re-enable them.</div>
+      <div class="code-card">
+        <div class="code-head"><span>5. the guard: only act on a complete capture</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{ <span class="prm">"id"</span>: <span class="str">"tls-fp-guarded"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"complete"</span>, <span class="prm">"transform"</span>: [], <span class="prm">"variables"</span>: [<span class="str">"tls.capture_status"</span>] },
+    { <span class="prm">"op"</span>: <span class="str">"within"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span>, <span class="prm">"transform"</span>: [],
+      <span class="prm">"value"</span>: <span class="str">"&lt;fp-allowed-app-1&gt; &lt;fp-allowed-app-2&gt;"</span>, <span class="prm">"variables"</span>: [<span class="str">"tls.fingerprint"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"rate_limit"</span>: { <span class="prm">"key"</span>: <span class="str">"%{connection.id}"</span>, <span class="prm">"limit"</span>: <span class="num">30</span>, <span class="prm">"window_seconds"</span>: <span class="num">60</span> } },
+  <span class="prm">"message"</span>: <span class="str">"Unknown TLS client: throttled per connection"</span>, <span class="prm">"tags"</span>: [<span class="str">"tls-fingerprint"</span>] }</pre></div>
+      </div>
+      <div class="note"><span class="lbl">Why the guard</span>On a <code>partial</code> capture <code>tls.fingerprint</code> is absent, and a <em>negated</em> <code>within</code> on an absent variable does not fire (see <a href="#negation">Negation</a>), so rule 5 is safe even without the first condition. The explicit <code>tls.capture_status</code> check documents the intent and protects a rule whose second condition is later changed to a positive match. On plain HTTP every <code>tls.*</code> except <code>tls.enabled</code> and <code>tls.capture_status</code> is absent, so none of these rules fires there. <code>%{connection.id}</code> as a <code>rate_limit</code> key throttles the connection instead of the address, which matters behind NAT and CGNAT.</div>
     </section>
 
   </main>
