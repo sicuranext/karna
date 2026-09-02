@@ -38,6 +38,19 @@ end
 local warnings = {}
 local function warn(m) warnings[#warnings + 1] = m end
 
+-- SHA-256 stand-in: deterministic 64-hex digest of the canonical string (the
+-- real primitive is resty.sha256, exercised end to end on the dev stack).
+local sha_calls = 0
+local function fake_sha256_hex(str)
+    sha_calls = sha_calls + 1
+    local saved = hmac_calls                      -- reuse the mixer without touching the hmac counter
+    local raw = fake_hmac("sha", str)
+    hmac_calls = saved
+    return (raw:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+end
+tls.sha256_hex = fake_sha256_hex
+tls._fp_cache = nil
+
 -- Measured on Kong 3.9 / openresty 1.25.3.2 (dev + production) ------------------
 local V13 = { ssl_protocol = "TLSv1.3", ssl_cipher = "TLS_AES_128_GCM_SHA256", ssl_curve = "X25519",
               ssl_alpn_protocol = "h2", ssl_server_name = "example.com", ssl_session_reused = ".",
@@ -166,7 +179,7 @@ check("booleans as 'true'/'false' strings", tls.resolve_variable("tls.session_re
       and tls.resolve_variable("tls.early_data", ctx) == "false")
 check("lists as colon strings", tls.resolve_variable("tls.client_ciphers", ctx) == V13.ssl_ciphers
       and tls.resolve_variable("tls.client_curves", ctx) == V13.ssl_curves)
-check("unknown tls field → nil", tls.resolve_variable("tls.fingerprint", ctx) == nil and tls.resolve_variable("tls.", ctx) == nil)
+check("unknown tls field → nil", tls.resolve_variable("tls.nope", ctx) == nil and tls.resolve_variable("tls.", ctx) == nil)
 check("internal state not reachable as a variable", tls.resolve_variable("tls.key", ctx) == nil)
 
 local pctx = {}
@@ -190,7 +203,7 @@ local rows = {}
 tls.populate_inspection_table(rows, ctx)
 local flat = {}
 for _, r in ipairs(rows) do for k, v in pairs(r) do flat[k] = v end end
-check("rows: connection.id + enabled + status + 9 fields", #rows == 12 and flat["connection.id"] == id1
+check("rows: connection.id + enabled + status + 9 fields + 2 fingerprint", #rows == 14 and flat["connection.id"] == id1 and #flat["tls.fingerprint"] == 64 and flat["tls.fingerprint_version"] == "karna-tls-v1"
       and flat["tls.enabled"] == "true" and flat["tls.sni"] == "example.com" and flat["tls.session_reused"] == "false")
 rows = {}
 tls.populate_inspection_table(rows, pctx)
@@ -202,7 +215,8 @@ print("audit blocks")
 local network, block = tls.audit_blocks(ctx)
 check("network.connection_id", network and network.connection_id == id1)
 check("tls block: booleans stay booleans", block.enabled == true and block.session_reused == false and block.early_data == false)
-check("tls block: 11 keys", (function() local n = 0; for _ in pairs(block) do n = n + 1 end; return n end)() == 11)
+check("tls block: 12 keys (11 + fingerprint)", (function() local n = 0; for _ in pairs(block) do n = n + 1 end; return n end)() == 12)
+check("tls block: fingerprint is {version, algorithm, value}", type(block.fingerprint) == "table" and block.fingerprint.version == "karna-tls-v1" and block.fingerprint.algorithm == "sha256" and #block.fingerprint.value == 64)
 check("tls block: lists as strings", block.client_ciphers == V13.ssl_ciphers)
 network, block = tls.audit_blocks(pctx)
 check("plain: tls = {enabled=false, capture_status='not_tls'} only",
@@ -215,6 +229,59 @@ network, block = tls.audit_blocks({ tls = { enabled = false, capture_status = "n
 check("no connection id → network nil, tls kept", network == nil and block.capture_status == "not_tls")
 
 check("to_hex", tls._to_hex("\0\255\16") == "00ff10")
+
+-- fingerprint karna-tls-v1 ------------------------------------------------------------
+print("fingerprint karna-tls-v1")
+local CHROME = "0x9a9a:TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA"
+local CHROME_CANON = "karna-tls-v1|TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384,ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-RSA-AES128-SHA,ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384,AES128-SHA,AES256-SHA"
+local canon, kept, dropped = tls.fingerprint_canonical(CHROME)
+check("Chrome sample: GREASE removed, 15 ciphers kept in order", canon == CHROME_CANON and kept == 15 and dropped == 1)
+check("GREASE anywhere in the list is dropped", tls.fingerprint_canonical("A:0x1a1a:B:0xfafa") == "karna-tls-v1|A,B")
+check("GREASE match is case-insensitive", tls.fingerprint_canonical("0x2A2A:A") == "karna-tls-v1|A")
+check("all 16 GREASE values recognised", (function()
+    for _, d in ipairs({"0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"}) do
+        if not tls._is_grease("0x" .. d .. "a" .. d .. "a") then return false end
+    end
+    return true end)())
+check("non-GREASE hex unknowns are kept (0xc011, 0x11ec, 0x0a0b, 0xaa0a)",
+      tls.fingerprint_canonical("0xc011:0x11ec:0x0a0b:0xaa0a") == "karna-tls-v1|0xc011,0x11ec,0x0a0b,0xaa0a")
+check("SCSV is kept", tls.fingerprint_canonical("A:TLS_EMPTY_RENEGOTIATION_INFO_SCSV") == "karna-tls-v1|A,TLS_EMPTY_RENEGOTIATION_INFO_SCSV")
+check("order matters in the canonical string", tls.fingerprint_canonical("A:B") ~= tls.fingerprint_canonical("B:A"))
+check("empty tokens (double colon, trailing colon) ignored", tls.fingerprint_canonical("A::B:") == "karna-tls-v1|A,B")
+check("only GREASE → '-'", tls.fingerprint_canonical("0x9a9a") == "karna-tls-v1|-")
+check("empty / nil → '-'", tls.fingerprint_canonical("") == "karna-tls-v1|-" and tls.fingerprint_canonical(nil) == "karna-tls-v1|-")
+
+local fp1 = tls.fingerprint(CHROME)
+check("fingerprint is 64 hex", fp1 ~= nil and #fp1 == 64 and fp1:match("^%x+$") ~= nil)
+check("same list → same value", tls.fingerprint(CHROME) == fp1)
+check("GREASE variant → same value (invariance)", tls.fingerprint(CHROME:gsub("0x9a9a", "0x3a3a")) == fp1 and tls.fingerprint(CHROME:sub(8)) == fp1)
+check("cipher order change → different value", tls.fingerprint("TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256") ~= tls.fingerprint("TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384"))
+check("one cipher more → different value", tls.fingerprint(CHROME .. ":AES128-SHA256") ~= fp1)
+local calls_before = sha_calls
+tls.fingerprint(CHROME); tls.fingerprint(CHROME)
+check("hash cached per canonical string", sha_calls == calls_before)
+
+local ctls = tls.collect({ ssl_protocol = "TLSv1.3", ssl_cipher = "TLS_AES_128_GCM_SHA256", ssl_ciphers = CHROME })
+check("collect attaches {version, algorithm, value} on complete", ctls.fingerprint and ctls.fingerprint.version == "karna-tls-v1"
+      and ctls.fingerprint.algorithm == "sha256" and ctls.fingerprint.value == fp1)
+check("partial capture → no fingerprint", tls.collect({ ssl_protocol = "TLSv1.3", ssl_cipher = "", ssl_ciphers = CHROME }).fingerprint == nil)
+check("plain HTTP → no fingerprint", tls.collect(PLAIN).fingerprint == nil)
+check("TLS 1.2 resumed (curves empty) still fingerprinted: curves are not in v1", tls.collect(V12_RESUMED).fingerprint ~= nil)
+
+local fctx = { tls = ctls, connection_id = "kc1_x" }
+check("tls.fingerprint variable", tls.resolve_variable("tls.fingerprint", fctx) == fp1)
+check("tls.fingerprint_version variable", tls.resolve_variable("tls.fingerprint_version", fctx) == "karna-tls-v1")
+check("no fingerprint → variables absent", tls.resolve_variable("tls.fingerprint", { tls = tls.collect(V12_RESUMED) }) ~= nil
+      and tls.resolve_variable("tls.fingerprint", { tls = { enabled = true, capture_status = "partial" } }) == nil)
+local _, fblock = tls.audit_blocks(fctx)
+check("audit block: nested fingerprint object", fblock.fingerprint.value == fp1 and fblock.fingerprint.algorithm == "sha256")
+
+tls.sha256_hex = function() return nil end; tls._fp_cache = nil
+check("sha256 unavailable → no fingerprint, capture still complete",
+      (function() local t2 = tls.collect(V13); return t2.fingerprint == nil and t2.capture_status == "complete" end)())
+tls.sha256_hex = function() error("boom") end; tls._fp_cache = nil
+check("sha256 throwing → no fingerprint, no throw", tls.collect(V13).fingerprint == nil)
+tls.sha256_hex = fake_sha256_hex; tls._fp_cache = nil
 
 if failures > 0 then
     io.stderr:write(("\n%d failure(s)\n"):format(failures))

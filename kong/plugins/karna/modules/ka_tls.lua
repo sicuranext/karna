@@ -41,6 +41,11 @@ _M.MIN_KEY_LEN    = 16
 _M.ID_PREFIX      = "kc1_"
 _M.ENV_KEY_NAME   = "KARNA_CONNECTION_ID_HMAC_KEY"
 
+-- karna-tls-v1 fingerprint (see fingerprint_canonical below for the spec).
+_M.FP_VERSION     = "karna-tls-v1"
+_M.FP_ALGORITHM   = "sha256"
+_M.FP_CACHE_SIZE  = 1024
+
 _M.STATUS_NOT_TLS  = "not_tls"
 _M.STATUS_COMPLETE = "complete"
 _M.STATUS_PARTIAL  = "partial"
@@ -109,10 +114,106 @@ function _M.collect(var, max_list_len)
     -- offered, no SNI, TLS 1.2 resumption); they do not make the capture partial.
     if t.cipher ~= "" and client_ciphers ~= "" then
         t.capture_status = _M.STATUS_COMPLETE
+        -- Fingerprint only over a complete capture: a hash of a partial list
+        -- would be a different, meaningless identity for the same client.
+        local value = _M.fingerprint(client_ciphers)
+        if value then
+            t.fingerprint = { version = _M.FP_VERSION, algorithm = _M.FP_ALGORITHM, value = value }
+        end
     else
         t.capture_status = _M.STATUS_PARTIAL
     end
     return t
+end
+
+------------------------------------------------------------------------------
+-- Fingerprint karna-tls-v1
+------------------------------------------------------------------------------
+--
+-- karna-tls-v1 is a JA3-like fingerprint reduced to the cipher suites the
+-- client offered, the one ClientHello list nginx exposes for new AND resumed
+-- sessions on every TLS version ($ssl_ciphers). Curves are deliberately out:
+-- $ssl_curves is empty on a resumed TLS 1.2 session, so a client would carry
+-- two identities. It is a property of the client, not of the server config:
+-- nothing negotiated enters it.
+--
+-- Spec (the version string names ALL of this; a change means karna-tls-v2):
+--   input     $ssl_ciphers as rendered by nginx: names for ciphers OpenSSL
+--             knows, 0xNNNN (lowercase hex) for the rest, ":"-separated, in
+--             the client's order.
+--   GREASE    tokens 0x0a0a, 0x1a1a, ..., 0xfafa (RFC 8701; both bytes equal,
+--             low nibble 0xa) are removed, matched case-insensitively. Every
+--             other 0xNNNN token is kept — an unknown-to-the-server cipher is
+--             information, not noise.
+--   SCSV      TLS_EMPTY_RENEGOTIATION_INFO_SCSV (0x00ff) is kept when present,
+--             as JA3 does.
+--   order     preserved (it is what distinguishes stacks that share a set).
+--   canonical "karna-tls-v1|" .. tokens joined by ",", or "karna-tls-v1|-"
+--             when nothing is left.
+--   hash      SHA-256 of the canonical string, lowercase hex (64 chars).
+--   status    computed only when capture_status == "complete"; absent on
+--             partial captures and on plain HTTP.
+-- The canonical string itself is never logged; it is available to tests and
+-- to fingerprint_canonical() for debugging.
+
+local function is_grease(token)
+    -- lowercase to be safe: nginx renders lowercase hex, other sources may not
+    local t = string.lower(token)
+    if #t ~= 6 or string_sub(t, 1, 2) ~= "0x" then return false end
+    local n1, n2 = string_sub(t, 3, 3), string_sub(t, 5, 5)
+    return n1 == n2 and string_sub(t, 4, 4) == "a" and string_sub(t, 6, 6) == "a"
+end
+_M._is_grease = is_grease
+
+-- Canonical string for a client cipher list. Returns canonical, kept, dropped.
+function _M.fingerprint_canonical(client_ciphers)
+    local kept, n, dropped = {}, 0, 0
+    if type(client_ciphers) == "string" and client_ciphers ~= "" then
+        local pos, len = 1, #client_ciphers
+        while pos <= len + 1 do
+            local sep = string.find(client_ciphers, ":", pos, true)
+            local token = string_sub(client_ciphers, pos, (sep or (len + 1)) - 1)
+            if token ~= "" then
+                if is_grease(token) then
+                    dropped = dropped + 1
+                else
+                    n = n + 1
+                    kept[n] = token
+                end
+            end
+            if not sep then break end
+            pos = sep + 1
+        end
+    end
+    local body = (n > 0) and table.concat(kept, ",") or "-"
+    return _M.FP_VERSION .. "|" .. body, n, dropped
+end
+
+-- Default SHA-256 → hex primitive (resty.sha256); overridable (tests) via
+-- _M.sha256_hex. nil when no implementation is available.
+function _M.sha256_hex(s)
+    local ok, sha256 = pcall(require, "resty.sha256")
+    if not ok or not sha256 then return nil end
+    local h = sha256:new()
+    if not h then return nil end
+    h:update(s)
+    return to_hex(h:final())
+end
+
+-- Hash of the canonical string, cached per worker (canonical → hex).
+function _M.fingerprint(client_ciphers)
+    local canonical = _M.fingerprint_canonical(client_ciphers)
+    local cache = _M._fp_cache
+    if not cache then
+        cache = _M.new_cache(_M.FP_CACHE_SIZE)
+        _M._fp_cache = cache
+    end
+    local hit = cache:get(canonical)
+    if hit then return hit end
+    local ok, hex = pcall(_M.sha256_hex, canonical)
+    if not ok or type(hex) ~= "string" or #hex ~= 64 then return nil end
+    cache:set(canonical, hex)
+    return hex
 end
 
 ------------------------------------------------------------------------------
@@ -255,8 +356,14 @@ function _M.resolve_variable(name, ctx)
     if short == "enabled"        then return as_string(t.enabled) end
     if short == "capture_status" then return t.capture_status end
     if not t.enabled then return nil end
+    if short == "fingerprint" then
+        return t.fingerprint and t.fingerprint.value or nil
+    end
+    if short == "fingerprint_version" then
+        return t.fingerprint and t.fingerprint.version or nil
+    end
     local v = t[short]
-    if v == nil then return nil end
+    if v == nil or type(v) == "table" then return nil end
     return as_string(v)
 end
 
@@ -277,6 +384,10 @@ function _M.populate_inspection_table(tbl, ctx)
             tbl[#tbl + 1] = { ["tls." .. f] = as_string(t[f]) }
         end
     end
+    if t.fingerprint then
+        tbl[#tbl + 1] = { ["tls.fingerprint"]         = t.fingerprint.value }
+        tbl[#tbl + 1] = { ["tls.fingerprint_version"] = t.fingerprint.version }
+    end
 end
 
 -- JSON-ready audit blocks: `network` (nil when no connection id) and `tls`
@@ -293,6 +404,11 @@ function _M.audit_blocks(ctx)
     local tls = { enabled = t.enabled, capture_status = t.capture_status }
     if t.enabled then
         for _, f in ipairs(_M.FIELDS) do tls[f] = t[f] end
+        if t.fingerprint then
+            tls.fingerprint = { version   = t.fingerprint.version,
+                                algorithm = t.fingerprint.algorithm,
+                                value     = t.fingerprint.value }
+        end
     end
     return network, tls
 end

@@ -67,6 +67,25 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     and the engine; pure Lua, primitives injectable), populated once per
     request at the top of `access`, fail-open end to end. Unit-tested in
     `ka-unittest/tls_telemetry.lua` (52 assertions, wired into CI).
+- **TLS client fingerprint `karna-tls-v1`**, in both audit formats as
+  `tls.fingerprint = {version, algorithm, value}` and as the read-only rule
+  variables `tls.fingerprint` (the hex value) / `tls.fingerprint_version`. A
+  JA3-like fingerprint reduced to the cipher suites the client offered, the
+  one ClientHello list nginx exposes for new and resumed sessions alike
+  (`$ssl_ciphers`); curves stay out on purpose because `$ssl_curves` is empty
+  on a resumed TLS 1.2 session and the same client would carry two identities.
+  Spec, fully named by the version string: client order preserved, GREASE
+  tokens (`0x0a0a` … `0xfafa`) removed, every other `0xNNNN` unknown kept,
+  `TLS_EMPTY_RENEGOTIATION_INFO_SCSV` kept, canonical string
+  `karna-tls-v1|<c1>,<c2>,…` (`-` when empty), SHA-256, lowercase hex.
+  Nothing negotiated enters it, so it is a property of the client, not of the
+  server configuration. Computed only on a `complete` capture, once per
+  distinct list per worker (LRU). Not JA3 and not JA4; a future
+  `karna-tls-v2` will add the client signature algorithms when Kong ships an
+  nginx with `$ssl_sigalgs` (1.31.2+). Documented with five example rules
+  (fingerprint allow/deny, SNI vs Host, browser UA with a non-browser
+  fingerprint, legacy TLS version, safe use on partial captures), none
+  enabled by default.
 
 ## [1.5.3] - 2026-08-31
 
