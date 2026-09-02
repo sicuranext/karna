@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-09-02
+
 ### Added
 
 - Audit logs (v1 and v2) now record the **request header names in the order the
