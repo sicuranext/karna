@@ -69,6 +69,8 @@ jobs:
         run: lua ka-unittest/negated_isset_absence.lua
       - name: Request header names capture (audit log header_names)
         run: lua ka-unittest/header_names.lua
+      - name: TLS telemetry + connection id (audit log tls / network blocks, tls.* vars)
+        run: lua ka-unittest/tls_telemetry.lua
       - name: custom_secrules controls/detection split (+ nolog/auditlog flags)
         run: lua ka-unittest/custom_secrules_split.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)

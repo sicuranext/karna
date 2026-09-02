@@ -28,6 +28,45 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - New module `ka_header_names.lua` (pure Lua, unit-tested in
     `ka-unittest/header_names.lua`), wired at the very top of `access` so the
     capture precedes every early exit and every header rewrite.
+- **Pseudonymous connection id** in both audit formats: `network.connection_id`
+  (v2) / `transaction.network.connection_id` (v1), `kc1_<32 hex>`. Identical for
+  every request on the same TCP connection (HTTP/1.1 keep-alive and every
+  HTTP/2 stream, verified on Kong 3.9), different across connections, not
+  reversible: HMAC-SHA256 over the nginx connection serial and a per-worker
+  nonce, keyed by the new env var `KARNA_CONNECTION_ID_HMAC_KEY` (>= 16 bytes;
+  unset or too short → random per-worker key with one startup warning, ids
+  still stable per connection). No IP, port, TLS session id or other client
+  material enters the digest and the input is never logged. Rotating the key
+  changes every id; no continuity across rotations or restarts. Also exposed
+  as the read-only rule variable / macro `connection.id`, e.g. a
+  `rate_limit` key that follows the connection instead of the IP.
+  `docker/main-env.conf` whitelists the variable (deployments overriding
+  `KONG_NGINX_MAIN_INCLUDE` must add the `env` line themselves).
+- **Negotiated TLS telemetry** in both audit formats: a `tls` block (v2) /
+  `transaction.tls` (v1) read from the nginx `$ssl_*` variables in the HTTP
+  phases: `enabled`, `capture_status` (`not_tls` / `complete` / `partial` /
+  `error`), `protocol`, `cipher`, `curve`, `alpn`, `sni`, `session_reused`,
+  `early_data`, plus the two lists the client **offered** in the client's
+  order as the colon-separated strings nginx renders (unknowns and GREASE as
+  `0xNNNN`): `client_ciphers` and `client_curves`. Plain HTTP →
+  `{"enabled": false, "capture_status": "not_tls"}`. Lists capped at 4096
+  bytes. No hook, no ClientHello parsing, no secrets. Documented limits:
+  `client_curves` is empty on a resumed TLS 1.2 session (nginx exposes it for
+  new sessions only; TLS 1.3 resumption keeps it), `early_data` is effectively
+  always `false` because Kong does not enable `ssl_early_data`, and the offered
+  signature algorithms / extensions / ALPN list are out of reach without a
+  ClientHello hook.
+  - Same data as **read-only rule variables**: `tls.enabled`,
+    `tls.capture_status` (always resolve once populated) and, on TLS requests,
+    `tls.protocol`, `tls.cipher`, `tls.curve`, `tls.alpn`, `tls.sni`,
+    `tls.session_reused`, `tls.early_data` (booleans as `true`/`false`),
+    `tls.client_ciphers`, `tls.client_curves`. Absent on plain HTTP so `isSet`
+    is false; an empty list resolves to `""`, distinct from absent. All usable
+    as `%{tls.…}` macros.
+  - New module `ka_tls.lua` (one point of normalisation for audit v1, audit v2
+    and the engine; pure Lua, primitives injectable), populated once per
+    request at the top of `access`, fail-open end to end. Unit-tested in
+    `ka-unittest/tls_telemetry.lua` (52 assertions, wired into CI).
 
 ## [1.5.3] - 2026-08-31
 

@@ -329,6 +329,19 @@ end
 local cjson                             = require "cjson"
 local cjson_safe                        = require "cjson.safe"
 local ka_mcp                            = require "kong.plugins.karna.ka_mcp"
+-- ka_tls resolves the tls.* / connection.id variables. Required under pcall
+-- so the engine stays loadable when the module is absent (unit tests that stub
+-- only what they exercise); the stub resolves nothing, i.e. fail-open.
+local ka_tls
+do
+    local ok_tls, mod = pcall(require, "kong.plugins.karna.ka_tls")
+    if ok_tls and type(mod) == "table" then
+        ka_tls = mod
+    else
+        ka_tls = { resolve_variable = function() return nil end,
+                   populate_inspection_table = function() end }
+    end
+end
 --local httpc                           = require "resty.http"
 local ipmatcher                         = require "resty.ipmatcher"
 local b64                               = require "ngx.base64"
@@ -3117,6 +3130,21 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     end
                 end
 
+                -- TLS telemetry + connection id (ka_tls): `tls.<field>` and
+                -- `connection.id`, read from kong.ctx.plugin.tls /
+                -- .connection_id populated at the top of access by
+                -- ka_tls.populate. Plain scalars, booleans as "true"/"false",
+                -- client lists as the colon-separated strings nginx renders.
+                -- On a non-TLS request only tls.enabled ("false") and
+                -- tls.capture_status ("not_tls") resolve; every other tls.*
+                -- yields no entry (no match, isSet false). Read-only.
+                if variable == "connection.id" or string_find(variable, "^tls%.") then
+                    local tls_v = ka_tls.resolve_variable(variable)
+                    if tls_v ~= nil then
+                        values = { [variable] = tls_v }
+                    end
+                end
+
                 -- Redis inspection: the variable IS a Redis key/dataset
                 -- (`redis.<key>`, macros allowed in the key). The OPERATOR
                 -- picks the command: isSet→EXISTS, eq/rx/gt/...→GET, and the
@@ -4642,6 +4670,11 @@ _M.get_inspection_table = function(self, plugin_conf)
     if plugin_conf and plugin_conf.mcp_enabled and kong.ctx.plugin.mcp then
         ka_mcp.populate_inspection_table(kong.ctx.plugin.inspection_table)
     end
+
+    -- TLS telemetry + connection id macros (%{connection.id}, %{tls.sni},
+    -- %{tls.client_ciphers}, ...) — e.g. as a rate_limit key. Populated in
+    -- access by ka_tls.populate; pure over the ctx, pcall'd anyway.
+    pcall(ka_tls.populate_inspection_table, kong.ctx.plugin.inspection_table)
 
     if phase == "access" then
         local request_raw_path = request_get_raw_path()

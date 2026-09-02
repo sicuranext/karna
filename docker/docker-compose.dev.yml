@@ -124,6 +124,9 @@ services:
       KARNA_REDIS_URL: redis://karna-redis:6379/0
       KARNA_GLOBAL_RULES_HMAC_KEY: karna-dev-hmac-key
       KARNA_GLOBAL_RULES_POLL: "5"
+      # HMAC key for the pseudonymous audit-log connection_id (>= 16 bytes;
+      # production: `openssl rand -hex 32`). Unset = random per-worker key.
+      KARNA_CONNECTION_ID_HMAC_KEY: karna-dev-connection-id-key-0123456789
 
       # Global rules from disk. Off by default here so the dev stack (and the
       # CRS regression that runs against it) has no extra rules in play —

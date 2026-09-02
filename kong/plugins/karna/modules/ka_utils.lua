@@ -311,6 +311,29 @@ _M.get_request_header_names = function(self)
     return names, mode
 end
 
+-- Audit blocks for the pseudonymous connection id (`network`) and the
+-- negotiated TLS telemetry (`tls`), built by ka_tls from the block populated
+-- in access; when access never ran (a sibling plugin exited earlier) populate
+-- now — the ngx.var.ssl_* variables and $connection are readable in the log
+-- phase too. Lazy, pcall'd require so ka_utils stays loadable behind stubs.
+-- Returns network, tls (either may be nil → the caller leaves it out).
+local ka_tls
+_M.get_tls_audit_blocks = function(self)
+    if not ka_tls then
+        local okr, mod = pcall(require, "kong.plugins.karna.ka_tls")
+        if not okr then return nil, nil end
+        ka_tls = mod
+    end
+    local ctx = kong.ctx.plugin
+    if not ctx then return nil, nil end
+    if not ctx.tls then
+        pcall(ka_tls.populate, ctx, ngx.var)
+    end
+    local ok, network, tls = pcall(ka_tls.audit_blocks, ctx)
+    if not ok then return nil, nil end
+    return network, tls
+end
+
 _M.get_auditlog = function(self, matched_rule, matched_parts)
     local cjson = require "cjson"
 
@@ -387,6 +410,14 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
             json_log.transaction.request.header_names         = hn_names
             json_log.transaction.request.header_names_capture = hn_mode
         end
+    end
+
+    -- Additive: pseudonymous connection id + negotiated TLS telemetry, same
+    -- two objects as v2, under transaction. Absent when not captured.
+    do
+        local network, tls = self:get_tls_audit_blocks()
+        if network then json_log.transaction.network = network end
+        if tls     then json_log.transaction.tls     = tls     end
     end
 
     --json_log.transaction.request.uri = request_uri
@@ -919,6 +950,17 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             json_log.request.header_names         = hn_names
             json_log.request.header_names_capture = hn_mode
         end
+    end
+
+    -- Additive: `network.connection_id` (pseudonymous, stable per TCP
+    -- connection) and the `tls` block (negotiated parameters + the cipher and
+    -- curve lists the client offered, as colon-separated strings). On plain
+    -- HTTP `tls` is `{enabled = false, capture_status = "not_tls"}`. Absent
+    -- when not captured.
+    do
+        local network, tls = self:get_tls_audit_blocks()
+        if network then json_log.network = network end
+        if tls     then json_log.tls     = tls     end
     end
 
     return json_log
