@@ -388,7 +388,12 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
             },
             response = {
                 http_code = kong.response.get_status(),
-                headers = response_headers
+                headers = response_headers,
+                -- Bytes actually written to the client for this response
+                -- (status line + headers + body, after any compression), read
+                -- from the nginx core variable in the log phase. Additive,
+                -- same key as v2 response.bytes.
+                bytes = tonumber(ngx.var.bytes_sent) or 0
             },
             producer = {
                 modsecurity = "Karna",
@@ -918,6 +923,13 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
         response = {
             status = kong.response.get_status(),
             headers = response_headers,
+            -- Bytes actually written to the client for this response: status
+            -- line + headers + body, as sent on the wire (compressed size if a
+            -- compressor ran, what was really flushed if the client went away
+            -- early). $bytes_sent is complete in the log phase, so no
+            -- per-chunk counting in body_filter is needed; a Karna block or
+            -- a masked 50x is counted like any other response.
+            bytes = tonumber(ngx.var.bytes_sent) or 0,
             latency_ms = latency_ms,
             latencies = latencies
         },

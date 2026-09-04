@@ -7,6 +7,18 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Audit logs (v1 and v2) now record the **size of the response sent to the
+  client**: `response.bytes` (v2) / `transaction.response.bytes` (v1). It is
+  the nginx `$bytes_sent` counter read in the log phase, so it counts status
+  line, headers and body as they went on the wire: the compressed size when a
+  compressor ran, and only what was actually flushed when the client went away
+  early. A Karna block page, a masked 50x and a cached response are counted
+  like any other response. Always present, published as a number (`0` when
+  the counter is unavailable). No new work in the request or response phases:
+  one variable read per audit record.
+
 ## [1.5.4] - 2026-09-02
 
 ### Added

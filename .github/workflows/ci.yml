@@ -91,6 +91,8 @@ jobs:
         run: lua ka-unittest/auditlog_utf8_sanitize.lua
       - name: External plugin log entries in audit log v1 (transaction.messages mapping)
         run: lua ka-unittest/external_log_entries_v1.lua
+      - name: Audit log response.bytes (v1 + v2, $bytes_sent read in the log phase)
+        run: lua ka-unittest/auditlog_response_bytes.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
