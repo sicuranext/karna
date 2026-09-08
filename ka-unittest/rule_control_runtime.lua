@@ -56,13 +56,19 @@ local function new_store()
         remove_target_from_all_rules = {},
         engine_off = false,
         detection_only = false,
+        engine_on = false,
         body_access_off = false,
+        audit_request_body = false,
     }
 end
 
 -- SUT — copy from ka_engine.lua:__apply_rule_controls_inline, with the
 -- kong.ctx.plugin indirection replaced by an explicit `rc` argument.
-local function apply_rule_controls(rc, controls)
+-- `rule_id` is the carrying rule (only engine_on records it). The engine_on /
+-- audit_request_body semantics have their own tests (engine_on_control.lua,
+-- audit_request_body_control.lua); the copy here stays complete so this file
+-- keeps pinning the WHOLE applier.
+local function apply_rule_controls(rc, controls, rule_id)
     if not controls or not rc then return end
     for _, control in pairs(controls) do
         if control.remove_rule and control.remove_rule.rule_id then
@@ -109,9 +115,23 @@ local function apply_rule_controls(rc, controls)
             rc._has_removed_tags = true
         end
 
-        if control.detection_only then rc.detection_only = true end
+        if control.detection_only then
+            rc.detection_only = true
+            rc.engine_on = false
+            rc.engine_forced_by = nil
+        end
+        if control.engine_on == true then
+            rc.engine_on = true
+            rc.detection_only = false
+            if rule_id ~= nil then rc.engine_forced_by = tostring(rule_id) end
+        end
         if control.body_access_off then rc.body_access_off = true end
+        if control.audit_request_body == true then rc.audit_request_body = true end
         if control.engine_off then rc.engine_off = true end
+    end
+    if rc.engine_off and rc.engine_on then
+        rc.engine_on = false
+        rc.engine_forced_by = nil
     end
 end
 
@@ -173,6 +193,7 @@ end
 -- SUT — copy from handler.lua
 local function detection_only_active(rc) return (rc and rc.detection_only) == true end
 local function rule_blocking_enabled(rc, engine_blocking_mode)
+    if rc and rc.engine_on == true then return true end
     if not engine_blocking_mode then return false end
     return not detection_only_active(rc)
 end
@@ -292,6 +313,19 @@ apply_rule_controls(rc, { { engine_off = true } })
 ok(rc.engine_off == true and rc.detection_only == false,
    "engine_off alone does not imply detection_only")
 
+-- ctl:ruleEngine=On — the third position of the switch. Full coverage lives in
+-- engine_on_control.lua; pinned here only as far as this file's readers go.
+print("- ctl:ruleEngine=On overrides both the service setting and DetectionOnly")
+rc = new_store()
+apply_rule_controls(rc, { { detection_only = true } }, "999903")
+apply_rule_controls(rc, { { engine_on = true } }, "999901")
+ok(rc.engine_on == true and rc.detection_only == false and rc.engine_forced_by == "999901",
+   "engine_on set, detection_only cleared, forcing rule recorded")
+ok(rule_blocking_enabled(rc, false), "detection service → terminal actions fire anyway")
+ok(not detection_only_active(rc), "fix_matched_parts sanitising is back too")
+apply_rule_controls(rc, { { engine_off = true } }, "999905")
+ok(rc.engine_on == false and rc.engine_forced_by == nil, "engine_off still wins over engine_on")
+
 -- ============================================================
 print("")
 print("- ctl:requestBodyAccess=Off")
@@ -333,6 +367,9 @@ ok(rule_removed(rc, { id = "920170", tags = {} }), "first pass id removal surviv
 ok(rule_removed(rc, { id = "932260", tags = {} }), "third pass id removal applied")
 ok(rule_removed(rc, { id = "942100", tags = { "attack-sqli" } }), "tag removal applied")
 ok(rc.detection_only == true, "detection_only survived")
+apply_rule_controls(rc, { { audit_request_body = true } }, "999910")
+ok(rc.audit_request_body == true and rc.detection_only == true,
+   "a later audit_request_body accumulates without disturbing the engine state")
 
 print(string.format("\n%d test(s) failed", fails))
 os.exit(fails == 0 and 0 or 1)

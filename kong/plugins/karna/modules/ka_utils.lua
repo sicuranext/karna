@@ -443,6 +443,20 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
         local tags = matched_rule.tags or {"karna"}
         local rule_id = matched_rule.id or "0"
 
+        -- ctl:ruleEngine=On fired on this request: say so on the entry, so an
+        -- operator reading a v1 record can tell why a detection-only service
+        -- answered 403. A fresh array — the rule's own tags table is the cached
+        -- pack and is never mutated.
+        local rc = kong.ctx and kong.ctx.plugin and kong.ctx.plugin.rule_controls
+        if rc and rc.engine_on == true then
+            local forced = {}
+            if type(tags) == "table" then
+                for _, t in ipairs(tags) do forced[#forced + 1] = t end
+            end
+            forced[#forced + 1] = "karna/engine-forced-on/" .. tostring(rc.engine_forced_by or "unknown")
+            tags = forced
+        end
+
         json_log.transaction.messages = {
             {
                 message = matched_rule.message,
@@ -822,6 +836,12 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             -- `rate_limited` is set by the handler only when the counter went
             -- over; under DetectionOnly the 429 is suppressed but the counter
             -- still tripped, so the label stays truthful about what the rule saw.
+            --
+            -- `blocked` is set by the handler on every fixed_response match, per
+            -- entry, at dispatch time — after that rule's own controls were
+            -- applied and before anything later in the request (a
+            -- ctl:ruleEngine=On) could change the engine state. Entries without
+            -- it (the always-on gates) fall back to the request-level formula.
             local detection_only = (kong.ctx.plugin
                                     and kong.ctx.plugin.rule_controls
                                     and kong.ctx.plugin.rule_controls.detection_only) == true
@@ -831,11 +851,11 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             elseif matched.rate_limited then
                 action_label = "rate_limited"
             elseif rule.action and rule.action.fixed_response then
-                if plugin_conf.engine_blocking_mode and not detection_only then
-                    action_label = "block"
-                else
-                    action_label = "detect"
+                local blocked = matched.blocked
+                if blocked == nil then
+                    blocked = plugin_conf.engine_blocking_mode and not detection_only
                 end
+                action_label = blocked and "block" or "detect"
             end
 
             -- normalise tags the same way (nil / empty table → JSON `[]`)
@@ -898,6 +918,19 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     -- collect request enrichment (geoip / asn / useragent / custom), if any
     local enrichment = self:build_enrichment_block(kong.ctx.shared)
 
+    -- Effective engine mode for THIS request. A rule that fired
+    -- ctl:ruleEngine=DetectionOnly turns it detection-only regardless of the
+    -- service setting; one that fired ctl:ruleEngine=On turns it blocking
+    -- regardless of the service setting (and names itself in forced_by_rule).
+    -- The applier keeps the two flags mutually exclusive.
+    local rc = kong.ctx.plugin and kong.ctx.plugin.rule_controls
+    local engine_forced_on = (rc and rc.engine_on) == true
+    local engine_detection_only = (rc and rc.detection_only) == true
+    local engine_mode = "detection"
+    if engine_forced_on or (plugin_conf.engine_blocking_mode and not engine_detection_only) then
+        engine_mode = "blocking"
+    end
+
     local json_log = {
         version = "2.0",
         timestamp = os.date("!%Y-%m-%dT%H:%M:%S", os.time()) .. "." .. string.format("%03d", (ngx.now() % 1) * 1000) .. "Z",
@@ -937,18 +970,19 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             name = "karna",
             version = ka_version.version,
             commit = ka_version.commit,
-            -- A rule that fired ctl:ruleEngine=DetectionOnly turns this request
-            -- into a detection-only one regardless of the service setting, so
-            -- report what actually applied.
-            mode = (plugin_conf.engine_blocking_mode
-                    and not (kong.ctx.plugin and kong.ctx.plugin.rule_controls
-                             and kong.ctx.plugin.rule_controls.detection_only))
-                   and "blocking" or "detection",
+            mode = engine_mode,
             paranoia_level = tonumber(plugin_conf.paranoia_level) or 1
         },
         matches = matches,
         external_matches = external_matches
     }
+
+    -- Only when a rule forced the engine On: which one. Absent otherwise, so a
+    -- record from a service that never uses the control is byte-identical to
+    -- what it was before.
+    if engine_forced_on and rc.engine_forced_by ~= nil then
+        json_log.engine.forced_by_rule = tostring(rc.engine_forced_by)
+    end
 
     if enrichment then
         json_log.enrichment = enrichment
@@ -976,6 +1010,102 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
     end
 
     return json_log
+end
+
+-- Raw request body for the audit record (rule control `audit_request_body`,
+-- ModSecurity `ctl:auditLogParts=+C`). Returns
+--   { body = <string>, encoding = "utf-8" | "base64", truncated = bool, length = <n> }
+-- or nil when there is nothing to attach. `length` is always the size of the
+-- body as received, `truncated` says whether `body` is a prefix of it.
+--
+-- Clipped at `max_bytes` (nil / negative → 16384). A clip can split a multi-byte
+-- character, so when the clipped prefix is not valid UTF-8 we back off up to
+-- three bytes before deciding the body itself is not text. A body that is not
+-- valid UTF-8 (binary, a broken charset) is stored base64-encoded and marked
+-- `encoding = "base64"`: the record must stay valid UTF-8 and the sanitiser's
+-- \xNN rewrite would make the body unrecoverable. Validity is decided with the
+-- same rule the writer applies (sanitize_utf8 is the identity on valid input).
+_M.build_audit_request_body = function(raw, max_bytes)
+    if type(raw) ~= "string" or raw == "" then return nil end
+
+    local length = #raw
+    local cap = tonumber(max_bytes)
+    if cap == nil or cap < 0 then cap = 16384 end
+    cap = math.floor(cap)
+
+    local body = raw
+    local truncated = false
+    if length > cap then
+        body = string_sub(raw, 1, cap)
+        truncated = true
+    end
+
+    local encoding = "utf-8"
+    if _M.sanitize_utf8(body) ~= body then
+        local recovered
+        if truncated then
+            for back = 1, 3 do
+                if #body - back < 0 then break end
+                local candidate = string_sub(body, 1, #body - back)
+                if _M.sanitize_utf8(candidate) == candidate then
+                    recovered = candidate
+                    break
+                end
+            end
+        end
+        if recovered then
+            body = recovered
+        else
+            body = ngx.encode_base64(body)
+            encoding = "base64"
+        end
+    end
+
+    return { body = body, encoding = encoding, truncated = truncated, length = length }
+end
+
+-- Attach the raw request body to an audit document, in place, when — and only
+-- when — a rule applied the `audit_request_body` control on this request and
+-- body access was not switched off (ctl:requestBodyAccess=Off makes part C
+-- unavailable in ModSecurity too). The bytes are the ones the engine pinned in
+-- the request phase (kong.ctx.plugin.ka_raw_body): the body as the client sent
+-- it, before any fix_matched_parts rewrite. Never forces a write and never
+-- touches matches[] / messages[]: it decorates a record that exists anyway.
+--
+-- Placement follows the document shape, not the config flag, so a caller
+-- holding either format gets the right slot:
+--   v2  request.body_raw          + request.body_encoding / body_truncated / body_length
+--   v1  transaction.request.body  (ModSecurity's part C slot in its JSON audit
+--                                 log) + the same three siblings
+-- Returns true when something was attached.
+_M.attach_audit_request_body = function(self, json_log, plugin_conf)
+    if type(json_log) ~= "table" then return false end
+    local ctx = kong.ctx and kong.ctx.plugin
+    local rc = ctx and ctx.rule_controls
+    if not rc or rc.audit_request_body ~= true then return false end
+    if rc.body_access_off == true then return false end
+
+    local raw = ctx.ka_raw_body
+    if type(raw) ~= "string" or raw == "" then return false end
+
+    local max_bytes = plugin_conf and plugin_conf.auditlog_request_body_max_bytes
+    local block = _M.build_audit_request_body(raw, max_bytes)
+    if not block then return false end
+
+    local target, key
+    if json_log.version == "2.0" and type(json_log.request) == "table" then
+        target, key = json_log.request, "body_raw"
+    elseif type(json_log.transaction) == "table" and type(json_log.transaction.request) == "table" then
+        target, key = json_log.transaction.request, "body"
+    else
+        return false
+    end
+
+    target[key]            = block.body
+    target.body_encoding   = block.encoding
+    target.body_truncated  = block.truncated
+    target.body_length     = block.length
+    return true
 end
 
 -- Rewrite every byte that is not part of a well-formed UTF-8 sequence as the

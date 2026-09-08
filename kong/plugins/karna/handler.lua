@@ -405,8 +405,8 @@ end
 -- own inline call site (loop_rules, non-terminal matches) and the two handler
 -- call sites share one implementation. See
 -- ka_engine:__apply_rule_controls_inline for the directive list.
-local apply_rule_controls = function(controls)
-  engine.__apply_rule_controls_inline(controls)
+local apply_rule_controls = function(rule)
+  engine.__apply_rule_controls_inline(rule.rule_control, rule.id)
 end
 
 -- True when a rule has flipped this request to detection-only via
@@ -425,11 +425,18 @@ end
 
 -- Terminal blocking (fixed_response, the rate_limit 429) fires only when the
 -- service is in blocking mode AND this request has not been flipped to
--- detection-only.
+-- detection-only — unless a rule applied ctl:ruleEngine=On (`engine_on`), which
+-- forces blocking for the rest of the request whatever the service setting and
+-- whatever an earlier DetectionOnly said. The applier keeps `engine_on` and
+-- `detection_only` mutually exclusive (last applied wins) and never lets
+-- `engine_on` survive next to `engine_off`.
 --
 -- Note the always-on validation gates in ka_engine read plugin_conf directly:
--- they run before any rule control exists, so they cannot be turned off here.
+-- they run before any rule control exists, so they cannot be turned off (or
+-- on) here.
 local rule_blocking_enabled = function(plugin_conf)
+  local rc = kong.ctx.plugin and kong.ctx.plugin.rule_controls
+  if rc and rc.engine_on == true then return true end
   if not plugin_conf.engine_blocking_mode then return false end
   return not detection_only_active()
 end
@@ -445,7 +452,7 @@ local apply_pass_rule_controls = function(plugin_conf, rules, phase)
   local matched = engine:loop_rule_controls_pass(plugin_conf, rules, phase)
   for _, rule in pairs(matched) do
     if rule.rule_control then
-      apply_rule_controls(rule.rule_control)
+      apply_rule_controls(rule)
     end
   end
 end
@@ -503,6 +510,21 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       sanitized = false,
     }
     table.insert(kong.ctx.plugin.ka_matched_rules, match_entry)
+
+    -- A terminal rule can also carry rule_control (a blocking rule that drops a
+    -- noisy CRS id, a virtual patch that forces the engine On). Applied HERE,
+    -- before the rule's own action is dispatched, in ModSecurity order: ctl:* is
+    -- non-disruptive and runs first, then the disruptive action is checked
+    -- against the engine state it just set. That is what lets `engine_on` +
+    -- `fixed_response` block on a detection-only service, and what makes
+    -- `detection_only` + `fixed_response` on one rule observe instead of block.
+    -- It also has to be here mechanically: response_exit does not return, and
+    -- the sanitize / rate-limit branches below return early, so anything placed
+    -- after them never ran for those rules. Same single applier the pass-rule
+    -- path and the engine's inline call site use.
+    if rule_matched_obj.rule_control then
+      apply_rule_controls(rule_matched_obj)
+    end
 
     -- sanitize-not-block: when a rule carries a `fix_matched_parts`
     -- action, Karna strips dangerous characters from the matched
@@ -582,8 +604,18 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       return
     end
 
-    -- if blocking mode enabled (and no ctl:ruleEngine=DetectionOnly), exit with error
-    if rule_blocking_enabled(plugin_conf) then
+    -- Whether THIS rule's fixed_response is enforced, decided now that its own
+    -- controls are in. Recorded per entry because the audit log is written with
+    -- the request's final state: a rule that only detected, followed by one
+    -- that forced the engine On and blocked, must still read `detect`.
+    local blocking = rule_blocking_enabled(plugin_conf)
+    if rule_matched_obj.action and rule_matched_obj.action.fixed_response then
+      match_entry.blocked = blocking
+    end
+
+    -- if blocking mode enabled (or forced by ctl:ruleEngine=On, and no
+    -- ctl:ruleEngine=DetectionOnly), exit with error
+    if blocking then
       if rule_matched_obj.action then
 
         if rule_matched_obj.action.fixed_response then
@@ -619,13 +651,6 @@ local evaluate_rules = function(plugin_conf, rules, phase)
         end
 
       end
-    end
-
-    -- A terminal rule can also carry rule_control (e.g. a blocking rule that
-    -- additionally drops a noisy CRS id). Same single applier the pass-rule path
-    -- and the engine's inline call site use.
-    if rule_matched_obj.rule_control then
-      apply_rule_controls(rule_matched_obj.rule_control)
     end
 
   end
@@ -859,10 +884,17 @@ function plugin:access(plugin_conf)
   --   engine_off                     = bool                   → ctl:ruleEngine=Off; skips all subsequent rules
   --   detection_only                 = bool                   → ctl:ruleEngine=DetectionOnly; rules still
   --                                                             match and log, terminal actions suppressed
+  --   engine_on                      = bool                   → ctl:ruleEngine=On; terminal actions enforced
+  --                                                             for the rest of the request even on a
+  --                                                             detection-only service (clears detection_only;
+  --                                                             engine_off still wins)
+  --   engine_forced_by               = string|nil             → id of the rule that set engine_on (audit log)
   --   removed_tags[<tag>]            = true                   → ctl:ruleRemoveByTag; drop every rule
   --                                                             carrying <tag> for this request
   --   body_access_off                = bool                   → ctl:requestBodyAccess=Off; the request body
   --                                                             is not inspected for the rest of the request
+  --   audit_request_body             = bool                   → ctl:auditLogParts=+C; attach the raw request
+  --                                                             body to the audit record, if one is written
   --   _has_removed_tags              = bool                   → gate for the per-rule tag walk (perf)
   --   _has_tag_targets               = bool                   → gate for the per-rule tag-target walk (perf)
   --
@@ -878,7 +910,9 @@ function plugin:access(plugin_conf)
     remove_target_from_all_rules = {},
     engine_off = false,
     detection_only = false,
+    engine_on = false,
     body_access_off = false,
+    audit_request_body = false,
   }
 
   -- get the CRS rule pack (loaded from disk at init_worker)
@@ -1173,6 +1207,14 @@ function plugin:log(plugin_conf)
         end
       end
     end
+
+    -- Raw request body, only when a rule applied the `audit_request_body`
+    -- control (ctl:auditLogParts=+C) and body access was not switched off.
+    -- Pure enrichment of a record that is being written anyway: v2 under
+    -- `request` (body_raw + body_encoding / body_truncated / body_length), v1 in
+    -- ModSecurity's part C slot (transaction.request.body). Clipped at
+    -- auditlog_request_body_max_bytes, base64 when not valid UTF-8.
+    utils:attach_audit_request_body(json_log, plugin_conf)
 
     -- From a rule, it is possible to add additional log fields
     if kong.ctx.plugin.additional_log_fields then

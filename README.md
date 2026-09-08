@@ -302,7 +302,9 @@ These use the same `ctl:*` controls as the plugins. The parser recognises:
 | `ctl:ruleRemoveTargetByTag=<tag>;<target>` | Drop one variable target from every rule carrying the tag. |
 | `ctl:ruleEngine=Off` | Skip all remaining rule evaluation. |
 | `ctl:ruleEngine=DetectionOnly` | Match and log, suppress every terminal action. |
+| `ctl:ruleEngine=On` | Force every terminal action for the rest of the request, even on a detection-only service or after `DetectionOnly`. Put it on the last link of a chain so it fires on a full match. |
 | `ctl:requestBodyAccess=Off` | Stop inspecting the request body. |
+| `ctl:auditLogParts=+C` | Attach the raw request body to the audit record, if one is written. |
 
 Anything else (`ctl:auditEngine`, `ctl:ruleRemoveByMsg`, …) is parsed and ignored
 rather than failing the rule. See [Rule Control Functions](#rule-control-functions)
@@ -685,6 +687,7 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `auditlog_only_on_match` | bool | `false` | Only write audit log when at least one rule matched. |
 | `auditlog_modsec` | bool | `false` | v1 only, emit ModSecurity-compatible format. |
 | `auditlog_error_log_on_match` | bool | `false` | Mirror matched rules to nginx error log. |
+| `auditlog_request_body_max_bytes` | number | `16384` | Cap for the raw request body a rule attaches to the record with the `audit_request_body` control (`ctl:auditLogParts=+C`). Above it the body is clipped and the record says so. |
 | `redis_host` | string | `localhost` | Redis host (rate limiting, counters, inspection reads, write actions). |
 | `redis_port` | number | `6379` | Redis port. |
 | `redis_password` | string | n/a | Redis AUTH (optional). |
@@ -952,7 +955,14 @@ matches, it applies to every rule evaluated *after* it in that request and
 nothing persists. This is what an exclusion rule in a global pack or in
 `rules_request` uses: `remove_rule`, `remove_rules_by_tag`,
 `remove_target_from_rule_by_id`, `remove_target_rule_by_tag`, `engine_off`,
-`detection_only`, `body_access_off`.
+`detection_only`, `engine_on`, `body_access_off`, `audit_request_body`.
+
+When a rule carries controls **and** its own terminal action, the controls are
+applied first and the action is dispatched against the state they set (the
+ModSecurity order: `ctl:*` is non-disruptive and runs before the disruptive
+action). That is what lets `engine_on` + `fixed_response` on one rule block on a
+detection-only service, and what makes `detection_only` + `fixed_response` on
+one rule observe instead of block.
 
 **Load-time controls** rewrite the cached rule pack once at worker start. They
 are what `coreruleset_fix.lua` uses to patch FP-prone CRS rules:
@@ -963,10 +973,10 @@ are what `coreruleset_fix.lua` uses to patch FP-prone CRS rules:
 
 > **The always-on validation gates cannot be reached from a rule control.** The
 > method, path, denied-header, content-type/charset, body-parser and
-> argument-count checks all run *before* the first rule is evaluated, so neither
-> `engine_off` nor `detection_only` nor `body_access_off` can switch them off. To
-> loosen those, use the plugin schema (`request_content_type_enforce`,
-> `limit_arg_num`, `request_methods_allowed`, …).
+> argument-count checks all run *before* the first rule is evaluated, so no
+> control — `engine_off`, `detection_only`, `engine_on`, `body_access_off` — can
+> switch them off or on. To loosen those, use the plugin schema
+> (`request_content_type_enforce`, `limit_arg_num`, `request_methods_allowed`, …).
 
 ### `change_rule_action`
 
@@ -1175,6 +1185,56 @@ second Kong service just to carry a different `engine_blocking_mode`.
 ]
 ```
 
+### `engine_on`
+
+Force blocking for the rest of this request (`ctl:ruleEngine=On`), even on a
+service running with `engine_blocking_mode = false` and even after an earlier
+rule applied `detection_only`. From the moment the carrying rule matches, every
+**terminal** action is enforced: `fixed_response`, the `rate_limit` 429, and
+`fix_matched_parts` sanitising. It is the virtual-patch primitive: a service you
+are still tuning in detection mode can block one known exploit path right now,
+without flipping the whole service to blocking.
+
+The control applies when the rule fully matches (all conditions, so the whole
+chain), and it is applied **before** the rule's own action is dispatched. The
+usual shape is therefore the control and the block on the same rule:
+
+```json
+{
+  "id": "999901",
+  "phase": "access",
+  "message": "virtual patch: legacy export command injection",
+  "conditions": [
+    { "variables": ["request.path"], "op": "beginsWith", "value": "/api/legacy/export" },
+    { "variables": ["request.arg.value:cmd"], "op": "contains", "value": ";" }
+  ],
+  "action": { "fixed_response": { "status_code": 403 } },
+  "rule_control": [ { "engine_on": true } ]
+}
+```
+
+In SecLang, put the ctl on the last link of the chain, next to `deny` on the
+head, so it fires only when the whole chain matched:
+
+```
+SecRule REQUEST_URI "@beginsWith /api/legacy/export" \
+    "id:999901,phase:2,deny,status:403,msg:'virtual patch',chain"
+    SecRule ARGS:cmd "@contains ;" "ctl:ruleEngine=On"
+```
+
+Precedence: `engine_off` always wins (nothing is evaluated after it, and a rule
+declaring both Off and On is treated as Off). Between `detection_only` and
+`engine_on`, the last one applied wins, as in ModSecurity. Works in `access` and
+`header_filter`, from `rules_request`, `custom_secrules` and the global rules
+pack (disk or Redis).
+
+The audit log says why a detection-only service returned 403. v2: the match reads
+`action: "block"`, `engine.mode` reads `blocking` and `engine.forced_by_rule`
+names the rule that forced it; a rule that matched earlier on the same request
+and only detected keeps `action: "detect"`. v1: the message carries an extra tag
+`karna/engine-forced-on/<rule id>` and, with `auditlog_modsec`,
+`producer.secrules_engine` reads `Enabled`.
+
 ### `body_access_off`
 
 Stop inspecting the request body for the rest of this request
@@ -1193,6 +1253,59 @@ endpoint from paying for a full scan of megabytes that will never match anything
     { "body_access_off": true }
 ]
 ```
+
+### `audit_request_body`
+
+Attach the raw request body to this request's audit record
+(`ctl:auditLogParts=+C`). This is enrichment, not detection: the carrying rule
+has no `action`, so it is not recorded as a match (nothing in `matches[]` /
+`messages[]`, no message, no tags, no status change) and it does **not** force a
+record to be written. The record is written or not according to the existing
+settings (`auditlog_enabled`, `auditlog_only_on_match`, sibling-plugin entries);
+when it is written and this control fired, the body is attached.
+
+```json
+{
+  "id": "999910",
+  "phase": "access",
+  "conditions": [
+    { "variables": ["request.method"], "op": "eq", "value": "POST" },
+    { "variables": ["request.path"],   "op": "beginsWith", "value": "/api/orders" }
+  ],
+  "rule_control": [ { "audit_request_body": true } ]
+}
+```
+
+The same in SecLang, a `pass` rule keyed on method and path:
+
+```
+SecRule REQUEST_METHOD "@streq POST" "id:999910,phase:2,pass,nolog,chain"
+    SecRule REQUEST_URI "@beginsWith /api/orders" "ctl:auditLogParts=+C"
+```
+
+Other `auditLogParts` letters and `ctl:auditEngine=*` keep being ignored.
+
+What lands in the record:
+
+- v2: `request.body_raw`, with `request.body_encoding` (`utf-8` or `base64`),
+  `request.body_truncated` (bool) and `request.body_length` (bytes as received).
+- v1: `transaction.request.body`, the slot ModSecurity's JSON audit log uses for
+  part C, plus the same three siblings.
+- The body is the one the client sent, before any `fix_matched_parts` rewrite. It
+  is clipped at `auditlog_request_body_max_bytes` (default 16384); a clipped body
+  has `body_truncated: true` and `body_length` still reports the full size. A
+  body that is not valid UTF-8 is stored base64-encoded and marked
+  `body_encoding: "base64"`, so the record itself is always valid UTF-8.
+- Nothing is attached when `body_access_off` is active for the request (as in
+  ModSecurity, part C is unavailable with body access off), on a request without
+  a body, or when no record is written.
+- The body is never reflected into any response; the field is written by the log
+  phase only.
+
+> **This logs whatever the client sent.** Pointing it at a login form logs
+> credentials; at a payment endpoint, card data. Key the rule on the narrowest
+> method and path you can, keep the cap low, and protect the audit log
+> directory accordingly.
 
 ### `remove_target_rule_by_pattern`
 

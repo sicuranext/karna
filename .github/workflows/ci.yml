@@ -73,6 +73,10 @@ jobs:
         run: lua ka-unittest/tls_telemetry.lua
       - name: custom_secrules controls/detection split (+ nolog/auditlog flags)
         run: lua ka-unittest/custom_secrules_split.lua
+      - name: engine_on rule control (ctl:ruleEngine=On — forced blocking, audit mode/forced_by_rule)
+        run: lua ka-unittest/engine_on_control.lua
+      - name: audit_request_body rule control (ctl:auditLogParts=+C — raw body in the audit record)
+        run: lua ka-unittest/audit_request_body_control.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)
         run: lua ka-unittest/json_in_urlencoded.lua
       - name: Redis inspection read helper (whitelist + connection behavior)

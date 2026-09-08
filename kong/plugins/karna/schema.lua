@@ -299,6 +299,14 @@ local schema = {
           { auditlog_only_on_match = { type = "boolean", default = false } },
           { auditlog_modsec = { type = "boolean", default = false } },
           { auditlog_error_log_on_match = { type = "boolean", default = false } },
+          -- Cap, in bytes, for the raw request body a rule can attach to the
+          -- audit record with the rule control `audit_request_body`
+          -- (ModSecurity `ctl:auditLogParts=+C`). Bodies above it are clipped
+          -- and the record says so (`body_truncated: true`, `body_length` =
+          -- size as received). Nothing is attached unless a matching rule
+          -- asked for it, so this bounds the record only on the endpoints the
+          -- operator pointed the control at. Not valid UTF-8 → base64.
+          { auditlog_request_body_max_bytes = { type = "number", default = 16384 } },
 
           { redis_host = { type = "string", default = "localhost" } },
           { redis_port = { type = "number", default = 6379 } },
