@@ -745,27 +745,49 @@ end
 --   ctl:ruleRemoveTargetByTag=<tag>;<target> → drop one target from rules tagged <tag>
 --   ctl:ruleEngine=Off                       → bypass WAF for this request
 --   ctl:ruleEngine=DetectionOnly             → match + log, suppress terminal actions
+--   ctl:ruleEngine=On                        → force terminal actions for the rest of the request
 --   ctl:requestBodyAccess=Off                → stop inspecting the request body
+--   ctl:auditLogParts=+C                     → attach the raw request body to the audit record
 -- Unrecognised directives are ignored (forward-compat with future CRS
 -- additions; matches our defensive parsing posture for malformed input).
 function seclang.__get_rule_controls(actions)
     local controls = {}
     if not actions or actions == "" then return controls end
 
-    -- ctl:ruleEngine=Off / =DetectionOnly — matched before the generic ctl:
-    -- gmatch so the casing is preserved and the literal value is checked.
-    -- `Off` is the stronger of the two, so it wins if a rule somehow declares
-    -- both.
+    -- ctl:ruleEngine=Off / =DetectionOnly / =On — matched before the generic
+    -- ctl: gmatch so the casing is preserved and the literal value is checked.
+    -- `Off` is the strongest of the three, so it wins if a rule somehow
+    -- declares it next to another value. DetectionOnly and On are the two
+    -- positions of one switch: when a rule declares both, the one written last
+    -- wins — the order ModSecurity would apply them in.
     if actions:match("ctl:ruleEngine%s*=%s*Off") then
         table.insert(controls, { engine_off = true })
-    elseif actions:match("ctl:ruleEngine%s*=%s*DetectionOnly") then
-        table.insert(controls, { detection_only = true })
+    else
+        local p_detect = actions:find("ctl:ruleEngine%s*=%s*DetectionOnly")
+        local p_on     = actions:find("ctl:ruleEngine%s*=%s*On%f[^%w]")
+        if p_detect and (not p_on or p_detect > p_on) then
+            table.insert(controls, { detection_only = true })
+        elseif p_on then
+            table.insert(controls, { engine_on = true })
+        end
     end
 
     -- ctl:requestBodyAccess=Off — same reason: the literal value matters.
     -- `=On` is the default state, so there is nothing to record for it.
     if actions:match("ctl:requestBodyAccess%s*=%s*Off") then
         table.insert(controls, { body_access_off = true })
+    end
+
+    -- ctl:auditLogParts=+C — attach the raw request body (ModSecurity audit
+    -- part C) to this request's audit record. `+C`, `+CE` and a full list that
+    -- contains C all count; `-C` and lists without C record nothing (the body
+    -- is off by default, so there is no "remove" to express). Every other
+    -- letter, and ctl:auditEngine=*, stay ignored.
+    for sign, letters in actions:gmatch("ctl:auditLogParts%s*=%s*([%+%-]?)(%u+)") do
+        if sign ~= "-" and letters:find("C", 1, true) then
+            table.insert(controls, { audit_request_body = true })
+            break
+        end
     end
 
     for directive_arg in actions:gmatch("ctl:([^,]+)") do
@@ -945,11 +967,16 @@ function seclang.__parse_rule(rule_raw, chained, filter_by_id)
     end
 
     -- Per-request rule controls declared via `ctl:*` action directives
-    -- (CRS exclusion plugins). Only parsed on the head rule of a chain
-    -- — for chained children we'd see the same actions string from
-    -- the head, which would double-register. The handler will apply
-    -- these to `kong.ctx.plugin.rule_controls` when this rule fires.
-    if not chained then
+    -- (CRS exclusion plugins, custom_secrules). Parsed on every link of a
+    -- chain: each SecRule line carries its own actions string, and ModSecurity
+    -- rule packs put `ctl:ruleEngine=On` on the LAST link so it fires only when
+    -- the whole chain matched. Karna evaluates a chain as one rule with N
+    -- conditions and applies `rule_control` only on a full match, so a control
+    -- declared on any link lands on the head rule with exactly that meaning.
+    -- The handler applies these to `kong.ctx.plugin.rule_controls` when the
+    -- rule fires. (The bundled CRS declares no ctl:* on chain children, so this
+    -- changes nothing for the shipped pack.)
+    do
         local ctl_controls = seclang.__get_rule_controls(actions)
         if #ctl_controls > 0 then
             if not rules[id]["rule_control"] then

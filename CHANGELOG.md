@@ -9,6 +9,47 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- New per-request rule control **`engine_on`** (ModSecurity `ctl:ruleEngine=On`),
+  in both channels: JSON `rule_control: [{ "engine_on": true }]` (`rules_request`,
+  global pack from disk and from Redis) and the SecLang parser (`custom_secrules`,
+  CRS / plugin `.conf` files). When the carrying rule fully matches, every
+  terminal action (`fixed_response`, the `rate_limit` 429, `fix_matched_parts`)
+  is enforced for the rest of the request, even on a service running
+  `engine_blocking_mode = false` or after an earlier `detection_only`. This is
+  the virtual-patch primitive: block one known exploit path on a service that is
+  otherwise only observing. `engine_off` still wins (a rule declaring both Off
+  and On is treated as Off); between `detection_only` and `engine_on` the last
+  one applied wins, as in ModSecurity. Works in `access` and `header_filter`.
+  - Audit log v2: the match reads `action: "block"`, `engine.mode` reads
+    `blocking` and a new field `engine.forced_by_rule` names the rule that
+    forced it (absent otherwise). A rule that matched earlier on the same
+    request and only detected keeps `action: "detect"`: the label is now
+    decided per match at dispatch time, not from the request's final state.
+  - Audit log v1: the message carries an extra tag
+    `karna/engine-forced-on/<rule id>`; with `auditlog_modsec`,
+    `producer.secrules_engine` reads `Enabled`.
+- New per-request rule control **`audit_request_body`** (ModSecurity
+  `ctl:auditLogParts=+C`), same two channels. When the carrying rule matches
+  and an audit record is written for the request, the raw request body is
+  attached to it: v2 `request.body_raw` with `request.body_encoding`
+  (`utf-8`, or `base64` when the body is not valid UTF-8),
+  `request.body_truncated` and `request.body_length` (bytes as received);
+  v1 `transaction.request.body`, the slot ModSecurity's JSON audit log uses for
+  part C, plus the same three siblings. Pure enrichment: the carrying rule has
+  no action, is not recorded as a match and does not force a write
+  (`auditlog_only_on_match` still applies). Nothing is attached while
+  `body_access_off` is active, as in ModSecurity. The body is the one the
+  client sent, before any `fix_matched_parts` rewrite, and is never reflected
+  into a response. Other `auditLogParts` letters and `ctl:auditEngine=*` stay
+  ignored. It logs whatever the client sent — pointed at a login form, that is
+  credentials — and the documentation says so.
+- New schema field **`auditlog_request_body_max_bytes`** (number, default
+  `16384`): cap for the attached body. Above it the body is clipped,
+  `body_truncated` is `true` and `body_length` keeps the full size; a clip that
+  would split a multi-byte character backs off to the character boundary.
+- Unit tests `ka-unittest/engine_on_control.lua` and
+  `ka-unittest/audit_request_body_control.lua` (both wired into CI), covering
+  the SecLang parsing, the applier, the dispatch order and both audit formats.
 - Audit logs (v1 and v2) now record the **size of the response sent to the
   client**: `response.bytes` (v2) / `transaction.response.bytes` (v1). It is
   the nginx `$bytes_sent` counter read in the log phase, so it counts status
@@ -18,6 +59,32 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   like any other response. Always present, published as a number (`0` when
   the counter is unavailable). No new work in the request or response phases:
   one variable read per audit record.
+
+### Changed
+
+- A rule that carries `rule_control` **and** its own terminal action now applies
+  the controls **before** the action is dispatched, on every evaluation path
+  (global pack detection list, `rules_request`, `custom_secrules`). This is the
+  ModSecurity order (`ctl:*` is non-disruptive and runs first; the disruptive
+  action is then checked against the engine state it set) and what makes
+  `engine_on` + `fixed_response` on one rule work. Consequences for existing
+  packs: controls on a rule with `fix_matched_parts` or `rate_limit` are now
+  applied at all (those branches returned before reaching them), and a rule
+  declaring both `detection_only` and `fixed_response` now observes instead of
+  blocking on a blocking service, as it does in ModSecurity. Packs that keep
+  controls and terminal actions on separate rules see no change.
+- The SecLang parser reads `ctl:*` directives from **every link of a chain**,
+  not only the head. ModSecurity rule packs put `ctl:ruleEngine=On` on the last
+  link so it fires only when the whole chain matched; Karna evaluates a chain as
+  one rule and applies `rule_control` on a full match, so the control lands on
+  the head with exactly that meaning. The bundled CRS declares no `ctl:*` on
+  chain children, so the shipped pack is unaffected (PL1 regression unchanged,
+  2875/2875).
+- The engine reads the raw request body **once per request** and caches it on
+  the per-request context; the body parser, the `request.body` variable and the
+  inspection table all share that read (previously each copied the bytes out of
+  the nginx buffer again). The `fix_matched_parts` sanitiser keeps reading the
+  live body, since it rewrites it.
 
 ## [1.5.4] - 2026-09-02
 

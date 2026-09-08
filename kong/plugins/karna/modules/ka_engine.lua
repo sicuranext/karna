@@ -168,6 +168,41 @@ local function request_has_body()
     return false
 end
 
+-- The raw request body as the client sent it, read once per request and kept on
+-- kong.ctx.plugin.ka_raw_body (`false` = read attempted, no body). Every
+-- inspection-side reader goes through here, so the bytes are copied out of the
+-- nginx buffer once instead of once per reader, and the log phase — where
+-- kong.request.get_raw_body() is not callable — can still attach the body to
+-- the audit record (rule control `audit_request_body`). Falls back to the
+-- on-disk temp file when nginx buffered the body there (large body, large
+-- chunked body with no Content-Length).
+--
+-- Deliberately NOT invalidated by fix_matched_parts: the sanitiser rewrites
+-- what upstream receives, while this is what the client sent — the view the
+-- audit log wants. The sanitiser reads the live body itself for that reason.
+local function get_raw_request_body()
+    local ctx = kong.ctx and kong.ctx.plugin
+    if ctx and ctx.ka_raw_body ~= nil then
+        return ctx.ka_raw_body or nil
+    end
+    local body = request_get_raw_body()
+    if not body then
+        local body_file = ngx_req_get_body_file()
+        if body_file then
+            -- (kong.log.debug spelled out: the module-level `debug` alias is
+            -- declared further down this file and is not in scope here)
+            kong.log.debug("-> Reading request body from file")
+            local file = io.open(body_file, "r")
+            if file then
+                body = file:read("*a")
+                file:close()
+            end
+        end
+    end
+    if ctx then ctx.ka_raw_body = body or false end
+    return body
+end
+
 -- ctl:requestBodyAccess=Off, set by a rule control earlier in this request.
 -- Read by the three body getters and by the two rule loops.
 --
@@ -634,22 +669,8 @@ _M.__get_values_request_body = function(try_b64)
     -- empty, which also takes the body out of the merged ARGS map below.
     if request_has_body() and not body_access_off() then
 
-        -- get request body
-        local request_body = request_get_raw_body()
-
-        -- if not request_body, but content-length is set, then try to use ngx.req.get_body_file
-        -- ngx.req.get_body_file: Retrieves the file name for the in-file request body data. Returns nil if the request body has not been read or has been read into memory.
-        if not request_body then
-            local body_file = ngx_req_get_body_file()
-            if body_file then
-                debug("-> Reading request body from file")
-                local file = io.open(body_file, "r")
-                if file then
-                    request_body = file:read("*a")
-                    file:close()
-                end
-            end
-        end
+        -- get request body (read once per request, see get_raw_request_body)
+        local request_body = get_raw_request_body()
 
         -- parse request body
         if request_body and request_body ~= "" then
@@ -801,17 +822,7 @@ _M.__get_values_request_body_scalars = function()
     -- bytes, and CRS helper rules key ctl gates off it. The raw body and its
     -- length are what the control suppresses.
     if request_has_body() and not body_access_off() then
-        local request_body = request_get_raw_body()
-        if not request_body then
-            local body_file = ngx_req_get_body_file()
-            if body_file then
-                local file = io.open(body_file, "r")
-                if file then
-                    request_body = file:read("*a")
-                    file:close()
-                end
-            end
-        end
+        local request_body = get_raw_request_body()
         if request_body and request_body ~= "" then
             local request_body_type = utils:request_body_parser_type()
             -- ModSecurity semantics: REQUEST_BODY (raw) is populated only when
@@ -1232,8 +1243,14 @@ end
 --   * loop_rules, when a matched rule is non-terminal, so later iterations in
 --     the same pass see the accumulated state
 --   * handler.lua:apply_rule_controls (the pass-rule / exclusion path)
---   * handler.lua:evaluate_rules (a terminal rule that also carries controls)
-_M.__apply_rule_controls_inline = function(controls)
+--   * handler.lua:evaluate_rules (a terminal rule that also carries controls —
+--     applied BEFORE the rule's own terminal action is dispatched, ModSecurity
+--     order: ctl:* is non-disruptive and runs first, then the disruptive action
+--     is checked against the engine state it just set)
+--
+-- `rule_id` names the carrying rule; only `engine_on` records it (the audit log
+-- says which rule forced blocking). Optional for callers that don't have it.
+_M.__apply_rule_controls_inline = function(controls, rule_id)
     if not controls or not kong.ctx.plugin or not kong.ctx.plugin.rule_controls then
         return
     end
@@ -1294,8 +1311,27 @@ _M.__apply_rule_controls_inline = function(controls)
         -- ctl:ruleEngine=DetectionOnly — keep matching and logging, suppress
         -- every terminal action (fixed_response / rate_limit 429 /
         -- fix_matched_parts). Read by handler.lua:rule_blocking_enabled.
+        -- DetectionOnly and On are the two states of one switch: whichever was
+        -- applied last wins (ModSecurity semantics), so each clears the other.
         if control.detection_only then
             rc.detection_only = true
+            rc.engine_on = false
+            rc.engine_forced_by = nil
+        end
+
+        -- ctl:ruleEngine=On — force blocking for the rest of this request, even
+        -- when the service runs `engine_blocking_mode = false` or an earlier rule
+        -- applied DetectionOnly. This is how a virtual patch blocks on a service
+        -- that is otherwise only observing. Read by handler.lua:rule_blocking_enabled
+        -- and by the audit log (engine.mode / engine.forced_by_rule). Strict
+        -- `== true`: a stray truthy string in hand-written JSON must not flip a
+        -- detection service into blocking.
+        if control.engine_on == true then
+            rc.engine_on = true
+            rc.detection_only = false
+            if rule_id ~= nil then
+                rc.engine_forced_by = tostring(rule_id)
+            end
         end
 
         -- ctl:requestBodyAccess=Off — stop inspecting the request body. Read by
@@ -1305,9 +1341,30 @@ _M.__apply_rule_controls_inline = function(controls)
             rc.body_access_off = true
         end
 
+        -- ctl:auditLogParts=+C — attach the raw request body to this request's
+        -- audit record, if one is written (the control never forces a write and
+        -- is not a match: nothing lands in matches[] / messages[]). The bytes
+        -- are pinned now, while the request phase can still read them; the log
+        -- phase cannot call kong.request.get_raw_body(). Under
+        -- ctl:requestBodyAccess=Off nothing is read and nothing is attached,
+        -- mirroring ModSecurity where part C is unavailable with body access off.
+        if control.audit_request_body == true then
+            rc.audit_request_body = true
+            if not rc.body_access_off and get_phase() == "access" and request_has_body() then
+                get_raw_request_body()
+            end
+        end
+
         if control.engine_off then
             rc.engine_off = true
         end
+    end
+
+    -- Off is the stronger state: whatever the order of the directives, a request
+    -- that has been switched Off is never also forced On.
+    if rc.engine_off and rc.engine_on then
+        rc.engine_on = false
+        rc.engine_forced_by = nil
     end
 end
 
@@ -1571,7 +1628,7 @@ _M.loop_rules = function(self, plugin_conf, raw_rules, phase)
                     -- multiple helper rules can contribute to
                     -- kong.ctx.plugin.rule_controls in one pass
                     if rule.rule_control then
-                        _M.__apply_rule_controls_inline(rule.rule_control)
+                        _M.__apply_rule_controls_inline(rule.rule_control, rule.id)
                     end
                 end
 
@@ -4849,24 +4906,9 @@ _M.get_inspection_table = function(self, plugin_conf)
             end
         end
 
-        -- get request body
-        local request_body = request_get_raw_body()
-
-        -- if not request_body, but content-length is set, then try to use ngx.req.get_body_file
-        -- ngx.req.get_body_file: Retrieves the file name for the in-file request body data. Returns nil if the request body has not been read or has been read into memory.
-        if not request_body then
-            -- body buffered to disk (large body, incl. large chunked with no
-            -- Content-Length): read it from the temp file so it's still inspected.
-            local body_file = ngx_req_get_body_file()
-            if body_file then
-                debug("-> Reading request body from file")
-                local file = io.open(body_file, "r")
-                if file then
-                    request_body = file:read("*a")
-                    file:close()
-                end
-            end
-        end
+        -- get request body (read once per request, see get_raw_request_body;
+        -- covers the on-disk temp file for large / large chunked bodies)
+        local request_body = get_raw_request_body()
 
         -- parse request body
         if request_body and request_body ~= "" then
