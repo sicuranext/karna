@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-09-12
+
 ### Added
 
 - New per-request rule control **`engine_on`** (ModSecurity `ctl:ruleEngine=On`),
@@ -85,6 +87,30 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   inspection table all share that read (previously each copied the bytes out of
   the nginx buffer again). The `fix_matched_parts` sanitiser keeps reading the
   live body, since it rewrites it.
+
+### Fixed
+
+- The compiled per-service caches for `rules_request`, `custom_secrules` /
+  CRS exclusion plugins and `rule_action_overrides` / `rule_response_overrides`
+  could be served to another plugin instance. The three caches were keyed on
+  the memory address of the plugin configuration table, on the assumption that
+  an Admin API write, which hands the plugin a new table, invalidated the
+  entry. It did not: the old entry stayed in the worker-local LRU cache (no
+  TTL), and once the old table was garbage-collected the same address could be
+  reused for the configuration table of a different plugin instance, which
+  then hit the stale entry and evaluated another service's local rules, inline
+  SecLang rules or overrides. Visible as sporadic 403s carrying a rule id that
+  belongs to a different service, right after Admin API writes, on services
+  whose own `rules_request` is non-empty (the empty-input early returns never
+  touched the cache). The caches are now keyed on the identity Kong stamps on
+  every new configuration table (`__plugin_id` plus `__seq__`, a shared-dict
+  counter that is unique across workers and fresh on every reconfiguration),
+  so a recycled address can never carry a compiled pack across instances. When
+  that identity is unavailable (`__seq__` missing or 0) the getters build the
+  value fresh and skip the cache. Cache size, the flush on rule reload, the
+  cached table shapes and the evaluation order are unchanged. Pinned by
+  `ka-unittest/conf_cache_key.lua`, which loads the real handler behind
+  stubbed Kong modules and includes an address-reuse simulation.
 
 ## [1.5.4] - 2026-09-02
 
@@ -1096,7 +1122,9 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.5...HEAD
+[1.5.5]: https://github.com/sicuranext/karna/compare/v1.5.4...v1.5.5
+[1.5.4]: https://github.com/sicuranext/karna/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/sicuranext/karna/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/sicuranext/karna/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/sicuranext/karna/compare/v1.5.0...v1.5.1
