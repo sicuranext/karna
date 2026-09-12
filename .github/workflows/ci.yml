@@ -97,6 +97,8 @@ jobs:
         run: lua ka-unittest/external_log_entries_v1.lua
       - name: Audit log response.bytes (v1 + v2, $bytes_sent read in the log phase)
         run: lua ka-unittest/auditlog_response_bytes.lua
+      - name: Per-config cache keys (plugin id + __seq__, never the config table address)
+        run: lua ka-unittest/conf_cache_key.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

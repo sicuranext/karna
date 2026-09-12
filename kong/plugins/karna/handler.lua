@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.4",
+  VERSION = "1.5.5",
 }
 
 local ngx                 = ngx
@@ -35,13 +35,42 @@ local debug = kong.log.debug
 -- profiling trigger in the access phase is dead code.
 local _KARNA_PROFILE_ENABLED = os.getenv("KARNA_PROFILE") ~= nil
 
--- Parse and cache the rules a specific plugin instance contributes
--- dynamically — i.e. CRS exclusion plugins loaded from disk
--- (`crs_plugins_enabled` entries under `crs_plugins_path/<name>/plugins/`)
--- and inline SecLang strings (`custom_secrules`). Keyed by
--- `tostring(plugin_conf)` because Kong gives us a stable table identity
--- per plugin-config record within a worker; reconfiguration
--- (Admin API write) produces a new table, which invalidates the cache.
+-- Per-plugin_conf cache key for the three compiled-config caches below
+-- (get_plugin_dynamic_rules, get_local_request_rules, get_overrides_cached).
+--
+-- A table address (`tostring(plugin_conf)`) is NOT unique over time. Kong
+-- hands us a new config table on every Admin API write and never tells us
+-- the old one is gone, so its ka_rules entry stays behind (no TTL); once
+-- the old table is garbage-collected, LuaJIT can hand the same address to
+-- the config table of a DIFFERENT plugin instance, which then hits the
+-- stale entry and evaluates another service's compiled rules_request /
+-- custom_secrules / CRS plugin rules / overrides.
+--
+-- Kong's plugins iterator (get_plugin_config) stamps every new config
+-- table with `__seq__` — a shared-dict counter, unique across workers and
+-- fresh on every reconfiguration — and with `__plugin_id`. Together they
+-- name one (plugin instance, configuration) pair for the life of the
+-- process, which is exactly what a cached compile is valid for.
+--
+-- Returns nil when no safe identity is available (`__seq__` absent, or 0 =
+-- Kong's own "shared-dict incr failed" sentinel). The caller must then
+-- build the value fresh and skip the cache — never fall back to the
+-- address.
+local function conf_cache_key(prefix, plugin_conf)
+  local seq = plugin_conf.__seq__
+  if not seq or seq == 0 then
+    return nil
+  end
+  return prefix .. ":" .. tostring(plugin_conf.__plugin_id) .. ":" .. tostring(seq)
+end
+
+-- Parse the rules a specific plugin instance contributes dynamically —
+-- i.e. CRS exclusion plugins loaded from disk (`crs_plugins_enabled`
+-- entries under `crs_plugins_path/<name>/plugins/`) and inline SecLang
+-- strings (`custom_secrules`). Cached by get_plugin_dynamic_rules under the
+-- conf_cache_key identity (plugin id + Kong's `__seq__` stamp), one entry
+-- per (plugin instance, configuration): a reconfiguration gets a new
+-- `__seq__`, so it never sees the rules parsed from the previous config.
 local load_plugin_dynamic_rules = function(plugin_conf)
   local enabled = plugin_conf.crs_plugins_enabled or {}
   local inline = plugin_conf.custom_secrules or {}
@@ -99,12 +128,13 @@ end
 -- result was thrown away.
 --
 -- Splitting here rather than per request means it is paid once per (worker,
--- plugin_conf): Kong hands us a new plugin_conf table on every Admin API write,
--- so the cache key invalidates itself. Mirrors get_local_request_rules, which
--- precomputes its own per-phase subsets for the same reason.
+-- plugin instance, configuration): the key comes from conf_cache_key (plugin
+-- id + `__seq__`), so an Admin API write simply lands on a new key. Mirrors
+-- get_local_request_rules, which precomputes its own per-phase subsets for
+-- the same reason.
 local get_plugin_dynamic_rules = function(plugin_conf)
-  local key = "plugin_dyn_rules:" .. tostring(plugin_conf)
-  local cached = ka_rules:get(key)
+  local key = conf_cache_key("plugin_dyn_rules", plugin_conf)
+  local cached = key and ka_rules:get(key)
   if cached then return cached end
   local parsed = load_plugin_dynamic_rules(plugin_conf)
   -- Compile dynamic rules into closures before caching. plugin_conf is
@@ -128,16 +158,18 @@ local get_plugin_dynamic_rules = function(plugin_conf)
     end
   end
 
-  ka_rules:set(key, split)
+  if key then ka_rules:set(key, split) end
   return split
 end
 
 -- Parse + compile the rules carried inline by `plugin_conf.rules_request`
--- (JSON strings authored by service operators). Keyed on plugin_conf
--- table identity — Kong creates a new plugin_conf table on every Admin
--- API update, which invalidates the cache automatically. Previously
--- cjson.decode ran twice per rule per request (pcall validate + actual
--- decode); now it runs once per (worker, plugin_conf) lifetime.
+-- (JSON strings authored by service operators). Cached under the
+-- conf_cache_key identity (plugin id + Kong's `__seq__` stamp), NOT the
+-- table address: the GC recycles addresses, and an address-keyed entry
+-- would let another plugin instance pick up this service's compiled rules
+-- (see conf_cache_key). cjson.decode used to run twice per rule per
+-- request (pcall validate + actual decode); now it runs once per (worker,
+-- plugin instance, configuration).
 -- The returned table carries these views:
 --   .all           : every parsed rule, used as the cross-phase
 --                    kong.ctx.plugin.local_rules (body_filter / mcp_event
@@ -154,8 +186,8 @@ local get_local_request_rules = function(plugin_conf)
   if not plugin_conf.rules_request or #plugin_conf.rules_request == 0 then
     return { all = {}, access = {}, header_filter = {} }
   end
-  local key = "local_request_rules:" .. tostring(plugin_conf)
-  local cached = ka_rules:get(key)
+  local key = conf_cache_key("local_request_rules", plugin_conf)
+  local cached = key and ka_rules:get(key)
   if cached then return cached end
 
   local all = {}
@@ -178,7 +210,7 @@ local get_local_request_rules = function(plugin_conf)
   ka_compile.compile_rules(all, plugin_conf)
 
   local result = { all = all, access = access, header_filter = header_filter }
-  ka_rules:set(key, result)
+  if key then ka_rules:set(key, result) end
   return result
 end
 
@@ -276,16 +308,16 @@ local selector_matches = function(selector, rule)
   return false
 end
 
--- Lazy-parse + cache the two override arrays per plugin_conf identity.
--- Same caching scheme as `get_plugin_dynamic_rules`: keyed on
--- `tostring(plugin_conf)` (worker-stable table address); Admin API
--- reconfig invalidates the cache automatically by producing a new
--- plugin_conf table.
+-- Lazy-parse + cache the two override arrays per (plugin instance,
+-- configuration). Same caching scheme as `get_plugin_dynamic_rules`: keyed
+-- by conf_cache_key (plugin id + Kong's `__seq__` stamp), never by the
+-- table address, which the GC recycles across plugin instances; an Admin
+-- API reconfiguration lands on a new key.
 local DEFAULT_FIX_PATTERN = [=[[<>"';&|`$()]]=]
 
 local get_overrides_cached = function(plugin_conf)
-  local key = "overrides:" .. tostring(plugin_conf)
-  local cached = ka_rules:get(key)
+  local key = conf_cache_key("overrides", plugin_conf)
+  local cached = key and ka_rules:get(key)
   if cached then return cached end
 
   local out = { action_overrides = {}, response_overrides = {} }
@@ -308,7 +340,7 @@ local get_overrides_cached = function(plugin_conf)
     end
   end
 
-  ka_rules:set(key, out)
+  if key then ka_rules:set(key, out) end
   return out
 end
 
@@ -1236,6 +1268,18 @@ function plugin:log(plugin_conf)
     ngx.timer.at(0, utils.write_auditlog, json_log, plugin_conf.auditlog_path, now, worker_id)
   end
 end
+
+-- Test seam. The per-config cache getters are module-private, but their
+-- keying is exactly what must stay pinned by a unit test
+-- (ka-unittest/conf_cache_key.lua loads this file behind stubbed Kong
+-- modules). Kong ignores extra fields on a handler table — it adds its own
+-- (`_wasm`, `_go`) to the same table.
+plugin._internals = {
+  conf_cache_key           = conf_cache_key,
+  get_plugin_dynamic_rules = get_plugin_dynamic_rules,
+  get_local_request_rules  = get_local_request_rules,
+  get_overrides_cached     = get_overrides_cached,
+}
 
 return plugin
 
