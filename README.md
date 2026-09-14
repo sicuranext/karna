@@ -1116,12 +1116,36 @@ Skip every rule carrying the tag. Per-request when applied from a matching rule
 
 ### `remove_target_from_rule_by_id`
 
-Drop one variable target from one rule, for this request only
+Drop a variable target from one rule, for this request only
 (`ctl:ruleRemoveTargetById=<id>;<target>`). The workhorse of CRS exclusions:
 whitelist one argument on one endpoint without disabling the rule everywhere.
 
-Removal is by field **name**, gated by namespace — so an `ARGS`-scoped exclusion
-can never silence a header or cookie that happens to share the name.
+The target takes two forms:
+
+- **One field**: `request.arg.value:pwd` (ModSecurity `ARGS:pwd`),
+  `request.cookie.value:session` (`REQUEST_COOKIES:session`),
+  `request.header.value:referer`. Removal is by field **name**, and it takes
+  every key Karna derived from that field with it: the JSON expansion of the
+  field's value (`request.cookie.json.session.value:*`,
+  `request.query.json:pwd.value:*`), the base64-decoded variant
+  (`…:pwd_ka_b64_decoded`) and indexed duplicates (`…:pwd:2`). "Exclude
+  field X" means X in every encoding the engine produced from it. Names are
+  compared lowercase.
+- **A whole collection**: a bare namespace, `request.cookie.value`
+  (`REQUEST_COOKIES`), `request.cookie.name` (`REQUEST_COOKIES_NAMES`),
+  `request.header.value` (`REQUEST_HEADERS`), `request.arg.value` (`ARGS`),
+  `request.query.value` (`ARGS_GET`), … The rule stops inspecting that
+  collection altogether, including everything derived from it. When the rule
+  resolves a merged variable that folds the collection in — `ARGS` is query +
+  body, and the cookie value map also carries the cookie names — only that
+  part goes: `request.query.value` on an `ARGS` rule removes the query half
+  and leaves the body args in place. This is the form CRS itself ships
+  (`ctl:ruleRemoveTargetById=942100;REQUEST_COOKIES` and three more) and the
+  WordPress exclusion plugin uses.
+
+Both forms are gated by namespace — an `ARGS`-scoped exclusion can never
+silence a header or cookie that happens to share the name, and
+`request.cookie.value` never touches headers or arguments.
 
 ```json
 "rule_control": [
@@ -1130,6 +1154,12 @@ can never silence a header or cookie that happens to share the name.
             "rule_id": "942100",
             "target": "request.arg.value:pwd"
         }
+    },
+    {
+        "remove_target_from_rule_by_id": {
+            "rule_id": "932220",
+            "target": "request.cookie.value"
+        }
     }
 ]
 ```
@@ -1137,6 +1167,8 @@ can never silence a header or cookie that happens to share the name.
 ### `remove_target_rule_by_tag`
 
 Same, but for every rule carrying a tag (`ctl:ruleRemoveTargetByTag=<tag>;<target>`).
+`name` accepts the same two forms as `target` above: one field
+(`request.header.value:user-agent`) or a whole collection (`request.cookie.value`).
 
 `tag: "OWASP_CRS"` is special-cased to mean **all rules**, custom ones included —
 that is the historical meaning and it is also the cheap path (a flat list instead

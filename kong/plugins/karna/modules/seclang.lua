@@ -743,6 +743,14 @@ end
 --   ctl:ruleRemoveByTag=<tag>                → drop every rule tagged <tag>
 --   ctl:ruleRemoveTargetById=<id>;<target>   → drop one target from <id>
 --   ctl:ruleRemoveTargetByTag=<tag>;<target> → drop one target from rules tagged <tag>
+--     <target> is either one field (`ARGS:pwd`, `REQUEST_COOKIES:session`) or
+--     a whole collection (`REQUEST_COOKIES`, `REQUEST_COOKIES_NAMES`,
+--     `REQUEST_HEADERS`, `ARGS_GET`, …). Both go through __parse_ctl_target,
+--     which maps the ModSecurity name to the Karna namespace
+--     (`request.cookie.value`, `request.cookie.name`, `request.header.value`,
+--     `request.query.value`) and leaves the bare form bare; the engine's
+--     remove_ctl_target empties the collection when the rule resolves it.
+--     CRS 4.x ships four of the bare form (942100 / 942450 / 932220).
 --   ctl:ruleEngine=Off                       → bypass WAF for this request
 --   ctl:ruleEngine=DetectionOnly             → match + log, suppress terminal actions
 --   ctl:ruleEngine=On                        → force terminal actions for the rest of the request
