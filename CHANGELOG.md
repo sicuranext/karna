@@ -7,6 +7,58 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.7] - 2026-09-14
+
+### Fixed
+
+- **Availability: an empty cookie segment crashed the cookie resolver and the
+  request answered HTTP 500.** The Cookie header is split on `;` by a helper
+  that iterates `(input .. ";")`, so a header already ending in `;` yields a
+  trailing EMPTY element — as do a leading `;` and a doubled `;;`. The
+  per-segment parse is `([^=]+)=?(.*)`, whose `[^=]+` requires at least one
+  character, so it returned nil for those elements and the next line called
+  `string_gsub` on nil:
+  `bad argument #1 to 'string_gsub' (string expected, got nil)`. Nothing
+  between there and `handler.lua:access` pcalls `loop_rules`, so the error left
+  the access phase and the proxy returned 500. `Cookie: a=1;`, `Cookie: ;a=1`
+  and `Cookie: a=1;;b=2` were enough, from any unauthenticated client, on every
+  service carrying a rule that resolves cookies — a single CRS rule targeting
+  `REQUEST_COOKIES` reaches the resolver. The parser is now total: a segment
+  with no name is skipped, and no string function is called on the result of a
+  match that can fail. Well-formed segments parse exactly as before — a
+  key-only cookie (`Cookie: foo`) stays a name-only cookie and surrounding
+  whitespace is still trimmed off the name — because the pattern itself is
+  unchanged; this is a totality fix, not a re-parse.
+- A whitespace-only cookie segment (`Cookie: a=1; ;b=2`, `Cookie: a=1; `) did
+  not crash but trimmed down to an empty cookie name and inserted a junk
+  `request.cookie.name:` / `request.cookie.value:` pair under an empty
+  selector — a key no rule can address, carried through every collection scan.
+  Those entries are gone. The one empty-name shape that still carries
+  attacker-controlled bytes, `<whitespace>=<value>`, stays inspectable under
+  the synthetic selector `request.cookie.value:__ka_unnamed_cookie_<n>`
+  (value only, added whole and not re-parsed, so libinjection and the regex
+  operators still scan it) — the same idea as the path-confusion defence's
+  `request.query.value:__ka_path_confusion_<n>`. Without it, skipping empty
+  names would have turned an availability fix into an inspection gap, since
+  the old code did surface that value under the junk selector.
+- `get_inspection_table` called `body_parser:cookie(...)` in its `phase ==
+  "access"` branch, a function `ka_body_parser` has never exported —
+  `attempt to call method 'cookie' (a nil value)`, another 500. Unreachable
+  today (the only caller is `handler.lua:header_filter`, so that branch never
+  runs) but a landmine for whoever wires an access-phase caller. It now routes
+  through `__get_values_request_cookie`, the same resolver the rule path uses,
+  so the inspection table's cookie rows cannot drift from the cookie variables
+  rules match on.
+
+### Added
+
+- `ka-unittest/cookie_empty_segment.lua`, wired into CI: drives every crashing
+  and previously-junk-producing Cookie shape through the real resolver and
+  pins the exact resolved map, the absence of any empty-selector entry, the
+  preserved inspection of an empty-named cookie's value, and a `REQUEST_COOKIES`
+  rule still matching through a header that ends with `;` plus whitespace
+  (dispatcher and compiled-resolver paths). Fixtures are synthetic.
+
 ## [1.5.6] - 2026-09-14
 
 ### Added
@@ -1212,7 +1264,9 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.5...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.7...HEAD
+[1.5.7]: https://github.com/sicuranext/karna/compare/v1.5.6...v1.5.7
+[1.5.6]: https://github.com/sicuranext/karna/compare/v1.5.5...v1.5.6
 [1.5.5]: https://github.com/sicuranext/karna/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/sicuranext/karna/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/sicuranext/karna/compare/v1.5.2...v1.5.3

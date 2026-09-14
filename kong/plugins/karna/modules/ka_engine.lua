@@ -1298,11 +1298,63 @@ _M.__get_values_request_cookie = function(try_b64)
     local raw_string = cookie_header_value
     local key_value_cookies = split(raw_string, ";")
 
+    local unnamed_n = 0
+
     for _,pair in ipairs(key_value_cookies) do
+        -- `([^=]+)` needs at least one character, so string_match returns NIL
+        -- for an empty segment — and `split` above yields one for every shape a
+        -- client can send: a trailing `;` ("a=1;"), a leading one (";a=1"), a
+        -- doubled one ("a=1;;b=2"). Calling string_gsub on that nil raised an
+        -- unhandled Lua error, and nothing between here and handler.lua:access
+        -- pcalls loop_rules, so the proxy answered 500. Any unauthenticated
+        -- client could trigger it with one malformed request header, on every
+        -- service carrying a rule that resolves cookies (a single CRS rule
+        -- targeting REQUEST_COOKIES is enough).
+        --
+        -- A whitespace-only segment ("a=1; ;b=2", "a=1; ") did not crash but
+        -- trimmed down to an empty name and inserted a junk
+        -- `request.cookie.name:` / `request.cookie.value:` pair under an empty
+        -- selector — a key no rule can address, carried through every
+        -- collection scan. Both shapes are skipped: a segment with no name is
+        -- not a cookie.
+        --
+        -- Deliberately NOT rewritten as a split on the first `=`. The pattern
+        -- stays byte-identical so every well-formed segment parses exactly as
+        -- before (a key-only "foo" stays a name-only cookie, surrounding
+        -- whitespace is still trimmed). This is a totality fix, not a re-parse.
         local key,value = string_match(pair, "([^=]+)=?(.*)")
+        if not key or not value then
+            goto continue
+        end
 
         -- remove trailing and leading whitespaces from cookie name
         key = string_gsub(key, "^%s*(.-)%s*$", "%1")
+        if key == "" then
+            -- An empty or whitespace-only segment carries nothing: drop it.
+            --
+            -- `<whitespace>=<value>` is the one empty-name shape that still
+            -- carries attacker-controlled BYTES (`[^=]+` matches the leading
+            -- whitespace, so the name trims to empty while the value survives).
+            -- The old code did surface that value — under the junk empty
+            -- selector — and a REQUEST_COOKIES collection scan walked it, so
+            -- dropping it here would turn an availability fix into an
+            -- inspection gap. Keep it addressable under a synthetic name
+            -- instead, exactly as the path-confusion defence surfaces hidden
+            -- path material as `request.query.value:__ka_path_confusion_<n>`:
+            -- value only (an empty name has nothing to inspect, and inventing a
+            -- NAME the client never sent would put it in front of every
+            -- REQUEST_COOKIES_NAMES rule), added whole and not re-parsed, so
+            -- libinjection and the regex operators still scan it. No browser
+            -- emits this shape, so it costs nothing on real traffic.
+            if value ~= "" then
+                unnamed_n = unnamed_n + 1
+                local unnamed_value = "request.cookie.value:__ka_unnamed_cookie_" .. unnamed_n
+                if not values[unnamed_value] then
+                    values[unnamed_value] = value
+                end
+            end
+            goto continue
+        end
 
         --[[table.insert(values, {
             [prefix .. ".name:"..key:lower()] = key
@@ -1363,6 +1415,8 @@ _M.__get_values_request_cookie = function(try_b64)
                 values[element_value] = value
             end
         end]]--
+
+        ::continue::
     end
 
     return values, nil
@@ -5034,27 +5088,25 @@ _M.get_inspection_table = function(self, plugin_conf)
             end
         end
 
-        -- check if request header cookie is set
-        local cookie = request_get_headers()["cookie"]
-        if cookie then
-            local cookie_flattened = body_parser:cookie("request.cookie", cookie, plugin_conf.try_bas64decode_if_possible)
-            for _,v in pairs(cookie_flattened) do
-                --[[local value_is_json = false
-
-                for ckeyn,cval in pairs(v) do
-                    if pcall(cjson.decode,cval) then
-                        value_is_json = true
-                        local cookie_json_flat = body_parser:json("request.cookie", cval, plugin_conf.try_bas64decode_if_possible)
-                        for kk,vv in pairs(cookie_json_flat) do
-                            table_insert(kong.ctx.plugin.inspection_table, vv)
-                        end
-                    end
-                end
-                if not value_is_json then
-                    table_insert(kong.ctx.plugin.inspection_table, v)
-                end]]--
-                table_insert(kong.ctx.plugin.inspection_table, v)
-            end
+        -- Cookies, through the SAME resolver the rule path uses.
+        --
+        -- This used to call `body_parser:cookie(...)`, which ka_body_parser has
+        -- never exported (`urlencoded` / `json` / `multipart` / `xml` plus the
+        -- response-body helpers are the whole surface) — an
+        -- `attempt to call method 'cookie' (a nil value)`, i.e. a 500, for the
+        -- first caller to reach it. Unreachable today: the only caller of
+        -- get_inspection_table is handler.lua:header_filter, so `phase` here is
+        -- never "access". It was a landmine for whoever wires an access-phase
+        -- caller, not a live bug. Routing it through
+        -- `__get_values_request_cookie` removes the landmine and keeps the
+        -- inspection table's cookie rows identical to the cookie variables the
+        -- rules resolve, instead of growing a second cookie parser to drift.
+        --
+        -- DOT call, never a colon: the request getters are self-less, and a
+        -- colon here would pass the engine table as `try_b64` (the 1.5.6 bug).
+        local cookie_values = _M.__get_values_request_cookie(plugin_conf.try_bas64decode_if_possible == true)
+        for k,v in pairs(cookie_values or {}) do
+            table_insert(kong.ctx.plugin.inspection_table, { [k] = v })
         end
 
         -- get request body (read once per request, see get_raw_request_body;

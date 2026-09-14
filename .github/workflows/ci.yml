@@ -101,6 +101,8 @@ jobs:
         run: lua ka-unittest/conf_cache_key.lua
       - name: Cookie resolver honours the base64 flag (compiled resolver + count probe)
         run: lua ka-unittest/cookie_b64_resolver.lua
+      - name: Cookie resolver survives an empty cookie segment (no 500, no empty selector)
+        run: lua ka-unittest/cookie_empty_segment.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
