@@ -7,6 +7,96 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-09-14
+
+### Added
+
+- Per-request target removal (`remove_target_from_rule_by_id`,
+  `remove_target_rule_by_tag`, and their SecLang forms
+  `ctl:ruleRemoveTargetById` / `ctl:ruleRemoveTargetByTag`) now accepts a
+  **whole collection** as the target: a bare namespace such as
+  `request.cookie.value` (ModSecurity `REQUEST_COOKIES`),
+  `request.cookie.name` (`REQUEST_COOKIES_NAMES`), `request.header.value`
+  (`REQUEST_HEADERS`), `request.arg.value` (`ARGS`) or `request.query.value`
+  (`ARGS_GET`). The rule stops inspecting that collection for the request,
+  derived keys included (the JSON expansion of a cookie, base64 variants,
+  urlencoded/JSON expansions of arguments). When the rule resolves a merged
+  variable that folds the collection in, only that part is removed:
+  `request.query.value` on an `ARGS` rule drops the query half and keeps the
+  body arguments; `request.cookie.name` on a `REQUEST_COOKIES` rule drops the
+  cookie names the cookie value map also carries. Motivation is CRS parity:
+  CRS 4.x itself ships four such directives (`942100;REQUEST_COOKIES`,
+  `942450;REQUEST_COOKIES`, `942450;REQUEST_COOKIES_NAMES`,
+  `932220;REQUEST_COOKIES`) and the WordPress rule-exclusions plugin uses the
+  same idiom; all of them parsed correctly and then removed nothing, because
+  the resolved keys are always `request.cookie.value:<name>` or
+  `request.cookie.json.<name>.value:<path>` and a bare target matched neither.
+  All three per-request paths (by id, by tag, the `OWASP_CRS` all-rules case)
+  and the SecLang parser support it. The namespace gate is unchanged: a
+  cookie target never strips a header or argument of the same name, and
+  vice-versa.
+- Shared unit-test harness `ka-unittest/_engine_harness.lua`, which loads
+  the real `ka_engine.lua`, `ka_compile.lua`, `ka_body_parser.lua` and
+  `ka_utils.lua` under plain Lua behind kong/ngx stubs, with a request the
+  test can shape and a `KARNA_UNIT_ENGINE` override to A/B a test against a
+  previous engine. `rule_control_runtime.lua` and
+  `wordpress_target_exclusion.lua` now exercise the real
+  `remove_ctl_target` / applier / matcher through it instead of inline copies
+  that had drifted; new `cookie_b64_resolver.lua` is wired into CI.
+
+### Changed
+
+- Per-name target removal (`request.cookie.value:<name>`,
+  `request.arg.value:<name>`, …) now also strips every key the resolver
+  **derived** from that field: the JSON expansion of the field's value
+  (`request.cookie.json.<name>.value:*`, `request.query.json:<name>.*`,
+  `request.body.urlencode.json:<name>.*`), the base64-decoded variant
+  (`…:<name>_ka_b64_decoded`) and indexed duplicates (`…:<name>:2`). Before,
+  only keys ending in `:<name>` / `.<name>` were removed, so `REQUEST_COOKIES:<name>`
+  on a JSON cookie left the flattened fields in place and the rule kept matching
+  on a field the operator had excluded. Names are now compared lowercase,
+  which is how every resolver stores them (`ARGS:User_Login` now excludes
+  `…:user_login`).
+- The matcher's copy-on-read of the cached variable map no longer relies on a
+  pre-check of which controls might mutate it (`will_mutate`): the cached table
+  is handed out by reference on the fast path as before, and a shallow copy is
+  taken lazily right before the first deletion, whatever the source of the
+  removal (by id, all rules, by tag, load-time name/pattern controls) and
+  whether the table came from `ka_variable_cache` or from a getter's own
+  per-request cache. Same cost on a request with no exclusion (no copy), one
+  copy per rule that actually strips a target.
+
+### Fixed
+
+- The compiled `request.cookie.value` resolver and the `&REQUEST_COOKIES`
+  count probe called the self-less cookie getter with a colon, so the engine
+  table arrived in its `try_b64` argument. A table is truthy: every JSON
+  cookie was flattened with the base64 pass on, regardless of
+  `try_bas64decode_if_possible` (schema default `false`). A JSON consent /
+  preference cookie whose short opaque string values happen to be valid base64
+  grew `request.cookie.json.<name>.value:<key>_ka_b64_decoded` entries holding
+  binary garbage, and CRS rules targeting `REQUEST_COOKIES` matched the garbage
+  (observed as 932340 blocking ordinary browsers on a service with the flag
+  off). With `engine_fast_path` on, the compiled resolver is the one actually
+  used, so the flag was effectively ignored for cookies. Both call sites use
+  the dot form now and the resolver normalises `try_b64` to a strict boolean,
+  so no caller can switch the pass on by accident. Decision, documented in
+  CLAUDE.md: the rule-matching path keeps passing a literal `false` for
+  cookies, exactly as it does for ARGS / query / body — the schema flag does
+  not reach the request-phase resolvers for any collection. Pinned by
+  `ka-unittest/cookie_b64_resolver.lua`, which drives the compiled resolver
+  through `ka_compile.compile_variable_resolver` and the count probe through
+  the real matcher.
+- A per-request `ctl:ruleRemoveTargetByTag` on a specific tag (not
+  `OWASP_CRS`) could, with `engine_fast_path` on, delete the excluded keys from
+  the cached variable map shared by every later rule of the request, because
+  the fast-path pre-check only knew about the by-id and all-rules lists. A
+  target removal on the first rule to resolve `ARGS` likewise mutated the ARGS
+  getter's own cache, which the compiled `ARGS:<name>` resolvers read directly.
+  Both are closed by the lazy copy described above and pinned in
+  `ka-unittest/rule_control_runtime.lua` (warm cache, excluded rule, then a
+  rule with no exclusion that must still see the value).
+
 ## [1.5.5] - 2026-09-12
 
 ### Added

@@ -100,42 +100,160 @@ end
 -- not — the exclusion was a no-op and the rule kept firing (false positive
 -- on legitimate WordPress logins).
 --
--- Fix: mirror the rule side. Match by FIELD NAME, not by the literal target
--- string, using the same suffix test the rule uses. A NAMESPACE GATE keeps it
--- safe against over-removal / bypass: `request.arg.value:pwd` only strips keys
--- when the variable currently being resolved is the same collection
--- (`request.arg.value`), so it can never silence a `pwd` carried in a header
--- (`request.header.value:pwd`) or cookie. The exact-key lookup is kept as a
--- first step so concrete targets (cookie/header/query, where the target and
--- the stored key already coincide) behave exactly as before.
+-- Three target shapes are accepted, every one of them NAMESPACE-GATED: a
+-- target only ever touches the collection it names, so `request.arg.value:pwd`
+-- can never silence a `pwd` carried in a header (`request.header.value:pwd`)
+-- or a cookie, and a cookie target never strips an argument. That gate is the
+-- security boundary of this function.
+--
+--   * `<ns>:<name>` — one field of one collection (ModSecurity `ARGS:pwd`,
+--     `REQUEST_COOKIES:session`). Matches by FIELD NAME with the same suffix
+--     test the rule side uses, so exclusion and rule look at exactly the same
+--     keys — plus every key the resolver DERIVED from that field: the JSON
+--     expansion of its value (`request.cookie.json.<name>.value:<path>`,
+--     `request.query.json:<name>.value:<path>`,
+--     `request.body.urlencode.json:<name>.value:<path>`), the base64 variant
+--     (`…:<name>_ka_b64_decoded`) and the indexed duplicates (`…:<name>:2`).
+--     None of those end in `:<name>`, so the suffix match alone left them in
+--     place and the rule kept matching on a field the operator had excluded.
+--     "Exclude field X" means X in every encoding Karna produced from it.
+--     Names are compared lowercase because every resolver lowercases the
+--     field name it stores.
+--
+--   * `<ns>` — a whole collection (ModSecurity
+--     `ctl:ruleRemoveTargetById=<id>;REQUEST_COOKIES`). When the variable
+--     being resolved IS that collection the map is emptied: the rule no
+--     longer inspects it. When the variable FOLDS that collection in — ARGS
+--     is query + body, and the cookie value map also carries the cookie
+--     names — only the folded keys go (FOLDED_COLLECTIONS below). CRS 4.x
+--     itself ships four such directives (942100 / 942450 / 932220 on
+--     REQUEST_COOKIES and REQUEST_COOKIES_NAMES) and the WordPress exclusion
+--     plugin uses the same idiom; before the collection form existed they
+--     all parsed fine and then removed nothing.
+--
+--   * the exact key — kept as a first step for targets that already coincide
+--     with a stored key.
+--
+-- Called on every per-request removal path (`ids_targets[rule.id]`,
+-- `remove_target_from_all_rules`, per-tag targets, load-time
+-- `remove_target_name`) so the four never drift apart.
+
+-- Collection form: the sub-collections a merged variable folds into its
+-- resolved map, with the keys each one contributed. `prefix` is a plain key
+-- prefix ("" = every key); `names` restricts the match to `.name:` keys, the
+-- same substring test the rule side uses to select names out of the merged
+-- map. Keyed by the variable being resolved, then by the target.
+local FOLDED_COLLECTIONS = {
+    ["request.arg.value"] = {
+        ["request.arg.name"]             = { prefix = "",                        names = true },
+        ["request.query.value"]          = { prefix = "request.query." },
+        ["request.query.name"]           = { prefix = "request.query.",          names = true },
+        ["request.body.urlencode.value"] = { prefix = "request.body.urlencode." },
+        ["request.body.urlencode.name"]  = { prefix = "request.body.urlencode.", names = true },
+        ["request.body.json.value"]      = { prefix = "request.body.json." },
+        ["request.body.json.name"]       = { prefix = "request.body.json.",      names = true },
+        ["request.body.multipart.value"] = { prefix = "request.body.multipart." },
+        ["request.body.multipart.name"]  = { prefix = "request.body.multipart.", names = true },
+    },
+    ["request.arg.name"] = {
+        ["request.query.name"]           = { prefix = "request.query." },
+        ["request.body.urlencode.name"]  = { prefix = "request.body.urlencode." },
+        ["request.body.json.name"]       = { prefix = "request.body.json." },
+        ["request.body.multipart.name"]  = { prefix = "request.body.multipart." },
+    },
+    ["request.cookie.value"] = {
+        ["request.cookie.name"]          = { prefix = "request.cookie.name:" },
+    },
+}
+
+-- Per-name form: the key prefixes under which each namespace re-emits a
+-- field's value once it has been expanded as JSON, as `{ before, after }`
+-- halves around the lowercase field name. Matched as a plain prefix, so no
+-- pattern escaping is needed.
+local DERIVED_KEY_PREFIXES = {
+    ["request.cookie.value"]         = { { "request.cookie.json.", "." } },
+    ["request.arg.value"]            = { { "request.query.json:", "." }, { "request.body.urlencode.json:", "." } },
+    ["request.arg.name"]             = { { "request.query.json:", "." }, { "request.body.urlencode.json:", "." } },
+    ["request.query.value"]          = { { "request.query.json:", "." } },
+    ["request.query.name"]           = { { "request.query.json:", "." } },
+    ["request.body.urlencode.value"] = { { "request.body.urlencode.json:", "." } },
+    ["request.body.urlencode.name"]  = { { "request.body.urlencode.json:", "." } },
+}
+
 local function remove_ctl_target(values, target, variable)
     if not values or type(target) ~= "string" then return end
 
     -- 1) exact key — back-compat for targets that already match a values key
     if values[target] ~= nil then values[target] = nil end
 
-    -- 2) name-based, namespace-gated — the ARGS fix
-    local colon = string_find(target, ":", 1, true)
-    if not colon then return end
-    local t_ns   = string_sub(target, 1, colon - 1)
-    local t_name = string_sub(target, colon + 1)
-    if t_name == "" then return end
-
     if type(variable) ~= "string" then return end
     local vcolon = string_find(variable, ":", 1, true)
     local var_ns = vcolon and string_sub(variable, 1, vcolon - 1) or variable
-    -- namespace gate: the target only applies to its own collection
-    if t_ns ~= var_ns then return end
+
+    local colon = string_find(target, ":", 1, true)
+
+    -- 2) collection form — `request.cookie.value`, `request.arg.value`, …
+    if not colon then
+        if target == var_ns then
+            for k in pairs(values) do values[k] = nil end
+            return
+        end
+        local folded = FOLDED_COLLECTIONS[var_ns]
+        local entry = folded and folded[target]
+        if not entry then return end  -- namespace gate
+        local prefix, names_only = entry.prefix, entry.names
+        for k in pairs(values) do
+            if (prefix == "" or string_find(k, prefix, 1, true) == 1)
+               and (not names_only or string_find(k, ".name:", 1, true)) then
+                values[k] = nil
+            end
+        end
+        return
+    end
+
+    -- 3) per-name form — name-based, namespace-gated
+    local t_ns   = string_sub(target, 1, colon - 1)
+    local t_name = string_lower(string_sub(target, colon + 1))
+    if t_name == "" then return end
+    if t_ns ~= var_ns then return end  -- namespace gate
 
     -- suffix match, identical to the rule-side ARGS expansion, so exclusion
-    -- and rule look at EXACTLY the same keys (no bypass, no over-removal).
+    -- and rule look at EXACTLY the same keys (no bypass, no over-removal);
+    -- then the derived shapes (base64 variant, indexed duplicate, JSON
+    -- expansion) that the suffix test cannot see.
     local t_esc = escape_lua_pattern(t_name)
+    local suffix_dot   = "%." .. t_esc .. "$"
+    local suffix_colon = ":" .. t_esc .. "$"
+    local b64_dot      = "%." .. t_esc .. "_ka_b64_decoded$"
+    local b64_colon    = ":" .. t_esc .. "_ka_b64_decoded$"
+    local dup_colon    = ":" .. t_esc .. ":%d+$"
+    local derived = DERIVED_KEY_PREFIXES[t_ns]
+    local derived_prefixes
+    if derived then
+        derived_prefixes = {}
+        for i = 1, #derived do
+            derived_prefixes[i] = derived[i][1] .. t_name .. derived[i][2]
+        end
+    end
     for k in pairs(values) do
-        if string_find(k, "%." .. t_esc .. "$") or string_find(k, ":" .. t_esc .. "$") then
+        if string_find(k, suffix_dot) or string_find(k, suffix_colon)
+           or string_find(k, b64_dot) or string_find(k, b64_colon)
+           or string_find(k, dup_colon) then
             values[k] = nil
+        elseif derived_prefixes then
+            for i = 1, #derived_prefixes do
+                if string_find(k, derived_prefixes[i], 1, true) == 1 then
+                    values[k] = nil
+                    break
+                end
+            end
         end
     end
 end
+-- Exposed for the unit tests (ka-unittest/rule_control_runtime.lua,
+-- ka-unittest/wordpress_target_exclusion.lua), which used to carry an inline
+-- copy of this function and drifted from it. Not part of the rule API.
+_M.__remove_ctl_target = remove_ctl_target
 
 --local request_get_query                 = kong.request.get_query
 local request_get_scheme                = kong.request.get_scheme
@@ -1132,10 +1250,32 @@ _M.__get_values_request_header = function(variable_with_header_name)
 
     return values, nil
 end
+-- Cookie resolver. Self-less like the other request getters: call it with a
+-- DOT (`engine.__get_values_request_cookie(false)`), never a colon. Two
+-- colon-call sites (the compiled `request.cookie.value` resolver in
+-- ka_compile.lua and the `count:request.cookie.value` probe) passed the
+-- engine table as `try_b64`; a table is truthy, so every JSON cookie was
+-- flattened WITH the base64 pass on, regardless of the plugin flag. A JSON
+-- consent/preference cookie whose short opaque string values happen to be
+-- valid base64 then grew `request.cookie.json.<name>.value:<key>_ka_b64_decoded`
+-- entries holding binary garbage, and CRS rules targeting REQUEST_COOKIES
+-- matched the garbage (932340 blocking ordinary browsers). `try_b64` is
+-- therefore normalised to a strict boolean here as well, so no caller can
+-- switch the pass on by accident.
+--
+-- The rule-matching path passes a literal `false`, exactly as it does for
+-- ARGS / query / body (`__get_values_request_args(false, …)` in ka_compile
+-- and in the dispatcher): `try_bas64decode_if_possible` does not reach the
+-- request-phase resolvers, for any collection, by design — the base64 pass
+-- is a parse-time enrichment consumed by the gates and the inspection table.
+-- Cookies follow the same convention rather than growing a private switch.
 _M.__get_values_request_cookie = function(try_b64)
     if get_phase() == "init_worker" then
         return {}, nil
     end
+
+    -- strict boolean: only `true` turns the base64 pass on (see above)
+    try_b64 = (try_b64 == true)
 
     local values = {}
 
@@ -2636,42 +2776,38 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
             -- `ka_variable_cache` read — copy-on-read variant. The
             -- previous implementation cached the `values` table by
             -- reference, which got silently corrupted: downstream
-            -- mutations (the `remove_target_from_all_rules` and
-            -- `ids_targets[rule.id]` blocks below) write into
+            -- mutations (the rule-control removal block below) write into
             -- `values` in place, so the NEXT rule that read from the
             -- cache for the same variable got a partial map missing
             -- the entries the previous rule had stripped.
-            -- Fix: read the cached entry but immediately shallow-copy
-            -- it into a fresh table. The cache then holds the pristine
-            -- resolved map; each rule's mutations stay local. Cost is
-            -- O(n) per rule per variable (n = entries in the variable
-            -- namespace, typically < 50), which is dramatically
-            -- cheaper than re-parsing the request body / query / etc.
-            -- on every rule iteration.
+            -- Fix: the cache holds the pristine resolved map and a rule
+            -- only ever deletes from a table it owns. `values_private`
+            -- says whether `values` is such a table: true after the copy
+            -- below, false while `values` is the cached table itself
+            -- (CSE fast path) or a table a getter returned by reference —
+            -- the ARGS / query / body getters hand out their own
+            -- per-request cache entry on a first resolution, which the
+            -- old `will_mutate` pre-check never covered. The removal
+            -- block copies before its first deletion when this is still
+            -- false, so the O(n) copy is paid only by rules that actually
+            -- have a target to remove (jit.p: ~16% of request CPU on
+            -- scenario 02 when every rule re-copied the same ARGS map),
+            -- and a removal can no longer bleed into another rule's view
+            -- of the same variable through EITHER cache. The fast path
+            -- stays behind `engine_fast_path` so it can be A/B-toggled;
+            -- off, every cache read copies as before.
+            local values_private = false
             if kong.ctx.plugin and kong.ctx.plugin.ka_variable_cache
                and kong.ctx.plugin.ka_variable_cache[variable] ~= nil then
                 local cached = kong.ctx.plugin.ka_variable_cache[variable]
                 if type(cached) == "table" then
-                    -- CSE fast path: the defensive deep-copy exists ONLY to
-                    -- shield the cached table from the two mutation sites
-                    -- below (remove_target_from_all_rules / ids_targets[rule.id]).
-                    -- When neither will fire for this rule — the overwhelming
-                    -- common case on benign traffic — we can read the cached
-                    -- table directly and skip the per-rule O(n) copy (jit.p:
-                    -- ~16% of request CPU on scenario 02, since every rule
-                    -- re-copies the same ARGS map). Behind a flag so the win
-                    -- can be A/B-toggled; falls back to the copy otherwise.
-                    local rc = kong.ctx.plugin.rule_controls
-                    local will_mutate = rc and (
-                        (rc.remove_target_from_all_rules and #rc.remove_target_from_all_rules > 0)
-                        or (rc.ids_targets and rc.ids_targets[rule.id] ~= nil)
-                    )
-                    if plugin_conf.engine_fast_path and not will_mutate then
+                    if plugin_conf.engine_fast_path then
                         values = cached
                     else
                         local copy = {}
                         for k, v in pairs(cached) do copy[k] = v end
                         values = copy
+                        values_private = true
                     end
                 else
                     values = cached
@@ -2731,7 +2867,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     elseif string_find(inner, "^request%.header%.value:") then
                         probe = self.__get_values_request_header(inner)
                     elseif inner == "request.cookie.value" then
-                        probe = self:__get_values_request_cookie(false)
+                        probe = self.__get_values_request_cookie(false)
                     elseif inner == "request.body" then
                         local rb = self.__get_values_request_body_scalars()
                         probe = rb and rb["request.body"] and rb or nil
@@ -3353,6 +3489,21 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- ordering is a security property worth more than the two lines it
                 -- saves here. No store simply means no controls to apply.
                 local _rc = kong.ctx.plugin.rule_controls
+
+                -- Own the table before the first deletion (see `values_private`
+                -- at the cache read above). One boolean expression per variable
+                -- on a request with no exclusion; one shallow copy per rule that
+                -- actually has a target to strip — by id, for all rules, by tag,
+                -- or from a load-time name / pattern control.
+                if type(values) == "table" and not values_private
+                   and (rc_remove_patterns or rc_remove_names or rc_tag_names
+                        or (_rc and (#_rc.remove_target_from_all_rules > 0
+                                     or (_rc.ids_targets and _rc.ids_targets[rule.id] ~= nil)))) then
+                    local copy = {}
+                    for k, v in pairs(values) do copy[k] = v end
+                    values = copy
+                    values_private = true
+                end
 
                 if _rc and values and #_rc.remove_target_from_all_rules > 0 then
                     -- Drop every ctl-excluded target (ruleRemoveTargetByTag on

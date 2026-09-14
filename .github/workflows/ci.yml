@@ -99,6 +99,8 @@ jobs:
         run: lua ka-unittest/auditlog_response_bytes.lua
       - name: Per-config cache keys (plugin id + __seq__, never the config table address)
         run: lua ka-unittest/conf_cache_key.lua
+      - name: Cookie resolver honours the base64 flag (compiled resolver + count probe)
+        run: lua ka-unittest/cookie_b64_resolver.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

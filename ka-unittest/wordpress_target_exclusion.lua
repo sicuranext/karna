@@ -14,43 +14,17 @@
 -- carried in a header or cookie. The security boundary IS that namespace
 -- gate, so it gets deterministic coverage here.
 --
--- SUT is replicated inline (same convention as default_block_response.lua)
--- so the test needs no kong/ngx globals. KEEP IN SYNC with
--- kong/plugins/karna/modules/ka_engine.lua:remove_ctl_target.
+-- The function under test is the REAL one: ka_engine.lua exports it as
+-- `__remove_ctl_target` for the tests, loaded through the shared engine
+-- harness (ka-unittest/_engine_harness.lua). This file used to carry an
+-- inline copy and drifted from it.
 --
 -- Run from repo root:
 --   lua    ka-unittest/wordpress_target_exclusion.lua
 --   luajit ka-unittest/wordpress_target_exclusion.lua
 
-local string_find = string.find
-local string_sub  = string.sub
-
--- ============================================================
--- SUT — copy from ka_engine.lua:remove_ctl_target
--- ============================================================
-local function escape_lua_pattern(s)
-    return (string.gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
-end
-
-local function remove_ctl_target(values, target, variable)
-    if not values or type(target) ~= "string" then return end
-    if values[target] ~= nil then values[target] = nil end
-    local colon = string_find(target, ":", 1, true)
-    if not colon then return end
-    local t_ns   = string_sub(target, 1, colon - 1)
-    local t_name = string_sub(target, colon + 1)
-    if t_name == "" then return end
-    if type(variable) ~= "string" then return end
-    local vcolon = string_find(variable, ":", 1, true)
-    local var_ns = vcolon and string_sub(variable, 1, vcolon - 1) or variable
-    if t_ns ~= var_ns then return end
-    local t_esc = escape_lua_pattern(t_name)
-    for k in pairs(values) do
-        if string_find(k, "%." .. t_esc .. "$") or string_find(k, ":" .. t_esc .. "$") then
-            values[k] = nil
-        end
-    end
-end
+local H = dofile("./ka-unittest/_engine_harness.lua")
+local remove_ctl_target = H.engine.__remove_ctl_target
 
 -- ============================================================
 -- harness

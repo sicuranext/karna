@@ -450,7 +450,7 @@ function _M.compile_variable_resolver(variable)
     -- request.cookie.value
     if variable == "request.cookie.value" then
         return function(engine, rule)
-            return engine:__get_values_request_cookie(false)
+            return engine.__get_values_request_cookie(false)
         end
     end
 

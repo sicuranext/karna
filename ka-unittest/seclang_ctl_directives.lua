@@ -175,6 +175,67 @@ local cases = {
                "no body_access_off for =On")
         end,
     },
+    {
+        -- Collection form, the shape CRS 4.x itself ships (942100 / 942450 /
+        -- 932220 on REQUEST_COOKIES). The target has no `:<name>`: the whole
+        -- collection goes. The parser must keep the bare namespace bare — the
+        -- engine's remove_ctl_target recognises it as "empty the collection".
+        name = "ruleRemoveTargetById with a bare REQUEST_COOKIES collection",
+        actions = "id:9507114,phase:1,pass,nolog,ctl:ruleRemoveTargetById=942100;REQUEST_COOKIES",
+        check = function(controls)
+            local c = deep_find(controls, function(x)
+                return x.remove_target_from_rule_by_id
+                    and x.remove_target_from_rule_by_id.rule_id == "942100"
+                    and x.remove_target_from_rule_by_id.target == "request.cookie.value"
+            end)
+            ok(c ~= nil, "REQUEST_COOKIES → bare request.cookie.value")
+        end,
+    },
+    {
+        name = "ruleRemoveTargetById with a bare REQUEST_COOKIES_NAMES collection",
+        actions = "id:9507115,phase:1,pass,nolog,ctl:ruleRemoveTargetById=942450;REQUEST_COOKIES_NAMES",
+        check = function(controls)
+            local c = deep_find(controls, function(x)
+                return x.remove_target_from_rule_by_id
+                    and x.remove_target_from_rule_by_id.rule_id == "942450"
+                    and x.remove_target_from_rule_by_id.target == "request.cookie.name"
+            end)
+            ok(c ~= nil, "REQUEST_COOKIES_NAMES → bare request.cookie.name")
+        end,
+    },
+    {
+        name = "ruleRemoveTargetByTag with a bare REQUEST_HEADERS collection",
+        actions = "id:9507116,phase:1,pass,nolog,ctl:ruleRemoveTargetByTag=attack-sqli;REQUEST_HEADERS",
+        check = function(controls)
+            local c = deep_find(controls, function(x)
+                return x.remove_target_rule_by_tag
+                    and x.remove_target_rule_by_tag.tag == "attack-sqli"
+                    and x.remove_target_rule_by_tag.name == "request.header.value"
+            end)
+            ok(c ~= nil, "REQUEST_HEADERS → bare request.header.value")
+        end,
+    },
+    {
+        -- The two forms side by side in one actions string, as the CRS
+        -- 942450 exclusion is written: one field of ARGS, the whole cookie
+        -- collection, and the cookie names collection.
+        name = "mixed field and collection targets in one rule",
+        actions = "id:9507117,phase:1,pass,nolog,"
+            .. "ctl:ruleRemoveTargetById=942450;ARGS:token,"
+            .. "ctl:ruleRemoveTargetById=942450;REQUEST_COOKIES,"
+            .. "ctl:ruleRemoveTargetById=942450;REQUEST_COOKIES_NAMES",
+        check = function(controls)
+            ok(#controls == 3, "three controls extracted, got " .. #controls)
+            local targets = {}
+            for _, c in ipairs(controls) do
+                if c.remove_target_from_rule_by_id then
+                    targets[c.remove_target_from_rule_by_id.target] = true
+                end
+            end
+            ok(targets["request.arg.value:token"] and targets["request.cookie.value"]
+               and targets["request.cookie.name"], "field + two collections all mapped")
+        end,
+    },
 }
 
 for _, case in ipairs(cases) do
@@ -191,6 +252,24 @@ ok(seclang.__parse_ctl_target("REQUEST_HEADERS:X-Forwarded-For") == "request.hea
    "REQUEST_HEADERS lowercased")
 ok(seclang.__parse_ctl_target("ARGS") == "request.arg.value",
    "bare ARGS")
+-- Bare collections: the ModSecurity name maps to the Karna namespace and stays
+-- bare (no trailing `:`), which is what the engine's collection form keys on.
+ok(seclang.__parse_ctl_target("REQUEST_COOKIES") == "request.cookie.value",
+   "bare REQUEST_COOKIES → request.cookie.value")
+ok(seclang.__parse_ctl_target("REQUEST_COOKIES_NAMES") == "request.cookie.name",
+   "bare REQUEST_COOKIES_NAMES → request.cookie.name")
+ok(seclang.__parse_ctl_target("REQUEST_HEADERS") == "request.header.value",
+   "bare REQUEST_HEADERS → request.header.value")
+ok(seclang.__parse_ctl_target("REQUEST_HEADERS_NAMES") == "request.header.name",
+   "bare REQUEST_HEADERS_NAMES → request.header.name")
+ok(seclang.__parse_ctl_target("ARGS_GET") == "request.query.value",
+   "bare ARGS_GET → request.query.value")
+ok(seclang.__parse_ctl_target("ARGS_NAMES") == "request.arg.name",
+   "bare ARGS_NAMES → request.arg.name")
+ok(seclang.__parse_ctl_target("REQUEST_COOKIES:session") == "request.cookie.value:session",
+   "REQUEST_COOKIES:session keeps the field")
+ok(seclang.__parse_ctl_target("NOT_A_VARIABLE") == nil,
+   "unknown bare name → nil (directive dropped, never a stray literal)")
 ok(seclang.__parse_ctl_target("") == nil, "empty target → nil")
 ok(seclang.__parse_ctl_target(nil) == nil, "nil target → nil")
 
@@ -232,6 +311,27 @@ ok(c1 ~= nil, "9999100 carries the ruleRemoveTargetById control")
 local r2 = parsed["9999101"] or {}
 local c2 = deep_find(r2.rule_control or {}, function(x) return x.engine_off == true end)
 ok(c2 ~= nil, "9999101 carries the engine_off control")
+
+-- CRS 4.x shape: an exclusion rule carrying the bare collection directives.
+-- The controls must land on the parsed rule with the namespaces bare, exactly
+-- as the engine expects them.
+local crs_shape = seclang.parse_isolated([[
+SecRule REQUEST_FILENAME "@endsWith /example-endpoint" \
+    "id:9999300,phase:1,pass,t:none,nolog,\
+    ctl:ruleRemoveTargetById=942100;REQUEST_COOKIES,\
+    ctl:ruleRemoveTargetById=942450;REQUEST_COOKIES,\
+    ctl:ruleRemoveTargetById=942450;REQUEST_COOKIES_NAMES,\
+    ctl:ruleRemoveTargetById=932220;REQUEST_COOKIES"
+]])
+local r3 = crs_shape["9999300"] or {}
+local seen = {}
+for _, c in ipairs(r3.rule_control or {}) do
+    local t = c.remove_target_from_rule_by_id
+    if t then seen[t.rule_id .. ";" .. t.target] = true end
+end
+ok(seen["942100;request.cookie.value"] and seen["942450;request.cookie.value"]
+   and seen["942450;request.cookie.name"] and seen["932220;request.cookie.value"],
+   "CRS-shaped rule carries all four bare-collection controls")
 
 -- Second call to parse_isolated must NOT contain the rules from the
 -- first call — isolation across calls is the whole point.
