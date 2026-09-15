@@ -341,7 +341,16 @@ local function body_cache_key(try_b64)
 end
 
 local response_get_headers              = kong.service.response.get_headers
-local response_get_status               = kong.service.response.get_status
+-- The status the CLIENT receives, NOT the upstream's. They agree on a proxied
+-- request and differ exactly when a plugin generated the response — Karna's own
+-- rate_limit 429, its own blocks — which is the case a rule needs to see. This
+-- used to be kong.service.response.get_status, the upstream status, which does
+-- not exist on a response Karna produced itself: `response.status` then resolved
+-- to the string "nil" and a header_filter rule keyed on it could never match,
+-- with nothing logged. The audit log has always reported the client-facing
+-- status (ka_utils, both v1 http_code and v2 status), so the record said 429
+-- while no rule could see 429.
+local response_get_status               = kong.response.get_status
 local response_exit                     = kong.response.exit
 
 local body_parser                       = require "kong.plugins.karna.ka_body_parser"
