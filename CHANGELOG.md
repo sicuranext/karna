@@ -7,6 +7,81 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **The rule format is now published as a JSON Schema** (draft 2020-12), so an
+  editor can complete and check rules as you type them and CI can reject a
+  broken pack before it reaches a gateway. `docs/schema/karna-rule.schema.json`
+  describes one rule object (a single `rules_request` entry);
+  `docs/schema/karna-rules.schema.json` describes an array of them (a global
+  rules pack file, or the `json` payload published to the Redis hash
+  `karna:global_rules`). Both are served from the docs site and resolve
+  offline from the repository. The schema is strict where Karna is silent:
+  unknown fields are rejected everywhere, because the engine ignores them and a
+  misspelled `tags` or `transform` costs you the behaviour you thought you had
+  written with nothing in the logs to say so. It also enforces the operator and
+  transformation vocabularies, requires an argument for the operators that take
+  one, requires `type` on `set_variable`, and requires a string `id` — rule
+  controls address rules by string id, so a numeric one cannot be targeted by
+  `remove_rule` later. Variables are checked on their namespace, which rejects a
+  ModSecurity name such as `ARGS` or a typo in the prefix but does not prove a
+  full name resolves. Every rule example in `docs/rules.html` validates against
+  it.
+- A worked example in the rule reference: **rate limit, then ban**. Five
+  requests per ten seconds, and after twenty refusals the source is banned for
+  two hours. Four rules over the Redis primitives that already existed, no
+  engine feature: the limiter answers 429, a `header_filter` rule counts those
+  429s (Karna sees its own terminating responses), and a threshold rule writes
+  the shared `ban:<ip>` key that `distributed auto-ban` already reads. Covers
+  the ordering that makes it work — `rate_limit` is terminal, so the arming
+  rule has to sit before the limiter — the two Redis reads it costs per
+  request, and a cheaper three-rule variant.
+- `scripts/validate-rules.py` — validate a rule, a pack, or a JSON Lines file of
+  rules against the bundled schemas. Resolves them locally, so it runs offline;
+  exits non-zero on the first bad file. Needs `pip install jsonschema`. Any
+  standard draft 2020-12 validator works just as well, which is the point of
+  publishing a schema rather than a linter.
+
+### Fixed
+
+- **The variable reference was audited against the engine's dispatch chain and
+  corrected.** Seven names were documented as rule variables that no condition
+  can resolve: `geoip.*`, `asn.*`, `var:<name>`, `request.header.name:<name>`,
+  `request.header_no_fp.value:<name>`, `request.header.referer.*` and
+  `request.forwarded_scheme|host|port|path|prefix`. They live in the request's
+  inspection table, which is built in `header_filter`, so they work as `%{...}`
+  macros in an action or a log field and resolve to nothing in a condition —
+  and Karna validates no variable name anywhere, so such a rule simply never
+  fires, with nothing in the logs. A geo-blocking rule written from the old
+  table did nothing at all. `var:paranoia_level`, the example the docs used,
+  resolves nowhere: the paranoia gate is the rule's own `paranoia_level` field,
+  compared against the plugin config before the rule runs, and the SecLang line
+  that injected that condition is commented out. The variables section now
+  carries two tables, one per surface, and the JSON Schema rejects a macro-only
+  name used in a condition.
+- Eleven condition variables the engine resolves were missing from the
+  reference entirely: `request.http_version`, `request.line`,
+  `request.raw_query`, `request.body.length`, `request.body.processor`,
+  `request.body.xml.<path>` (the whole XML body namespace),
+  `request.body.multipart.name`, `request.body.multipart.part.<name>`,
+  `request.query.value:<name>`, `group_rx:<regex>` and `count:<variable>` — the
+  ModSecurity `&VAR` count form, which is how you write "header missing".
+  `response.status` and `response.header.value:<name>` were used in examples and
+  in the macro paragraph but had no row of their own.
+- **`log` does not default to true on a local rule, and nothing said so.** A rule
+  in `rules_request` or `custom_secrules` is written to the audit log only when
+  it carries `log: true`: the default is applied to a global rules pack, and CRS
+  rules are forced to true at load, but a local rule is not touched. A copied
+  rate-limit rule therefore throttles the client and leaves no trace, and a
+  consumer reading `matches` sees the request as allowed. Stated in the rule
+  format table, in the skill reference, and in the schema, which no longer
+  advertises a default it does not have.
+- The documentation described a `rules_response` configuration array that does
+  not exist in the plugin schema. Every custom rule goes in `rules_request`
+  whatever its phase, and the engine runs it in the phase named by the rule's
+  own `phase` field. Corrected in `docs/rules.html` and
+  `docs/configuration.html`.
+
 ## [1.5.8] - 2026-09-15
 
 ### Fixed

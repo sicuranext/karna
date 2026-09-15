@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://karna.sicuranext.com/docs/schema/karna-rules.schema.json",
+  "title": "Karna rules pack",
+  "description": "A JSON array of Karna rules. This is the shape of a global rules pack file (a `.json` file under KARNA_GLOBAL_RULES_PATH) and of the `json` field published to the Redis hash `karna:global_rules`. Rule ids must be unique across the pack: duplicates are first-wins, disk before Redis, and the discarded copy is logged. Reference: https://karna.sicuranext.com/docs/rules.html#global-rules",
+  "type": "array",
+  "items": { "$ref": "https://karna.sicuranext.com/docs/schema/karna-rule.schema.json" }
+}
