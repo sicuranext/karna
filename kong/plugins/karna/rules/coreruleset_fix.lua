@@ -152,6 +152,38 @@ _M.global_fps = {
             -- rule pack is redundant; remove it.
             { remove_rule = { rule_id = "920450" } },
 
+            -- 922130 — `SecRule MULTIPART_PART_HEADERS
+            -- "@rx [^\x21-\x7E][\x21-\x39\x3B-\x7E]*:"`. The regex hunts an
+            -- out-of-range byte followed by a header name and a `:`, i.e. a
+            -- header smuggled into a part's header block. That shape only
+            -- exists in ModSec, where MULTIPART_PART_HEADERS holds the whole
+            -- header LINE (`m_header_lines`, multipart.cc). Karna maps the
+            -- variable to the header VALUE alone (seclang.lua →
+            -- `request.body.multipart.part.header.value`), and in a bare value
+            -- the "<name>:" sequence the regex looks for is not observable —
+            -- the intended detection can never fire here.
+            --
+            -- What does fire, every time, is the space in front of a parameter
+            -- whose value contains a `:`: on `form-data; name="a:b"` the regex
+            -- takes ` name="a` plus the `:`. That turns 922130 into a blanket
+            -- ban on form fields with a `:` in the name — Moodle quizzes
+            -- (`q20047:5_:flagged`), Next.js server actions
+            -- (`$action_b95787:0`), Oracle BNE (`bne:uueupload`). 30 days of
+            -- production: 54 hits across 7 services, 100% false positives.
+            --
+            -- The attack surface 922130 is supposed to cover is already
+            -- refused by the parser before the rule loop runs
+            -- (ka_multipart.lua): part headers are split on CRLF
+            -- (`gmatch("([^\r\n]+)")`) so a newline cannot land inside a
+            -- value; `is_header_name_valid()` accepts only
+            -- `content-disposition` and `content-type`; `strict_crlf` refuses
+            -- bare LF/CR in the framing; duplicate headers and duplicate
+            -- content-disposition are refused. Every one of those returns
+            -- `nil, err`, propagated by ka_body_parser.lua as a block. Same
+            -- reasoning as 920410 / 920450 above — structural false positive
+            -- with no residual detection value; remove it.
+            { remove_rule = { rule_id = "922130" } },
+
             -- 920650 — `SecRule TX:allow_method_override_parameter "@eq 0"`
             -- chained with `REQUEST_METHOD !@streq %{ARGS._method}`. The TX
             -- variable is a CRS-setup flag (defaulting to 0 in crs-setup.conf)
