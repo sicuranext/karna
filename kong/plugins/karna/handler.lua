@@ -64,6 +64,30 @@ local function conf_cache_key(prefix, plugin_conf)
   return prefix .. ":" .. tostring(plugin_conf.__plugin_id) .. ":" .. tostring(seq)
 end
 
+-- Namespace for the `rate_limit` Redis keys. Two Karna instances on two
+-- different services can carry rules with the same id (a copied rule, a rule
+-- shipped by the global pack) and the same `key` macro; without a namespace
+-- they would share one counter, so traffic to one service would throttle
+-- clients of the other.
+--
+-- `__plugin_id` is Kong's plugin entity id, stamped on every config table by
+-- the plugins iterator. It names the instance and, unlike `__seq__`, survives
+-- a configuration edit: a counter must NOT reset every time someone PATCHes an
+-- unrelated field. Falls back to the service id, then to a constant, so a key
+-- is always well-formed.
+local function rate_limit_scope(plugin_conf)
+  local pid = plugin_conf and plugin_conf.__plugin_id
+  if pid and pid ~= "" then return tostring(pid) end
+  -- The indexing has to happen INSIDE the pcall: `pcall(kong.router.get_service)`
+  -- evaluates `kong.router.get_service` first and throws on its own when
+  -- `kong.router` is absent, which is the one case this fallback exists for.
+  local ok_svc, service = pcall(function()
+    return kong.router and kong.router.get_service()
+  end)
+  if ok_svc and service and service.id then return tostring(service.id) end
+  return "noscope"
+end
+
 -- Parse the rules a specific plugin instance contributes dynamically —
 -- i.e. CRS exclusion plugins loaded from disk (`crs_plugins_enabled`
 -- entries under `crs_plugins_path/<name>/plugins/`) and inline SecLang
@@ -596,8 +620,8 @@ local evaluate_rules = function(plugin_conf, rules, phase)
     end
 
     -- Rate-limit action: when a rule with `rate_limit` declared on its
-    -- action fires, Karna increments a Redis counter keyed by the
-    -- rule id + the resolved `key` macro (default `%{remote_addr}`),
+    -- action fires, Karna increments a Redis counter keyed by the plugin
+    -- instance + the rule id + the resolved `key` macro (default `%{remote_addr}`),
     -- sets a TTL = `window_seconds` the first time the counter is
     -- created (fixed-window semantics), and:
     --   - if the post-incr count exceeds `limit` → respond with the
@@ -621,7 +645,8 @@ local evaluate_rules = function(plugin_conf, rules, phase)
         key_macro = "%{remote_addr}"
       end
       local resolved_key = resolve_request_macros(key_macro)
-      local full_key = "karna:rl:" .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
+      local scope = rate_limit_scope(plugin_conf)
+      local full_key = "karna:rl:" .. scope .. ":" .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
 
       utils.redis_host = plugin_conf.redis_host
       utils.redis_port = plugin_conf.redis_port
@@ -1241,7 +1266,7 @@ function plugin:log(plugin_conf)
       -- response header, so the old build-then-rebuild cost that twice.
       if #loggable_matches > 0 then
         local last_match = loggable_matches[#loggable_matches]
-        json_log = utils:get_auditlog(last_match.rule, last_match.part)
+        json_log = utils:get_auditlog(last_match.rule, last_match.part, last_match)
       else
         json_log = utils:get_auditlog(nil, nil)
       end
@@ -1294,6 +1319,7 @@ end
 -- (`_wasm`, `_go`) to the same table.
 plugin._internals = {
   conf_cache_key           = conf_cache_key,
+  rate_limit_scope         = rate_limit_scope,
   get_plugin_dynamic_rules = get_plugin_dynamic_rules,
   get_local_request_rules  = get_local_request_rules,
   get_overrides_cached     = get_overrides_cached,

@@ -340,5 +340,33 @@ ok(#e.all == 0 and #e.access == 0 and #e.header_filter == 0, "no rules_request �
 ok(writes() == before_w, "no rules_request → no cache write")
 ok(#ERRORS == 0, "no parse errors were logged along the way")
 
+-- ---------------------------------------------------------------------------
+print("\n- rate_limit_scope: the counter key is namespaced by plugin instance")
+-- ---------------------------------------------------------------------------
+-- Two services can carry a rule with the same id (a copied rule, a rule shipped
+-- by the global pack) and the same `key` macro. Without a namespace in the
+-- Redis key they share one counter, so traffic to one service throttles clients
+-- of the other. The scope is the plugin entity id and NOT `__seq__`: unlike the
+-- cache key above, a counter must survive a configuration edit rather than
+-- reset on every Admin API write.
+ok(type(I.rate_limit_scope) == "function", "rate_limit_scope is exposed on the seam")
+
+ok(I.rate_limit_scope({ __plugin_id = "plugin-a", __seq__ = 7 }) == "plugin-a",
+   "the plugin entity id is the scope")
+ok(I.rate_limit_scope({ __plugin_id = "plugin-a", __seq__ = 7 })
+   == I.rate_limit_scope({ __plugin_id = "plugin-a", __seq__ = 8 }),
+   "a configuration edit (new __seq__) does NOT move the counter")
+ok(I.rate_limit_scope({ __plugin_id = "plugin-a" })
+   ~= I.rate_limit_scope({ __plugin_id = "plugin-b" }),
+   "two plugin instances never share a counter")
+
+-- No plugin id: fall back to the service, then to a constant. A key is always
+-- well-formed — a nil in the middle of the concatenation would throw in the
+-- access phase, on a request that was merely being counted.
+ok(I.rate_limit_scope({}) ~= nil and I.rate_limit_scope({}) ~= "",
+   "no __plugin_id → still a usable scope (service id, else a constant)")
+ok(I.rate_limit_scope({ __plugin_id = "" }) ~= "", "an empty id is not a scope")
+ok(I.rate_limit_scope(nil) ~= nil, "nil config → still a usable scope")
+
 print(string.format("\n%d test(s) failed", fails))
 os.exit(fails == 0 and 0 or 1)

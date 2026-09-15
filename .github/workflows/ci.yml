@@ -107,6 +107,8 @@ jobs:
         run: lua ka-unittest/macro_resolution_phases.lua
       - name: Redis counter keeps its TTL (atomic INCR+EXPIRE, stuck-key repair)
         run: lua ka-unittest/redis_counter_ttl.lua
+      - name: rate_limit counter state reaches the audit log (v2 fields, v1 data slot)
+        run: lua ka-unittest/rate_limit_audit_fields.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)
