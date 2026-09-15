@@ -176,7 +176,7 @@
           <tr><td class="name"><code>redis.&lt;key&gt;</code></td><td>Inspect a Redis key (read-only). Everything after <code>redis.</code> is the key name, with macros allowed (<code>redis.ban:%{remote_addr}</code>). The operator picks the command — see <a class="link" href="#redis-inspect">Redis inspection</a>. Needs <code>redis_inspect_enabled</code>.</td></tr>
           <tr><td class="name"><code>geoip.*</code> / <code>asn.*</code></td><td>Enrichment from a sibling plugin (<code>geoip.country_code</code>, <code>asn.org</code>, …), when present.</td></tr>
           <tr><td class="name"><code>mcp.*</code></td><td>MCP fields (<code>mcp.method</code>, <code>mcp.tool.name</code>, …) when <code>mcp_enabled</code>.</td></tr>
-          <tr><td class="name"><code>connection.id</code></td><td>Pseudonymous connection identifier (<code>kc1_&lt;32 hex&gt;</code>): identical for every request on the same TCP connection (HTTP/1.1 keep-alive, HTTP/2 streams), different across connections, not reversible. Also a macro (<code>%{connection.id}</code>), e.g. as a <code>rate_limit</code> key.</td></tr>
+          <tr><td class="name"><code>connection.id</code></td><td>Pseudonymous connection identifier (<code>kc1_&lt;32 hex&gt;</code>): identical for every request on the same TCP connection (HTTP/1.1 keep-alive, HTTP/2 streams), different across connections, not reversible. Also a request-context macro (<code>%{connection.id}</code>) that resolves in every phase, e.g. as a <code>rate_limit</code> key for a per-connection rather than per-IP counter.</td></tr>
           <tr><td class="name"><code>tls.*</code></td><td>Negotiated TLS telemetry, read-only. <code>tls.enabled</code> (<code>true</code>/<code>false</code>) and <code>tls.capture_status</code> (<code>not_tls</code>/<code>complete</code>/<code>partial</code>/<code>error</code>) always resolve; on a TLS request also <code>tls.protocol</code>, <code>tls.cipher</code>, <code>tls.curve</code>, <code>tls.alpn</code>, <code>tls.sni</code>, <code>tls.session_reused</code>, <code>tls.early_data</code> (booleans as <code>true</code>/<code>false</code>), <code>tls.client_ciphers</code> and <code>tls.client_curves</code> (the lists the client offered, colon-separated, client order). Absent on plain HTTP, so <code>isSet</code> on them is false; an empty list resolves to <code>""</code>, which is distinct from absent. All usable as <code>%{tls.…}</code> macros. <code>tls.fingerprint</code> (64 hex) and <code>tls.fingerprint_version</code> carry the <a href="#tls-fingerprint">karna-tls-v1</a> client fingerprint, only when <code>tls.capture_status</code> is <code>complete</code>.</td></tr>
         </tbody>
       </table>
@@ -300,18 +300,19 @@
       </div>
 
       <h3 id="a-ratelimit">rate_limit</h3>
+      <p>Redis fixed-window counter on <code>karna:rl:&lt;rule_id&gt;:&lt;resolved key&gt;</code>. The increment and the window TTL run in one server-side script, so they cannot interleave and the counter can never be left without an expiry. The window is fixed, not sliding: increments inside it do not push the expiry out.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Field</th><th class="mono">Default</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td class="name"><code>key</code></td><td class="mono">%{remote_addr}</td><td>Counter cardinality. Macros: <code>%{remote_addr}</code>, <code>%{request.method}</code>, <code>%{request.host}</code>, <code>%{request.scheme}</code>, <code>%{request.path}</code>.</td></tr>
+          <tr><td class="name"><code>key</code></td><td class="mono">%{remote_addr}</td><td>Counter cardinality. Accepts the <a class="link" href="#a-macros">request-context macros</a>; anything else stays literal.</td></tr>
           <tr><td class="name"><code>limit</code></td><td class="mono">0</td><td>Max requests in the window.</td></tr>
-          <tr><td class="name"><code>window_seconds</code></td><td class="mono">60</td><td>Window length / counter TTL.</td></tr>
+          <tr><td class="name"><code>window_seconds</code></td><td class="mono">60</td><td>Window length / counter TTL. <code>0</code> or less falls back to <code>60</code>: an unbounded counter would never reset and would keep returning the terminal 429 forever.</td></tr>
           <tr><td class="name"><code>response</code></td><td class="mono">429</td><td>Optional <code>status_code</code> / <code>body</code> / <code>headers</code>. <code>Retry-After</code> is set automatically.</td></tr>
         </tbody>
       </table>
 
       <h3 id="a-rediswrite">redis_set / redis_sadd / redis_del</h3>
-      <p>Write cluster-wide state on a match. These are fire-and-forget side effects: synchronous in the <code>access</code> phase, deferred to a timer in later phases, and they never block the request themselves. Keys, values, and members are macro-resolved (<code>%{remote_addr}</code>, <code>%{request.method|host|scheme|path}</code>, <code>%{request_headers.X}</code>). Pair them with a <code>redis.&lt;key&gt;</code> inspection rule to close an auto-ban loop — see the <a class="link" href="#ex-autoban">auto-ban example</a>.</p>
+      <p>Write cluster-wide state on a match. These are fire-and-forget side effects: synchronous in the <code>access</code> phase, deferred to a timer in later phases, and they never block the request themselves. Keys, values, and members accept the <a class="link" href="#a-macros">request-context macros</a>. Pair them with a <code>redis.&lt;key&gt;</code> inspection rule to close an auto-ban loop — see the <a class="link" href="#ex-autoban">auto-ban example</a>.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Action</th><th class="mono">Fields</th><th>Redis command</th></tr></thead>
         <tbody>
@@ -332,7 +333,7 @@
       </div>
 
       <h3 id="a-setvar">set_variable</h3>
-      <p><code>type</code> is required (<code>shared</code> &rarr; <code>kong.ctx.shared</code>, <code>plugin</code> &rarr; <code>kong.ctx.plugin</code>). String values support <code>%{var}</code> macros resolved against the request.</p>
+      <p><code>type</code> is required (<code>shared</code> &rarr; <code>kong.ctx.shared</code>, <code>plugin</code> &rarr; <code>kong.ctx.plugin</code>). String values support <code>%{var}</code> macros &mdash; which names resolve depends on the phase, see <a class="link" href="#a-macros">Macros in actions</a>.</p>
       <div class="code-card">
         <div class="code-head"><span>action</span><span class="lang">json</span></div>
         <div class="code-body"><pre><span class="prm">"action"</span>: {
@@ -353,6 +354,24 @@
   ]
 }</pre></div>
       </div>
+
+      <h3 id="a-macros">Macros in actions</h3>
+      <p>Action fields that accept <code>%{...}</code> templates do not all draw on the same pool of names, and one group depends on the phase the rule runs in.</p>
+      <p><strong>Request-context macros resolve in every phase</strong> &mdash; they are read straight off the request: <code>%{remote_addr}</code>, <code>%{request.method}</code>, <code>%{request.host}</code>, <code>%{request.scheme}</code>, <code>%{request.path}</code>, <code>%{request_headers.&lt;name&gt;}</code> and <code>%{connection.id}</code>.</p>
+      <p><strong>Every other rule variable</strong> (<code>%{request.header.value:host}</code>, <code>%{request.body.urlencode.value:username}</code>, <code>%{response.status}</code>, &hellip;) comes from the request&rsquo;s inspection table, which Karna builds in <code>header_filter</code>. Used by a rule in the <code>access</code> phase, such a macro stays <em>literal</em> &mdash; the value does not exist yet.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Field</th><th>Request context</th><th>Inspection table</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>rate_limit.key</code></td><td>yes</td><td>no &mdash; stays literal</td></tr>
+          <tr><td class="name"><code>redis_incr_key.key</code></td><td>yes</td><td>yes, from <code>header_filter</code> on</td></tr>
+          <tr><td class="name"><code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code></td><td>yes</td><td>no &mdash; stays literal</td></tr>
+          <tr><td class="name"><code>redis.&lt;key&gt;</code> variable (read side)</td><td>yes</td><td>no &mdash; stays literal</td></tr>
+          <tr><td class="name"><code>set_variable.value</code></td><td>yes</td><td>yes, from <code>header_filter</code> on</td></tr>
+          <tr><td class="name"><code>set_log_fields.value</code></td><td>only names the table also carries</td><td>yes &mdash; resolved at log time</td></tr>
+        </tbody>
+      </table>
+      <p><code>set_log_fields</code> is the one field resolved purely from the inspection table: it runs at log time, when the table is complete, and its value must be a single <code>%{&hellip;}</code> macro rather than a template with text around it. Most request-context names are inspection-table keys too, so they work there; <code>%{request_headers.&lt;name&gt;}</code> is not one and does not.</p>
+      <p>An unresolvable macro is left literal rather than raising an error, so a typo or an early-phase lookup shows up as a <code>%{&hellip;}</code> in the key instead of a failed request. Practical consequence: <strong>a Redis key written by one rule and read back by another should use only request-context macros</strong>, so both sides derive the same string in any phase.</p>
 
       <h3 id="a-logonly">log_only</h3>
       <p>A rule whose job is to notice something and record it, without touching the request. The ModSecurity <code>pass,log</code> shape. The match lands in the audit log as a real entry &mdash; id, message, tags, matched value &mdash; labelled <code>action: "log"</code>, in both formats (<code>matches[]</code> in v2, <code>messages[]</code> in v1) and in both the <code>access</code> and <code>header_filter</code> phases.</p>
@@ -382,7 +401,7 @@
           <tr><td class="name"><code>redis_hexists</code></td><td class="mono">HEXISTS</td><td>The hash has a field named <code>value</code>. Negatable.</td></tr>
         </tbody>
       </table>
-      <p>The key macros are <code>%{remote_addr}</code>, <code>%{request.method|host|scheme|path}</code>, and <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
+      <p>Keys accept the <a class="link" href="#a-macros">request-context macros</a>; the <code>value</code> needle accepts the same set minus <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
       <div class="code-card">
         <div class="code-head"><span>block IPs present in a banlist key</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{

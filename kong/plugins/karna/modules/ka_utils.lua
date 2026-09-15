@@ -1285,34 +1285,64 @@ _M.redis_connect = function(self)
     return red
 end
 
--- Increment a Redis counter (atomically via INCR) and, if the key
--- was newly created by this call, set its TTL to `expire_time`
--- seconds — fixed-window rate-limit semantics. Returns the new
--- counter value on success, or nil if Redis is unreachable / the
--- INCR failed; callers (notably the `rate_limit` rule action) treat
--- nil as "counter unavailable, fail open".
+-- Fixed-window counter: increment, and arm the window TTL when this call is
+-- the one that opened the window. Both halves run inside a single server-side
+-- script, so nothing can interleave between them and it costs one round trip.
+--
+-- The previous shape was GET (does the key exist?) → INCR → EXPIRE only when
+-- the GET had seen nothing. If the key expired BETWEEN the GET and the INCR,
+-- the INCR recreated it while the GET result still said "present", the EXPIRE
+-- was skipped, and the counter lived on with `TTL -1`: it never reset, climbed
+-- past the limit and stayed there. The shorter the window the likelier the
+-- race. For the native `rate_limit` action that is an availability bug — every
+-- request matching the rule gets the terminal 429 forever, until the key is
+-- deleted by hand.
+--
+-- Two branches arm the TTL:
+--   * `v == 1` — the INCR itself created the key, so this is a fresh window.
+--     This is the only signal that means "created", and it is read from the
+--     increment's own return value, which is why the GET is gone.
+--   * `TTL < 0` — the key exists with no expiry (`-1`). A counter already
+--     stuck by the old race, or by a worker dying between INCR and EXPIRE,
+--     re-arms its window on the next hit instead of leaking forever, so a
+--     deployment carrying a stuck key recovers on its own.
+--
+-- EVAL, not EVALSHA: Redis caches the script body server-side on first use
+-- anyway, and EVALSHA would add a NOSCRIPT fallback path (and its own failure
+-- modes) to save a couple hundred bytes on the wire per increment.
+local INCR_EXPIRE_LUA = [[
+local v = redis.call('INCR', KEYS[1])
+local ttl = tonumber(ARGV[1])
+if ttl and ttl > 0 and (v == 1 or redis.call('TTL', KEYS[1]) < 0) then
+  redis.call('EXPIRE', KEYS[1], ttl)
+end
+return v
+]]
+
+local function incr_with_expire(redis_client, key, expire_time)
+    local res, err = redis_client:eval(INCR_EXPIRE_LUA, 1, key,
+                                       tostring(tonumber(expire_time) or 0))
+    if not res or res == ngx.null then
+        kong.log.err("Karna: failed to increment key: ", err)
+        return nil
+    end
+    return tonumber(res)
+end
+
+-- Increment a Redis counter and keep its fixed window armed (see
+-- `incr_with_expire` above). Returns the new counter value on success, or nil
+-- if Redis is unreachable / the increment failed; callers (notably the
+-- `rate_limit` rule action) treat nil as "counter unavailable, fail open".
 _M.redis_incr_key = function(self, key, expire_time)
     local redis_client = self:redis_connect()
     if not redis_client then return nil end
 
-    local exists, _err_get = redis_client:get(key)
-
-    local res, err = redis_client:incr(key)
-    if not res then
-        kong.log.err("Karna: failed to increment key: ", err)
-        return nil
-    end
-
-    if exists == ngx.null and expire_time then
-        local ok, expire_err = redis_client:expire(key, expire_time)
-        if not ok then
-            kong.log.err("Karna: failed to set expire time for key: ", expire_err)
-        end
-    end
-
-    return tonumber(res)
+    return incr_with_expire(redis_client, key, expire_time)
 end
 
+-- Deferred variant (0-delay timer), used when the `redis_incr_key` action
+-- fires outside `access` and the cosocket API is not available inline.
+-- Same counter semantics as the synchronous path — one script, no GET.
 _M.redis_incr_key_async = function(premature, self, plugin_conf, key, expire_time)
     if not premature then
         self.redis_host = plugin_conf.redis_host
@@ -1322,24 +1352,7 @@ _M.redis_incr_key_async = function(premature, self, plugin_conf, key, expire_tim
         local redis_client = self:redis_connect()
 
         if redis_client then
-            -- check if key exists
-            local exists, err = redis_client:get(key)
-
-            local res, err = redis_client:incr(key)
-            if not res then
-                kong.log.err("Karna: failed to increment key: ", err)
-                return
-            end
-
-            if exists == ngx.null then
-                if expire_time then
-                    local ok, err = redis_client:expire(key, expire_time)
-                    if not ok then
-                        kong.log.err("Karna: failed to set expire time for key: ", err)
-                        return
-                    end
-                end
-            end
+            incr_with_expire(redis_client, key, expire_time)
         end
     end
 end

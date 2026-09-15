@@ -7,6 +7,80 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.5.8] - 2026-09-15
+
+### Fixed
+
+- **`%{...}` macros in rule actions did not resolve in the `access` phase, so a
+  Redis counter was written under a key containing the literal text
+  `%{remote_addr}`.** `redis_incr_key` and `set_variable` resolve their key /
+  value through `replace_variable_in_string`, which looked every macro up in
+  the request's inspection table. That table is built in `header_filter`, so in
+  `access` it was nil and every macro stayed literal. The read half of the same
+  feature never had the problem: the `redis.<key>` inspection variable resolves
+  its key straight off the request, in any phase. The documented "roll your own
+  rate limit" idiom therefore incremented `counter:%{remote_addr}` — one bucket
+  shared by every client — and read back `counter:203.0.113.7`, a key nothing
+  ever created, so the threshold could never be crossed. There was no error and
+  no warning; the shared counter simply sat above the limit while nothing was
+  throttled. `replace_variable_in_string` now resolves the request-context
+  macros first, through the same resolver the reader uses, and only then
+  consults the inspection table for the richer variables. Write and read agree
+  on a key for the same template in every phase.
+- Two latent faults in the same substitution, both reachable from ordinary
+  request data: a resolved value containing a `%` (an encoded byte, a
+  percentage) was fed to `gsub` as a replacement string and raised
+  `invalid capture index`, a 500 in whatever phase the rule ran in; and a magic
+  pattern character in a variable name (`-` in `%{request.header.value:x-consumer-id}`
+  is a lazy quantifier) made the substitution pattern stop matching the text it
+  was built from, so the macro stayed literal even with the value in hand.
+- **A Redis counter could end up with no TTL and never reset — including the
+  native `rate_limit` action, which uses the same helper.** The old sequence was
+  `GET` (is the key there?), `INCR`, then `EXPIRE` only when the `GET` had seen
+  nothing. If the key expired *between* the `GET` and the `INCR`, the `INCR`
+  recreated it while the `GET` result still said "present", the `EXPIRE` was
+  skipped, and the counter lived on with `TTL -1`: it climbed past the limit and
+  stayed there. The shorter the window the likelier the race. For `rate_limit`
+  this is an availability bug, not a metrics one — every later request matching
+  the rule gets the terminal 429 forever, until the key is deleted by hand.
+  **Operators running 1.5.7 or earlier with `rate_limit` or `redis_incr_key`
+  should check for stuck counters** (`TTL <key>` returning `-1` on a
+  `karna:rl:*` key, or on a counter key of their own). The increment and the
+  conditional expiry now run in one server-side script, so nothing can
+  interleave and it costs one round trip instead of three. A counter found
+  without an expiry is re-armed on its next hit, so a deployment already
+  carrying a stuck key recovers on its own rather than needing manual cleanup.
+- A `rate_limit` rule with `window_seconds` of `0` or less now falls back to the
+  documented default of `60`. Previously that config sent `EXPIRE key 0`, which
+  Redis treats as a delete, so the counter reset on every request and the limit
+  never fired; under the new counter it would instead have produced exactly the
+  unbounded counter described above.
+- `%{connection.id}` is documented as a `rate_limit` key macro ("one counter per
+  connection"), but it was resolved only from the inspection table, so in the
+  `access` phase — the only phase `rate_limit` runs in — it stayed literal and
+  every connection shared one counter. It is now a request-context macro,
+  resolved from the value `ka_tls` pins at the top of `access`, and it resolves
+  in every phase. When connection ids are unavailable the macro is left literal
+  rather than substituted empty, which would fold every client into one bucket.
+
+### Changed
+
+- `replace_variable_in_string` no longer calls `kong.router.get_service()`; the
+  result was never used.
+
+### Documentation
+
+- New "Macros in rule actions" section in the README (and "Macros in actions" in
+  the rules documentation) stating which macros resolve in which phase, and
+  which action field accepts which family. Request-context macros resolve
+  everywhere; every other rule variable comes from the inspection table and is
+  only available from `header_filter` on. A Redis key written by one rule and
+  read back by another should use only request-context macros.
+- The `rate_limit` and `redis_incr_key` sections now describe the fixed-window
+  semantics explicitly: the TTL is armed by the increment that created the key,
+  re-armed if the key is ever found without one, and not pushed forward by later
+  increments inside the window.
+
 ## [1.5.7] - 2026-09-14
 
 ### Fixed
@@ -1264,7 +1338,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.7...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.8...HEAD
+[1.5.8]: https://github.com/sicuranext/karna/compare/v1.5.7...v1.5.8
 [1.5.7]: https://github.com/sicuranext/karna/compare/v1.5.6...v1.5.7
 [1.5.6]: https://github.com/sicuranext/karna/compare/v1.5.5...v1.5.6
 [1.5.5]: https://github.com/sicuranext/karna/compare/v1.5.4...v1.5.5
