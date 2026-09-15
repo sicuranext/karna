@@ -87,8 +87,8 @@ A negated condition fires when the positive fails AND the value is present. Exce
 ## Actions (side-effect actions fire even in detection-only; terminal actions block only when engine_blocking_mode is on)
 - `fixed_response`: `{ status_code, headers, body }` — standard block.
 - `fix_matched_parts`: `{ remove_chars_pattern }` — strip chars from matched targets in place, forward upstream; logs `action:"sanitized"`. **Takes precedence over `fixed_response`.**
-- `rate_limit`: `{ key (macro, default %{remote_addr}), limit, window_seconds, response{} }` — Redis fixed-window, 429 + auto Retry-After over limit. Counter increments even in detection-only.
-- `redis_incr_key`: `{ key (macro), expire }` — increment a Redis key with TTL.
+- `rate_limit`: `{ key (macro, default %{remote_addr}), limit, window_seconds, response{} }` — Redis fixed-window, 429 + auto Retry-After over limit. Counter increments even in detection-only. Increment + TTL are one atomic server-side script; `window_seconds <= 0` falls back to 60 (an unbounded counter would 429 forever).
+- `redis_incr_key`: `{ key (macro), expire }` — increment a Redis key with TTL. `expire` seconds is a fixed window: armed by the increment that created the key, re-armed if the key is ever found without a TTL, not pushed forward by later increments.
 - `redis_set` / `redis_sadd` / `redis_del`: write cluster-wide state on a match (auto-ban primitive). Fire-and-forget (sync in `access`, timer-deferred later; never blocks). Keys/values/members are macro-resolved.
   - `redis_set`: `{ key, value (default "1"), expire }` → `SET key value [EX expire]`.
   - `redis_sadd`: `{ key, member, expire }` → `SADD key member` [+ `EXPIRE key expire`].
@@ -97,7 +97,11 @@ A negated condition fires when the positive fails AND the value is present. Exce
 - `set_variable`: `{ name, value, type }` — `type` required: `shared` → `kong.ctx.shared`, `plugin` → `kong.ctx.plugin`. String values support `%{var}` macros. `value:false` is valid; only `nil` means "absent".
 - `set_log_fields`: `[ { name, value } ]` — add fields to the audit log (value supports `%{var}`).
 - `log_only`: `true` — record this **non-terminal** match in the audit log as a real match (ModSec `pass,log`). Nothing blocked, nothing rewritten. Lands in `matches[]` (v2) / `messages[]` (v1) with id, message, tags and matched value, labelled `action: "log"`; works in `access` and `header_filter`. Being a real match it **satisfies `auditlog_only_on_match`** — without it a non-terminal rule writes nothing under that setting. Several can fire per request and all are kept (the loop doesn't stop). Opt-in on purpose: collecting every non-terminal match would flood the log with CRS `pass` helper rules, which can't be filtered by `log` (every CRS rule has `log = true`). `log_only` = collected, `log` = written, so `log: false` still suppresses it. `rule_action_overrides` do not reach a `log_only` rule.
-Macros for `key`/templates: `%{remote_addr}`, `%{request.method|host|scheme|path}`, plus any inspection-table var in `set_variable`/`set_log_fields`. Redis `redis.<key>` variables and `redis_set/sadd/del` keys/values also resolve `%{request_headers.X}`; the `redis_sismember`/`redis_hexists` needle (condition.value) resolves `%{remote_addr}`/`%{request.*}`/`%{request_headers.X}`.
+Macros, and **the phase they resolve in** (getting this wrong is silent, not an error):
+- **Request-context macros resolve in EVERY phase** — `%{remote_addr}`, `%{request.method|host|scheme|path}`, `%{request_headers.X}`, `%{connection.id}`. Read straight off the request. Every macro-accepting field takes these.
+- **Any other rule variable** (`%{request.header.value:host}`, `%{response.status}`, …) comes from the inspection table, built in `header_filter`. Only `set_variable` / `redis_incr_key` (from `header_filter` on) and `set_log_fields` (at log time) can use them; in `access` they stay **literal**. `rate_limit.key`, `redis_set/sadd/del` keys and the `redis.<key>` variable never resolve them.
+- The `redis_sismember`/`redis_hexists` needle (condition.value) takes the request-context set minus `%{request_headers.X}`.
+- Unresolvable macros stay literal, no error. So **a Redis key written by one rule and read back by another must use only request-context macros** — otherwise the writer resolves it, the reader does not, and the threshold is never crossed.
 
 ## Rule controls (`rule_control[]` — modify this/other rules by id or tag)
 Per-request (a matching rule applies these to every rule evaluated after it — this is the `ctl:*` surface, and what a global-pack/local exclusion rule uses):
