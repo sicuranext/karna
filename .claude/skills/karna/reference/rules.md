@@ -25,8 +25,22 @@ Authoritative engine: `kong/plugins/karna/modules/ka_engine.lua`.
 ```
 
 Fields: `id`, `phase`, `conditions[]`, `action`, `message`, `tags[]`, `log`, optional `rule_control[]`.
+**Always set `"log": true` on a local rule.** `rules_request` / `custom_secrules` rules are NOT logged when the field is
+absent (only a global pack defaults it to true, and only CRS rules are forced to true at load), so a rate-limit rule
+without it throttles the client and leaves nothing in the audit log.
 Condition fields: `variables[]`, `op`, `value`, `transform[]` (omit/`[]` for none), `negated` (bool), `multi_match` (bool).
 Conditions are AND-ed (a chain). Later conditions can read `matched.value` and capture groups `group:0`, `group:1`, …
+
+## JSON Schema
+The format is published as JSON Schema draft 2020-12: `docs/schema/karna-rule.schema.json`
+(one rule) and `docs/schema/karna-rules.schema.json` (an array — a global pack file or
+the Redis `json` payload), served at `https://karna.sicuranext.com/docs/schema/`.
+Validate with `python3 scripts/validate-rules.py <file>...` (needs `pip install jsonschema`),
+or any draft 2020-12 validator. It rejects unknown fields, unknown operators and
+transformations, a missing operator argument, a `set_variable` without `type`, a numeric
+`id`, and a ModSecurity variable name; it checks variables on their namespace only, so a
+full name that resolves to nothing still passes. Keep the `$defs` blocks in lockstep with
+the engine when an operator / transform / action / control is added or renamed.
 
 ## Phases
 Set a rule's `phase` to one of these. Custom rules run in `access` and
@@ -49,22 +63,44 @@ must always increment belongs on a non-terminal rule, and a "block if already
 banned" check placed first short-circuits the rest.
 
 ## Variables (append `:<selector>` to target a named element)
+Two surfaces, and they are NOT the same set. Everything below resolves in a
+CONDITION. The names under "Macro-only" further down do not: they live in the
+inspection table (built in `header_filter`) and work only as `%{...}` macros.
+Karna validates no variable name anywhere, so a name with no resolver quietly
+resolves to nothing — the rule never fires, and with `isSet` + `negated:true` it
+fires on every request instead.
+
 - `request.arg.value` / `.name` — query + parsed body args (canonical "any arg"). Target one: `request.arg.value:<name>`.
-- `request.query.value` / `.name` — query string only.
-- `request.body.urlencode.value:<name>`, `request.body.json.value:<path>`, `request.body`.
-- `request.header.value` / `.name` (`request.header.value:host`), `request.header_no_fp.value` (excludes FP-prone headers).
-- `request.cookie.value` / `.name`.
-- `request.raw_path` (verbatim path — percent-encoding intact, dot segments intact; match this for traversal/encoding evasion), `request.path` (nginx-normalized: dot segments resolved, percent-decoded except `%2F` — the view the upstream routes on), `request.path_with_query` (verbatim + query string), `request.basename`, `request.method`.
-- `request.file`, `request.body.multipart.filename`, `request.body.multipart.header.value`.
-- `request.header.referer.{path,query,scheme,host}`.
-- `response.status`, `response.header.value:<name>` / `.name:<name>`, `response.set_cookie.value` / `.name` (header_filter phase; resolvable in conditions).
+- `request.query.value` / `.name` — query string only; `request.query.value:<name>` targets one.
+- `request.body.urlencode.value:<name>`, `request.body.json.value:<path>`, `request.body.xml.<path>`, `request.body`.
+- `request.body.length` (bytes, numeric ops), `request.body.processor` (`JSON`|`XML`|`URLENCODED`|`MULTIPART`, from Content-Type; resolves even with no body — ModSec `REQBODY_PROCESSOR`).
+- `request.header.value` (`request.header.value:host`). There is no `request.header.name` condition variable — see Macro-only.
+- `request.cookie.value` — values AND names in one map (the resolved map also carries `request.cookie.name:<n>`, so an operator scans both; ModSec `REQUEST_COOKIES` + `REQUEST_COOKIES_NAMES`). No separate name-only variable.
+- `request.raw_path` (verbatim path — percent-encoding intact, dot segments intact; match this for traversal/encoding evasion), `request.path` (nginx-normalized: dot segments resolved, percent-decoded except `%2F` — the view the upstream routes on), `request.path_with_query` (verbatim + query string), `request.raw_query` (query string alone, verbatim), `request.basename`, `request.method`.
+- `request.line` (`<method> <path?query> HTTP/<ver>`, ModSec `REQUEST_LINE`), `request.http_version` (`HTTP/1.1`, `HTTP/2`).
+- `request.file`, `request.body.multipart.filename` (ModSec FILES), `request.body.multipart.name` (FILES_NAMES), `request.body.multipart.part.<name>` (everything under one part), `request.body.multipart.header.value`.
+- `response.status` (string; Karna's OWN terminating responses are seen too, so a rule can count the 429s its own `rate_limit` produced), `response.header.value:<name>` / `.name:<name>`, `response.set_cookie.value` / `.name` (header_filter phase; resolvable in conditions).
 - `request.remote_addr` — client IP as seen on the transport (ModSec `REMOTE_ADDR`; same value as the `%{remote_addr}` macro). `request.forwarded_addr` — Kong's forwarded client (`X-Forwarded-For` walked back through Kong's `trusted_ips`, falling back to the peer when the header is absent or the peer is untrusted). Behind a CDN/LB use the second. Pair either with `ipMatch`.
 - `matched.value`, `group:<n>` (chain refs).
-- `tx:<name>` / `var:<name>` (CRS TX vars, e.g. `var:paranoia_level`).
+- `tx:<name>` — one TX variable set earlier by a `setvar` action. `group_rx:<regex>` — every TX variable whose NAME matches the regex (CRS `TX:/pattern/`).
+- `count:<variable>` — how many values the variable resolves to, as a number (ModSec `&VAR`). Numeric ops: `count:request.arg.value` + `gt`, `count:request.header.value:x-api-key` + `eq 0` = "header missing".
 - `redis.<key>` — inspect a Redis key (read-only). Everything after `redis.` is the key name (macros allowed: `%{remote_addr}`, `%{request.method|host|scheme|path}`, `%{request_headers.X}`). The **operator picks the command**: `isSet`→EXISTS (ban/existence check; `negated:true`→absent), `eq`/`rx`/`contains`/`beginsWith`→GET+compare, `gt`/`lt`/`ge`/`le`→GET+numeric, `redis_sismember`→SISMEMBER, `redis_hexists`→HEXISTS. Needs `redis_inspect_enabled`. (Legacy `redis.key:<macro>` GET form is dead — use `redis.<key>`.)
-- `geoip.*` / `asn.*` (enrichment), `mcp.*` (when mcp_enabled).
+- `mcp.*` (when mcp_enabled).
 - `connection.id` — pseudonymous per-TCP-connection id (`kc1_<32 hex>`, HMAC of the nginx connection serial + per-worker nonce; same for all keep-alive requests and h2 streams of a connection). Also a macro `%{connection.id}` (e.g. rate_limit key).
 - `tls.*` — negotiated TLS, read-only: `tls.enabled` (`true`/`false`) and `tls.capture_status` (`not_tls`|`complete`|`partial`|`error`) always resolve; on TLS also `tls.protocol`, `tls.cipher`, `tls.curve`, `tls.alpn`, `tls.sni`, `tls.session_reused`, `tls.early_data` (booleans as strings), `tls.client_ciphers`, `tls.client_curves` (client-offered lists, colon-separated, client order, GREASE/unknowns as `0xNNNN`). Absent on plain HTTP (isSet false); empty list = `""` (present). Macros `%{tls.sni}` etc. `tls.fingerprint` (64 hex, `karna-tls-v1` = SHA-256 of the client-offered cipher list in client order, GREASE removed, SCSV kept; only when `tls.capture_status` = `complete`) and `tls.fingerprint_version`. It is NOT JA3/JA4; see the karna-tls-v1 section in docs/rules.html for the exact canonical form and five example rules.
+
+## Macro-only names (NOT usable in conditions)
+In the inspection table only, which `handler.lua` builds in `header_filter`.
+They resolve as `%{...}` in `set_variable` / `redis_incr_key` from
+`header_filter` on, and in `set_log_fields` at log time. Put one of these in a
+condition and the rule never fires.
+- `geoip.country_code` / `country_name` / `continent_code` / `continent_name`, `asn.id` / `asn.org` — sibling-plugin enrichment off `kong.ctx.shared`; also emitted in the v2 `enrichment` block.
+- `request.header.name:<name>` — the header name as the client spelled it.
+- `request.header_no_fp.value:<name>` — header values minus the FP-prone ones (User-Agent, Referer, …).
+- `request.header.referer.{path,query,scheme,host}` — parsed `Referer` components.
+- `request.forwarded_scheme` / `_host` / `_port` / `_path` / `_prefix` — Kong's forwarded view. NOTE the address counterpart `request.forwarded_addr` IS a condition variable.
+- `var:<name>` — legacy alias for TX vars; use `tx:<name>` in conditions. `var:paranoia_level` resolves nowhere at all: the PL gate is the rule's own `paranoia_level` field, compared to the plugin config in `loop_rules` before the rule runs (the seclang line that injected that condition is commented out).
+- `plugin.<plugin>.<key>` — free-form sibling-plugin values under its own namespace on `kong.ctx.shared`.
 
 ## Operators (`op`)
 `rx` (regex), `eq`, `ge`/`gt`/`lt`/`le` (numeric, non-numeric fails closed), `beginsWith`/`endsWith`, `contains`, `within` (token list), `isSet`, `pm`/`pmFromFile` (phrase match), `ipMatch` (CIDR list), `libinjection_sqli`/`libinjection_xss`, `validateUrlEncoding`, `validateUtf8Encoding`, `validateByteRange` (`"32-126,9,10,13"`), `unconditionalMatch`, `mcp_method_in`, `mcp_jsonrpc_valid`, `redis_sismember` (value ∈ Redis SET named by the `redis.<key>` var; negatable=not-a-member/allowlist), `redis_hexists` (Redis HASH named by `redis.<key>` has field=value; negatable). The two `redis_*` ops need `redis_inspect_enabled`.
