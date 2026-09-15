@@ -98,6 +98,35 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   whatever its phase, and the engine runs it in the phase named by the rule's
   own `phase` field. Corrected in `docs/rules.html` and
   `docs/configuration.html`.
+- **Two services could share one `rate_limit` counter.** The Redis key was
+  `karna:rl:<rule_id>:<resolved_key>`, with nothing naming the plugin instance.
+  Two services carrying a rule with the same id — a copied rule, or one shipped
+  by the global rules pack — and the same `key` macro therefore incremented the
+  same counter, so traffic to one service throttled clients of the other, and
+  the limit each service actually enforced was whatever was left of the shared
+  budget. The key now carries the plugin entity id:
+  `karna:rl:<plugin_id>:<rule_id>:<resolved_key>`. It is deliberately NOT keyed
+  on `__seq__`, the way the rule caches are: a counter must survive an Admin API
+  write rather than reset on every unrelated configuration edit. **Existing
+  counters reset once on deploy**, since the key changes; bans and thresholds
+  built on `redis_set` / `redis_incr_key` are untouched, they use their own keys.
+- **The `rate_limit` counter state never reached the audit log.** The handler
+  set `rate_limit_count`, `rate_limit_limit`, `rate_limit_window` and
+  `rate_limit_key` on the match entry and nothing read them back: the v2
+  `matches[]` entry was a fixed literal of five keys, so none of the four ever
+  reached the document, although the README had documented the names for several
+  releases. A throttled request was unanswerable from the log — you could see
+  that a rule matched, not what the counter stood at or which key it used, which
+  is exactly what you need to size a threshold. The four are now emitted on the
+  `matches[]` entry of a match that carried the action, and only on those: an
+  ordinary match keeps the five keys it always had. Under `auditlog_format: v1`
+  the same state is appended to `details.data` as one `Rate limit: count=… …`
+  line, so the ModSecurity-shaped document gains no key of its own — the same
+  treatment `build_v1_external_messages` gives a sibling plugin's `source`.
+- A latent crash in the new scope helper, found by its own test: the service-id
+  fallback was written `pcall(kong.router.get_service)`, which evaluates
+  `kong.router.get_service` before `pcall` runs and so throws on its own in the
+  one case the fallback exists for. The indexing now happens inside the pcall.
 
 ## [1.5.8] - 2026-09-15
 

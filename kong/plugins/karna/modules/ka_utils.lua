@@ -334,7 +334,11 @@ _M.get_tls_audit_blocks = function(self)
     return network, tls
 end
 
-_M.get_auditlog = function(self, matched_rule, matched_parts)
+-- `match_meta` is the handler's match entry for the rule being logged (the
+-- element of ka_matched_rules, not the rule itself). Optional: it only carries
+-- the rate-limit metadata today, and v1 folds that into `details.data` rather
+-- than adding a key to the ModSecurity-shaped document.
+_M.get_auditlog = function(self, matched_rule, matched_parts, match_meta)
     local cjson = require "cjson"
 
     local service = kong.router.get_service()
@@ -457,12 +461,21 @@ _M.get_auditlog = function(self, matched_rule, matched_parts)
             tags = forced
         end
 
+        -- Rate-limit state is appended to `data`, the same slot
+        -- build_v1_external_messages uses for a sibling plugin's `source`. No
+        -- new key in the v1 document.
+        local rl_data = self:build_v1_rate_limit_data(match_meta)
+        local data_field = matched_parts_string
+        if rl_data then
+            data_field = (data_field ~= "" and (data_field .. " | ") or "") .. rl_data
+        end
+
         json_log.transaction.messages = {
             {
                 message = matched_rule.message,
                 details = {
                     ruleId = rule_id,
-                    data = matched_parts_string,
+                    data = data_field,
                     tags = tags
                 }
             }
@@ -636,6 +649,45 @@ end
 --
 -- `shared` is the kong.ctx.shared table; passed in explicitly so the function
 -- stays testable without an ngx/kong global.
+-- Rate-limit metadata for the audit log, taken from the match entry the handler
+-- filled at dispatch (`ka_matched_rules`). Returns nil for every match that did
+-- not carry a `rate_limit` action, so the shape of an ordinary match entry is
+-- untouched.
+--
+-- Up to 1.5.8 the handler set these four fields on the match entry and NOTHING
+-- read them: the v2 `matches[]` entry was a fixed literal of five keys, so
+-- `rate_limit_count` / `_limit` / `_window` / `_key` never reached the document,
+-- although the README had documented them for several releases. They are
+-- emitted now, which is what makes a throttled request answerable from the log.
+_M.build_rate_limit_fields = function(self, matched)
+    if type(matched) ~= "table" or matched.rate_limit_key == nil then
+        return nil
+    end
+    return {
+        rate_limit_count  = tonumber(matched.rate_limit_count) or 0,
+        rate_limit_limit  = tonumber(matched.rate_limit_limit) or 0,
+        rate_limit_window = tonumber(matched.rate_limit_window) or 0,
+        rate_limit_key    = tostring(matched.rate_limit_key),
+    }
+end
+
+-- Render the same metadata as one line of text, for audit log v1. v1 is the
+-- ModSecurity-shaped document and the project's rule is that it gains no new
+-- keys (see build_v1_external_messages, which folds a sibling plugin's `source`
+-- into `details.data` for the same reason), so the rate-limit state is appended
+-- to `details.data` rather than given a field of its own. Returns nil when the
+-- match carried no rate_limit action.
+_M.build_v1_rate_limit_data = function(self, matched)
+    local t = _M.build_rate_limit_fields(self, matched)
+    if not t then return nil end
+    return "Rate limit: " .. table_concat({
+        "count="  .. tostring(t.rate_limit_count),
+        "limit="  .. tostring(t.rate_limit_limit),
+        "window=" .. tostring(t.rate_limit_window),
+        "key="    .. t.rate_limit_key,
+    }, " ")
+end
+
 _M.build_enrichment_block = function(self, shared)
     if type(shared) ~= "table" then return nil end
 
@@ -864,13 +916,22 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
                 tags = cjson.empty_array
             end
 
-            matches[#matches + 1] = {
+            local entry = {
                 rule_id = tostring(rule.id or "0"),
                 message = rule.message or "",
                 tags = tags,
                 matched_parts = matched_parts,
                 action = action_label
             }
+
+            -- rate_limit_* metadata, only on matches that carried the action.
+            -- Flat keys on the entry, the names the README has always used.
+            local rl_fields = _M.build_rate_limit_fields(self, matched)
+            if rl_fields then
+                for k, v in pairs(rl_fields) do entry[k] = v end
+            end
+
+            matches[#matches + 1] = entry
         end
     end
 
