@@ -35,7 +35,9 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the shared `ban:<ip>` key that `distributed auto-ban` already reads. Covers
   the ordering that makes it work — `rate_limit` is terminal, so the arming
   rule has to sit before the limiter — the two Redis reads it costs per
-  request, and a cheaper three-rule variant.
+  request, and a cheaper three-rule variant. Needs the `response.status` fix
+  (1.5.9): before it, the variable carried the upstream status only and the
+  counting rule never fired.
 - `scripts/validate-rules.py` — validate a rule, a pack, or a JSON Lines file of
   rules against the bundled schemas. Resolves them locally, so it runs offline;
   exits non-zero on the first bad file. Needs `pip install jsonschema`. Any
