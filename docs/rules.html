@@ -39,7 +39,7 @@
     <div class="doc-crumbs"><a href="./">Docs</a> / Writing rules</div>
     <span class="doc-eyebrow">Reference</span>
     <h1>Writing rules</h1>
-    <p>How to author detection, sanitization, rate-limiting, and exception rules. Rules are JSON objects you put in <code>rules_request</code> / <code>rules_response</code>, or SecLang strings in <code>custom_secrules</code>. This page is the full technical reference.</p>
+    <p>How to author detection, sanitization, rate-limiting, and exception rules. Rules are JSON objects you put in <code>rules_request</code>, or SecLang strings in <code>custom_secrules</code>. This page is the full technical reference.</p>
   </div>
 </header>
 
@@ -47,6 +47,7 @@
   <aside class="doc-side">
     <h5>Language</h5>
     <a href="#format">Rule format</a>
+    <a href="#json-schema">JSON Schema</a>
     <a href="#conditions">Conditions</a>
     <a href="#phases">Phases</a>
     <a href="#variables">Variables</a>
@@ -66,6 +67,7 @@
     <a href="#ex-ratelimit">Rate limit</a>
     <a href="#ex-counter">Counter + threshold</a>
     <a href="#ex-autoban">Distributed auto-ban</a>
+    <a href="#ex-ratelimit-ban">Rate limit, then ban</a>
     <a href="#ex-chain">Chained rule</a>
     <a href="#ex-tls">TLS fingerprint &amp; connection</a>
     <h5>Reference</h5>
@@ -76,7 +78,7 @@
 
     <section id="format">
       <h2>Rule format</h2>
-      <p>A rule is a JSON object. It fires when <strong>all</strong> of its conditions match, then runs its <code>action</code>. Add it to the plugin config under <code>rules_request</code> (request phase) or <code>rules_response</code> (response phase).</p>
+      <p>A rule is a JSON object. It fires when <strong>all</strong> of its conditions match, then runs its <code>action</code>. Add it to the plugin config under <code>rules_request</code> &mdash; every custom rule goes there whatever its phase, and the engine runs it in the phase named by its <code>phase</code> field.</p>
       <div class="code-card">
         <div class="code-head"><span>a complete rule</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
@@ -106,10 +108,86 @@
           <tr><td class="name"><code>action</code></td><td class="mono">object</td><td>What to do when the rule fires. See <a class="link" href="#actions">Actions</a>.</td></tr>
           <tr><td class="name"><code>message</code></td><td class="mono">string</td><td>Human-readable description, written to the audit log.</td></tr>
           <tr><td class="name"><code>tags</code></td><td class="mono">array</td><td>Labels used by overrides and rule controls (e.g. <code>attack-sqli</code>).</td></tr>
-          <tr><td class="name"><code>log</code></td><td class="mono">boolean</td><td>Whether a match is written to the audit log.</td></tr>
+          <tr><td class="name"><code>log</code></td><td class="mono">boolean</td><td>Whether a match is written to the audit log. <strong>Set it explicitly on a local rule.</strong> A rule in <code>rules_request</code> or <code>custom_secrules</code> is not logged unless <code>log</code> is <code>true</code> &mdash; only a global rules pack defaults it to true when absent, and only CRS rules are forced to true at load. A copied rate-limit rule without it throttles the client and leaves no trace, so a consumer reading <code>matches</code> sees the request as allowed.</td></tr>
           <tr><td class="name"><code>rule_control</code></td><td class="mono">array</td><td>Optional self-modifications applied to this or other rules. See <a class="link" href="#rule-controls">Rule controls</a>.</td></tr>
         </tbody>
       </table>
+    </section>
+
+    <section id="json-schema">
+      <h2>JSON Schema</h2>
+      <p>The rule format is published as a JSON Schema (draft 2020-12), so an editor can complete and check rules as you type them and CI can reject a broken pack before it reaches a gateway. Two documents, both served from this site and both resolvable offline from <code>docs/schema/</code> in the repository:</p>
+      <table class="doc-table">
+        <thead><tr><th>Schema</th><th>Validates</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><a class="link" href="schema/karna-rule.schema.json"><code>karna-rule.schema.json</code></a></td><td>One rule object &mdash; a single <code>rules_request</code> entry.</td></tr>
+          <tr><td class="name"><a class="link" href="schema/karna-rules.schema.json"><code>karna-rules.schema.json</code></a></td><td>An array of rules &mdash; a global rules pack file, or the <code>json</code> payload published to Redis.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>In your editor</h3>
+      <p>Point the schema at your rule files and you get completion on operators, transformations and action names, plus an immediate error on a field Karna would have ignored in silence.</p>
+      <div class="code-card">
+        <div class="code-head"><span>.vscode/settings.json</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"json.schemas"</span>: [
+    {
+      <span class="prm">"fileMatch"</span>: [<span class="str">"global-rules.d/*.json"</span>, <span class="str">"karna-rules*.json"</span>],
+      <span class="prm">"url"</span>: <span class="str">"https://karna.sicuranext.com/docs/schema/karna-rules.schema.json"</span>
+    },
+    {
+      <span class="prm">"fileMatch"</span>: [<span class="str">"karna-rule-*.json"</span>],
+      <span class="prm">"url"</span>: <span class="str">"https://karna.sicuranext.com/docs/schema/karna-rule.schema.json"</span>
+    }
+  ]
+}</pre></div>
+      </div>
+      <p>A single-rule file can also carry the reference itself, which works in any editor with no per-project configuration:</p>
+      <div class="code-card">
+        <div class="code-head"><span>my-rule.json</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
+  <span class="prm">"$schema"</span>: <span class="str">"https://karna.sicuranext.com/docs/schema/karna-rule.schema.json"</span>,
+  <span class="prm">"id"</span>: <span class="str">"100001"</span>,
+  <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"conditions"</span>: [
+    { <span class="prm">"op"</span>: <span class="str">"libinjection_sqli"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"request.arg.value"</span>] }
+  ],
+  <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span> } },
+  <span class="prm">"message"</span>: <span class="str">"SQLi in a request argument"</span>
+}</pre></div>
+      </div>
+      <p><code>$schema</code> is the only non-rule key the schema accepts, and Karna ignores it at load, so a file annotated this way stays deployable as is.</p>
+
+      <h3>On the command line</h3>
+      <p>The repository ships a validator that resolves the schemas locally, so it needs no network. It takes a single rule, a pack, or a JSON Lines file of rules, and exits non-zero on the first bad file.</p>
+      <div class="code-card">
+        <div class="code-head"><span>validate before you deploy</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre>pip install jsonschema
+python3 scripts/validate-rules.py global-rules.d/*.json
+
+<span class="cmt"># ok   global-rules.d/00-exclusions.json (4 rule(s))</span>
+<span class="cmt"># FAIL global-rules.d/10-blocking.json (2 rule(s))</span>
+<span class="cmt">#   conditions[0].variables[0]: 'ARGS' does not match ...</span>
+<span class="cmt">#   action: Additional properties are not allowed ('block' was unexpected)</span></pre></div>
+      </div>
+      <p>Any standard validator works just as well, which is the point of publishing a schema rather than a linter:</p>
+      <div class="code-card">
+        <div class="code-head"><span>third-party validators</span><span class="lang">bash</span></div>
+        <div class="code-body"><pre><span class="cmt"># python</span>
+check-jsonschema --schemafile docs/schema/karna-rules.schema.json global-rules.d/*.json
+
+<span class="cmt"># node</span>
+npx ajv-cli validate --spec=draft2020 \
+    -r docs/schema/karna-rule.schema.json \
+    -s docs/schema/karna-rules.schema.json \
+    -d "global-rules.d/*.json"</pre></div>
+      </div>
+      <p>Wire whichever one you use into CI on the repository that holds your pack. A global rules pack reaches every service at once, so a rule dropped at load for a typo is a gap you find in the logs rather than in review.</p>
+
+      <h3>What it catches, and what it cannot</h3>
+      <p>The schema is strict where being strict is safe. Unknown fields are rejected everywhere, because Karna ignores them: a misspelled <code>tags</code> or <code>transform</code> costs you the behaviour you thought you had written, with nothing in the logs to say so. It also enforces the operator and transformation vocabularies, requires an argument for the operators that take one, and requires <code>type</code> on <code>set_variable</code>, where a missing scope means the write is silently dropped.</p>
+      <p>Variables are checked on their namespace only (<code>request.</code>, <code>response.</code>, <code>tx:</code>, <code>redis.</code>, …), which is enough to reject a ModSecurity name such as <code>ARGS</code> or a typo in the prefix, but not enough to prove a full name resolves. That distinction matters: a variable that resolves to nothing quietly disables a rule, and paired with <code>isSet</code> and <code>negated</code> it makes the rule fire on <strong>every</strong> request. Beyond the shape, the schema says nothing about whether a rule is correct &mdash; a valid rule can still have a regex that never matches. Test in detection-only mode first.</p>
+      <div class="note"><span class="lbl">rule ids are strings</span>The schema requires <code>id</code> to be a JSON string. Rule controls and overrides address rules by string id &mdash; a numeric range such as <code>"920100-920199"</code> expands to string keys &mdash; so a rule written with a numeric id cannot be targeted by <code>remove_rule</code> later.</div>
     </section>
 
     <section id="conditions">
@@ -145,42 +223,68 @@
     <section id="variables">
       <h2>Variables</h2>
       <p>Variables name what a condition inspects. Many are arrays (e.g. all header values). Append <code>:&lt;selector&gt;</code> to target a specific named element, for example <code>request.header.value:host</code> or <code>request.arg.value:username</code>.</p>
+      <div class="note"><span class="lbl">Two surfaces</span>Not every name works in both places. The first table below lists what a <strong>condition</strong> can resolve. The second lists names that exist only as <code>%{&hellip;}</code> <strong>macros</strong> in an action or a log field. Karna does not validate variable names anywhere: a name with no resolver quietly resolves to nothing, which silently disables the rule &mdash; and paired with <code>isSet</code> + <code>negated</code> it makes the rule fire on <em>every</em> request. Check which of the two tables a name is in before you write the rule.</div>
+      <h3>Condition variables</h3>
       <table class="doc-table">
         <thead><tr><th class="mono">Variable</th><th>Resolves to</th></tr></thead>
         <tbody>
           <tr><td class="name"><code>request.arg.value</code></td><td>Values from query string + parsed body (ModSec ARGS). Canonical for "any argument value".</td></tr>
           <tr><td class="name"><code>request.arg.name</code></td><td>Argument names from query string + parsed body.</td></tr>
-          <tr><td class="name"><code>request.query.value</code> / <code>.name</code></td><td>Values / names from the query string only.</td></tr>
+          <tr><td class="name"><code>request.query.value</code> / <code>.name</code></td><td>Values / names from the query string only. Target one with <code>request.query.value:&lt;name&gt;</code>.</td></tr>
           <tr><td class="name"><code>request.body.urlencode.value:&lt;name&gt;</code></td><td>A specific urlencoded form field.</td></tr>
           <tr><td class="name"><code>request.body.json.value:&lt;path&gt;</code></td><td>A value at a JSON path in the parsed body.</td></tr>
+          <tr><td class="name"><code>request.body.xml.&lt;path&gt;</code></td><td>A value at a path in the parsed XML body, flattened by the SAX parser the same way JSON is.</td></tr>
           <tr><td class="name"><code>request.body</code></td><td>Raw body (for urlencoded / text bodies).</td></tr>
-          <tr><td class="name"><code>request.header.value</code> / <code>.name</code></td><td>Request header values / names. Target one with <code>:&lt;header&gt;</code>.</td></tr>
-          <tr><td class="name"><code>request.header_no_fp.value</code></td><td>Header values excluding the most FP-prone ones (User-Agent, Referer, …).</td></tr>
-          <tr><td class="name"><code>request.cookie.value</code> / <code>.name</code></td><td>Cookie values / names.</td></tr>
+          <tr><td class="name"><code>request.body.length</code></td><td>Body size in bytes, as a string. Use with the numeric operators (<code>gt</code>, <code>ge</code>, …).</td></tr>
+          <tr><td class="name"><code>request.body.processor</code></td><td>Which parser the body was routed to (<code>JSON</code>, <code>XML</code>, <code>URLENCODED</code>, <code>MULTIPART</code>), derived from <code>Content-Type</code>. The ModSec <code>REQBODY_PROCESSOR</code> equivalent. Resolves even when the request carries no body.</td></tr>
+          <tr><td class="name"><code>request.header.value</code></td><td>Request header values. Target one with <code>request.header.value:&lt;header&gt;</code> (lowercase name).</td></tr>
+          <tr><td class="name"><code>request.cookie.value</code></td><td>Cookie values. The resolved map also carries the cookie <em>names</em> under <code>request.cookie.name:&lt;n&gt;</code>, so an operator on this variable scans names and values together (ModSec <code>REQUEST_COOKIES</code> + <code>REQUEST_COOKIES_NAMES</code>). There is no separate name-only variable.</td></tr>
           <tr><td class="name"><code>request.raw_path</code></td><td>URL path exactly as it came off the wire: not normalized, percent-encoding intact, no query string. The one to match for traversal / encoding evasion.</td></tr>
           <tr><td class="name"><code>request.path</code></td><td>URL path after nginx normalization: dot segments resolved, percent-encoding decoded (<code>%2F</code> excepted — nginx never decodes an encoded slash). The same view the upstream routes on: <code>/x/../y</code> resolves to <code>/y</code> here and stays <code>/x/../y</code> in <code>request.raw_path</code>.</td></tr>
           <tr><td class="name"><code>request.path_with_query</code></td><td>Verbatim path plus the query string (CRS <code>REQUEST_URI</code>).</td></tr>
+          <tr><td class="name"><code>request.raw_query</code></td><td>The query string alone, verbatim, undecoded and unparsed.</td></tr>
+          <tr><td class="name"><code>request.line</code></td><td>The whole request line, <code>&lt;method&gt; &lt;path?query&gt; HTTP/&lt;version&gt;</code> (ModSec <code>REQUEST_LINE</code>).</td></tr>
+          <tr><td class="name"><code>request.http_version</code></td><td>Protocol version as <code>HTTP/1.1</code>, <code>HTTP/2</code>, …</td></tr>
           <tr><td class="name"><code>request.basename</code></td><td>Last segment of the path (e.g. <code>index.php</code>).</td></tr>
           <tr><td class="name"><code>request.method</code></td><td>HTTP method.</td></tr>
           <tr><td class="name"><code>request.remote_addr</code></td><td>Client IP as seen on the transport — the ModSecurity <code>REMOTE_ADDR</code> equivalent, and the same value the <code>%{remote_addr}</code> macro resolves. Pair with <code>ipMatch</code>.</td></tr>
           <tr><td class="name"><code>request.forwarded_addr</code></td><td>Client IP as Kong resolves it: <code>X-Forwarded-For</code> walked back through Kong's <code>trusted_ips</code>, falling back to the peer address when the header is absent or the peer is not trusted. Behind a CDN or load balancer this is the one an IP allow/deny list needs.</td></tr>
           <tr><td class="name"><code>request.file</code></td><td>Uploaded file names / multipart param names.</td></tr>
-          <tr><td class="name"><code>request.body.multipart.filename</code></td><td>Multipart filenames.</td></tr>
-          <tr><td class="name"><code>request.body.multipart.header.value</code></td><td>Multipart part header values.</td></tr>
-          <tr><td class="name"><code>request.header.referer.{path,query,scheme,host}</code></td><td>Components of the <code>Referer</code> URL.</td></tr>
+          <tr><td class="name"><code>request.body.multipart.filename</code></td><td>Every multipart part's <code>filename=</code> (ModSec <code>FILES</code>).</td></tr>
+          <tr><td class="name"><code>request.body.multipart.name</code></td><td>Every multipart part's <code>name=</code> (ModSec <code>FILES_NAMES</code>).</td></tr>
+          <tr><td class="name"><code>request.body.multipart.part.&lt;name&gt;</code></td><td>Everything belonging to one multipart part — its value and its own sub-keys — collected under that part's name.</td></tr>
+          <tr><td class="name"><code>request.body.multipart.header.value</code></td><td>Multipart part header values. Target one with <code>:&lt;header&gt;</code>.</td></tr>
+          <tr><td class="name"><code>response.status</code></td><td>The status the <strong>client</strong> receives, as a string (<code>header_filter</code> phase). For a proxied request this is the upstream&rsquo;s status. When a plugin generated the response it is that plugin&rsquo;s status, so a rule can count the 429s Karna&rsquo;s own <code>rate_limit</code> produced or react to its own blocks. <em>Requires Karna 1.5.9 or later</em>: before that the variable carried the upstream status only, and on a response Karna produced itself it resolved to nothing.</td></tr>
+          <tr><td class="name"><code>response.header.value:&lt;name&gt;</code> / <code>.name:&lt;name&gt;</code></td><td>A specific response header, by lowercase name (response phases).</td></tr>
           <tr><td class="name"><code>response.set_cookie.value</code> / <code>.name</code></td><td>Values / names from <code>Set-Cookie</code> (response phases).</td></tr>
-          <tr><td class="name"><code>response.header.name:&lt;name&gt;</code></td><td>A specific response header (response phases).</td></tr>
           <tr><td class="name"><code>matched.value</code></td><td>The value matched by an earlier condition in the chain.</td></tr>
           <tr><td class="name"><code>group:&lt;n&gt;</code></td><td>Capture group <code>n</code> from an earlier <code>rx</code> match (<code>group:0</code> = full match).</td></tr>
-          <tr><td class="name"><code>tx:&lt;name&gt;</code> / <code>var:&lt;name&gt;</code></td><td>Transaction variables (CRS <code>TX:</code>), e.g. <code>var:paranoia_level</code>.</td></tr>
+          <tr><td class="name"><code>tx:&lt;name&gt;</code></td><td>One transaction variable set earlier in the same request by a <code>setvar</code> action (CRS <code>TX:</code>).</td></tr>
+          <tr><td class="name"><code>group_rx:&lt;regex&gt;</code></td><td>Every transaction variable whose <em>name</em> matches the regex, as a set of values (CRS <code>TX:/pattern/</code>).</td></tr>
+          <tr><td class="name"><code>count:&lt;variable&gt;</code></td><td>How many values the named variable resolves to, as a number (ModSec <code>&amp;VAR</code>). Use with the numeric operators: <code>count:request.arg.value</code> with <code>gt</code> counts arguments, and <code>count:request.header.value:x-api-key</code> with <code>eq 0</code> is "header missing".</td></tr>
           <tr><td class="name"><code>redis.&lt;key&gt;</code></td><td>Inspect a Redis key (read-only). Everything after <code>redis.</code> is the key name, with macros allowed (<code>redis.ban:%{remote_addr}</code>). The operator picks the command — see <a class="link" href="#redis-inspect">Redis inspection</a>. Needs <code>redis_inspect_enabled</code>.</td></tr>
-          <tr><td class="name"><code>geoip.*</code> / <code>asn.*</code></td><td>Enrichment from a sibling plugin (<code>geoip.country_code</code>, <code>asn.org</code>, …), when present.</td></tr>
           <tr><td class="name"><code>mcp.*</code></td><td>MCP fields (<code>mcp.method</code>, <code>mcp.tool.name</code>, …) when <code>mcp_enabled</code>.</td></tr>
           <tr><td class="name"><code>connection.id</code></td><td>Pseudonymous connection identifier (<code>kc1_&lt;32 hex&gt;</code>): identical for every request on the same TCP connection (HTTP/1.1 keep-alive, HTTP/2 streams), different across connections, not reversible. Also a request-context macro (<code>%{connection.id}</code>) that resolves in every phase, e.g. as a <code>rate_limit</code> key for a per-connection rather than per-IP counter.</td></tr>
           <tr><td class="name"><code>tls.*</code></td><td>Negotiated TLS telemetry, read-only. <code>tls.enabled</code> (<code>true</code>/<code>false</code>) and <code>tls.capture_status</code> (<code>not_tls</code>/<code>complete</code>/<code>partial</code>/<code>error</code>) always resolve; on a TLS request also <code>tls.protocol</code>, <code>tls.cipher</code>, <code>tls.curve</code>, <code>tls.alpn</code>, <code>tls.sni</code>, <code>tls.session_reused</code>, <code>tls.early_data</code> (booleans as <code>true</code>/<code>false</code>), <code>tls.client_ciphers</code> and <code>tls.client_curves</code> (the lists the client offered, colon-separated, client order). Absent on plain HTTP, so <code>isSet</code> on them is false; an empty list resolves to <code>""</code>, which is distinct from absent. All usable as <code>%{tls.…}</code> macros. <code>tls.fingerprint</code> (64 hex) and <code>tls.fingerprint_version</code> carry the <a href="#tls-fingerprint">karna-tls-v1</a> client fingerprint, only when <code>tls.capture_status</code> is <code>complete</code>.</td></tr>
         </tbody>
       </table>
       <div class="tip"><span class="lbl">Targeting a named arg</span>To match a specific argument by name, prefer <code>request.arg.value:&lt;name&gt;</code> (covers query + urlencoded body).</div>
+
+      <h3 id="macro-only-vars">Macro-only names</h3>
+      <p>These are <strong>not</strong> condition variables. They live in the request&rsquo;s inspection table, which Karna builds in <code>header_filter</code>, so they resolve as <code>%{&hellip;}</code> macros in <code>set_variable</code> and <code>redis_incr_key</code> from <code>header_filter</code> onward, and in <code>set_log_fields</code> at log time. Used in a condition they resolve to nothing and the rule never fires.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Name</th><th>Resolves to</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>geoip.country_code</code> / <code>country_name</code> / <code>continent_code</code> / <code>continent_name</code></td><td>Geo enrichment published by a sibling plugin on <code>kong.ctx.shared</code>, when present. Also emitted in the <code>enrichment</code> block of audit log v2.</td></tr>
+          <tr><td class="name"><code>asn.id</code> / <code>asn.org</code></td><td>ASN enrichment from a sibling plugin, same contract as the geo keys.</td></tr>
+          <tr><td class="name"><code>request.header.name:&lt;name&gt;</code></td><td>A request header&rsquo;s name as the client spelled it, keyed by its lowercase form.</td></tr>
+          <tr><td class="name"><code>request.header_no_fp.value:&lt;name&gt;</code></td><td>Header values with the most false-positive-prone headers (User-Agent, Referer, …) left out.</td></tr>
+          <tr><td class="name"><code>request.header.referer.{path,query,scheme,host}</code></td><td>Components of the <code>Referer</code> URL, parsed.</td></tr>
+          <tr><td class="name"><code>request.forwarded_scheme</code> / <code>_host</code> / <code>_port</code> / <code>_path</code> / <code>_prefix</code></td><td>Kong&rsquo;s forwarded view of the request, from the <code>X-Forwarded-*</code> headers it trusts. The address counterpart, <code>request.forwarded_addr</code>, <em>is</em> a condition variable.</td></tr>
+          <tr><td class="name"><code>var:&lt;name&gt;</code></td><td>Legacy alias surface for transaction variables. Use <code>tx:&lt;name&gt;</code> in conditions. <code>var:paranoia_level</code> in particular no longer resolves anywhere: the paranoia gate is the rule&rsquo;s own <code>paranoia_level</code> field, compared against the plugin config before the rule runs.</td></tr>
+          <tr><td class="name"><code>plugin.&lt;plugin&gt;.&lt;key&gt;</code></td><td>Free-form values published by a sibling plugin under its own namespace on <code>kong.ctx.shared</code>.</td></tr>
+        </tbody>
+      </table>
     </section>
 
     <section id="operators">
@@ -803,6 +907,74 @@ karna-tls-v1|TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305
   <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
 }</pre></div>
       </div>
+    </section>
+
+    <section id="ex-ratelimit-ban">
+      <h2>Example: rate limit, then ban</h2>
+      <p>A rate limit answers &ldquo;how much traffic do I tolerate&rdquo;. It does not answer &ldquo;what do I do with a client that keeps hitting the limit&rdquo;. Stretching <code>window_seconds</code> to express the second one also caps a legitimate client for the whole stretch: the rate you tolerate and how long you punish exceeding it are separate numbers, and they want separate counters.</p>
+      <p>Four rules, all Redis primitives already described above, no engine feature: <strong>5 requests per 10 seconds; after 20 refusals, banned for 2 hours</strong>. The ban is the shared <code>ban:&lt;ip&gt;</code> key from <a class="link" href="#ex-autoban">distributed auto-ban</a>, so it applies on every node and composes with anything else that writes it.</p>
+      <div class="code-card">
+        <div class="code-head"><span>rules_request, in this order</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>[
+  {
+    <span class="prm">"id"</span>: <span class="str">"rl-ban-check"</span>,
+    <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+    <span class="prm">"conditions"</span>: [
+      { <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>] }
+    ],
+    <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
+    <span class="prm">"log"</span>: <span class="kw">true</span>,
+    <span class="prm">"message"</span>: <span class="str">"source is banned"</span>,
+    <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
+  },
+  {
+    <span class="prm">"id"</span>: <span class="str">"rl-ban-arm"</span>,
+    <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+    <span class="prm">"conditions"</span>: [
+      { <span class="prm">"op"</span>: <span class="str">"gt"</span>, <span class="prm">"value"</span>: <span class="str">"20"</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.rl429:%{remote_addr}"</span>] }
+    ],
+    <span class="prm">"action"</span>: {
+      <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>, <span class="prm">"value"</span>: <span class="str">"1"</span>, <span class="prm">"expire"</span>: <span class="num">7200</span> },
+      <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> }
+    },
+    <span class="prm">"log"</span>: <span class="kw">true</span>,
+    <span class="prm">"message"</span>: <span class="str">"20 rate-limit refusals - ban 2h"</span>,
+    <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
+  },
+  {
+    <span class="prm">"id"</span>: <span class="str">"rl-login"</span>,
+    <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+    <span class="prm">"conditions"</span>: [
+      { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/login"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] }
+    ],
+    <span class="prm">"action"</span>: {
+      <span class="prm">"rate_limit"</span>: { <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>, <span class="prm">"limit"</span>: <span class="num">5</span>, <span class="prm">"window_seconds"</span>: <span class="num">10</span> }
+    },
+    <span class="prm">"log"</span>: <span class="kw">true</span>,
+    <span class="prm">"message"</span>: <span class="str">"login rate limit 5/10s"</span>,
+    <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>]
+  },
+  {
+    <span class="prm">"id"</span>: <span class="str">"rl-429-counter"</span>,
+    <span class="prm">"phase"</span>: <span class="str">"header_filter"</span>,
+    <span class="prm">"conditions"</span>: [
+      { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"429"</span>, <span class="prm">"variables"</span>: [<span class="str">"response.status"</span>] }
+    ],
+    <span class="prm">"action"</span>: {
+      <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"rl429:%{remote_addr}"</span>, <span class="prm">"expire"</span>: <span class="num">3600</span> }
+    },
+    <span class="prm">"log"</span>: <span class="kw">false</span>,
+    <span class="prm">"message"</span>: <span class="str">"count rate-limit refusals"</span>,
+    <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>]
+  }
+]</pre></div>
+      </div>
+      <p>The third rule throttles and answers 429. The fourth runs on the response, sees that 429 &mdash; <code>header_filter</code> evaluates rules on Karna&rsquo;s own terminating responses, and <code>response.status</code> carries the status the client receives, so the 429 Karna generated itself is visible &mdash; and increments <code>rl429:&lt;ip&gt;</code>. The second fires as soon as that counter passes 20, writes <code>ban:&lt;ip&gt;</code> with a 2-hour expiry and blocks. From then on the first rule answers, and nothing else is touched.</p>
+      <div class="warn"><span class="lbl">Order is the design</span>The first rule with a terminal action wins and stops the pass, and <code>rate_limit</code> is terminal exactly like <code>fixed_response</code>. That is why <code>rl-ban-arm</code> sits <em>before</em> <code>rl-login</code>: swap them and a client already over the threshold gets its 429 from the limiter, the arming rule is never reached, and the ban never happens.</div>
+      <p>On <code>rl-ban-arm</code>, <code>redis_set</code> and <code>fixed_response</code> live on the same rule. Side-effect actions are applied before the terminal check, so the ban is written and only then is the request refused.</p>
+      <p>All three reads need <code>redis_inspect_enabled</code>. The keys use <code>%{remote_addr}</code> only, a request-context macro that resolves in every phase through the same resolver on the write and the read side, so the counter one rule writes is the counter the other reads. Reach for an inspection-table variable here and the two silently diverge &mdash; see <a class="link" href="#a-macros">Macros in actions</a>.</p>
+      <p>Cost: two Redis reads in <code>access</code> on every request, plus one write on the responses that were refused. Conditions are not short-circuited &mdash; every condition of a rule is evaluated &mdash; so putting a cheap condition first does not save the Redis read of the one after it. Scope the cost by attaching this configuration to the route that needs it, as a per-route plugin instance.</p>
+      <p>A simpler variant drops one rule and one read: delete <code>ban:</code> entirely, point <code>rl-ban-check</code> straight at <code>redis.rl429:%{remote_addr}</code> with <code>gt 20</code>, and give the counter a 7200 expiry. The difference is that the two hours then run from the <em>first</em> refusal rather than the twentieth, because a counter&rsquo;s TTL is armed when the key is created and later increments never push it forward.</p>
     </section>
 
     <section id="ex-chain">

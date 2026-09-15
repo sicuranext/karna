@@ -86,7 +86,7 @@
           <tr>
             <td class="name"><code>local_rules_enabled</code></td>
             <td><span class="badge badge-type">boolean</span> <span class="badge badge-def">true</span></td>
-            <td>Evaluate your per-service custom rules (<code>rules_request</code> / <code>rules_response</code>).</td>
+            <td>Evaluate your per-service custom rules (<code>rules_request</code>).</td>
           </tr>
           <tr>
             <td class="name"><code>set_karna_headers</code></td>
@@ -241,8 +241,7 @@
       <table class="doc-table">
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td class="name"><code>rules_request</code></td><td><span class="badge badge-type">array</span></td><td>Per-service request-phase rules, each a JSON string in Karna's rule format.</td></tr>
-          <tr><td class="name"><code>rules_response</code></td><td><span class="badge badge-type">array</span></td><td>Per-service response-phase rules (header / body filter), each a JSON string.</td></tr>
+          <tr><td class="name"><code>rules_request</code></td><td><span class="badge badge-type">array</span></td><td>Per-service custom rules, each a JSON string in Karna's rule format. Every custom rule goes here whatever its phase; the engine runs it in the phase named by its <code>phase</code> field. Validate them against the <a class="link" href="rules.html#json-schema">JSON Schema</a>.</td></tr>
           <tr><td class="name"><code>custom_secrules</code></td><td><span class="badge badge-type">array</span> <span class="badge badge-def">[]</span></td><td>Inline SecLang rule strings (ModSecurity syntax). Parsed at worker start and added to the global pool. Good for one-off exclusions without dropping a <code>.conf</code> on disk.</td></tr>
         </tbody>
       </table>

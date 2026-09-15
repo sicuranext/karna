@@ -1,0 +1,1066 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://karna.sicuranext.com/docs/schema/karna-rule.schema.json",
+  "title": "Karna rule",
+  "description": "A single Karna WAF rule. One of these JSON objects goes in each element of the plugin's `rules_request` array; a JSON array of them is what a global rules pack file (KARNA_GLOBAL_RULES_PATH) and the Redis `json` payload carry. A rule fires when ALL of its conditions match, then runs its `action`. Reference: https://karna.sicuranext.com/docs/rules.html",
+  "type": "object",
+  "required": [
+    "id",
+    "phase",
+    "conditions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional. Lets an editor resolve this schema for a standalone rule file."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique rule identifier. Use a STRING: rule controls and overrides address rules by string id (a numeric range such as \"920100-920199\" expands to string keys), so a numeric id here cannot be targeted by `remove_rule`. Keep custom ids out of the OWASP CRS range (900000-999999).",
+      "examples": [
+        "local_1",
+        "100001",
+        "vp-cve-2024-1019"
+      ]
+    },
+    "phase": {
+      "$ref": "#/$defs/phase"
+    },
+    "conditions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Conditions are AND-ed: the rule fires only when every one of them matches (a ModSecurity chain). A later condition can read `matched.value` and the capture groups `group:0`, `group:1`, ... set by an earlier `rx`.",
+      "items": {
+        "$ref": "#/$defs/condition"
+      }
+    },
+    "action": {
+      "$ref": "#/$defs/action"
+    },
+    "rule_control": {
+      "type": "array",
+      "description": "Rule controls this rule applies when it matches (the `ctl:*` surface) or, for the load-time family, once at worker start. A rule with `rule_control` and NO action is an exclusion rule: on the global-pack and pass-rule paths it is evaluated on the multi-match path, so several exclusions can fire on one request.",
+      "items": {
+        "$ref": "#/$defs/ruleControl"
+      }
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable description. Written to the audit log as the match message."
+    },
+    "tags": {
+      "type": "array",
+      "description": "Labels. Used by `rule_action_overrides` / `rule_response_overrides` selectors and by the `remove_rules_by_tag` / `remove_target_rule_by_tag` controls. Tag global-pack rules (e.g. \"global-pack\") so a service can tame one of them without a per-service opt-out.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "examples": [
+        [
+          "attack-sqli",
+          "virtual-patching"
+        ]
+      ]
+    },
+    "log": {
+      "type": "boolean",
+      "description": "Whether a match is written to the audit log. The default depends on the channel, and the difference bites: a rule in `rules_request` or `custom_secrules` is NOT logged unless you set `log: true` here, so a copied rate-limit rule throttles the client and never appears in the audit log. Rules in a global rules pack default to true when the field is absent, and every CRS rule is forced to true at load. Set it explicitly on every local rule you want to see."
+    },
+    "paranoia_level": {
+      "description": "Minimum paranoia level at which this rule runs. The rule is skipped when `paranoia_level` in the plugin config is lower. Defaults to 1.",
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        {
+          "type": "string",
+          "pattern": "^[1-4]$"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "phase": {
+      "type": "string",
+      "enum": [
+        "access",
+        "header_filter",
+        "body_filter",
+        "mcp_event"
+      ],
+      "description": "Kong phase the rule runs in. `access` runs before upstream and sees method, path, query, headers, cookies and the parsed body; it can block, sanitize or rewrite, and most rules belong there. `header_filter` runs after upstream responds and adds `response.status`, `response.header.*` and `response.set_cookie.*`. `body_filter` is accepted but custom rules in that phase are NOT currently evaluated (the phase is used internally for MCP SSE reassembly). `mcp_event` runs per reassembled MCP SSE event. Global rules packs evaluate access, header_filter and mcp_event only."
+    },
+    "condition": {
+      "type": "object",
+      "required": [
+        "op",
+        "variables"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "variables": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Targets to resolve and test. Several variables in one condition are OR-ed: the condition matches when the operator matches on any resolved value. Append `:<selector>` to target one named element (`request.arg.value:id`). Prefix `count:` to test how many values the target resolves to (ModSecurity `&VAR`). Variable names are NOT validated at load: a typo resolves to nothing, which silently disables the rule and, with `isSet` + `negated`, makes it fire on every request.",
+          "items": {
+            "$ref": "#/$defs/variable"
+          }
+        },
+        "op": {
+          "description": "Operator. Canonical form is a bare operator name plus `negated`; the ModSecurity-style `!op` shorthand is still accepted on input but is a back-compat surface, not the documented API.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/operator"
+            },
+            {
+              "$ref": "#/$defs/legacyNegatedOperator"
+            }
+          ]
+        },
+        "value": {
+          "description": "Operator argument. Use \"\" (or omit) for the operators that take none (`isSet`, `libinjection_sqli`, `libinjection_xss`, `validateUrlEncoding`, `validateUtf8Encoding`, `unconditionalMatch`, `mcp_jsonrpc_valid`). For `rx` this is a PCRE pattern; for `ipMatch` a comma-separated CIDR list; for `validateByteRange` a range list such as \"32-126,9,10,13\".",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "transform": {
+          "type": "array",
+          "description": "Transformation chain applied to each value, IN ORDER, before the operator runs. There are no implicit transformations: what you list is what runs. An unknown name is silently ignored at runtime, so a typo here is a no-op that weakens the rule.",
+          "items": {
+            "$ref": "#/$defs/transformation"
+          },
+          "examples": [
+            [
+              "urlDecodeUni",
+              "lowercase"
+            ]
+          ]
+        },
+        "negated": {
+          "type": "boolean",
+          "default": false,
+          "description": "Invert the operator. A negated condition fires when the positive test fails AND the value is present. The exception is `isSet` + `negated: true`, which is how you spell \"variable absent\" and does fire on a missing variable."
+        },
+        "multi_match": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the operator against the value after EVERY step of the transformation chain, not only the final one (ModSecurity `multiMatch`). Costs one operator run per step."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Operators that need an argument.",
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "rx",
+                  "eq",
+                  "ge",
+                  "gt",
+                  "lt",
+                  "le",
+                  "beginsWith",
+                  "endsWith",
+                  "contains",
+                  "within",
+                  "pm",
+                  "pmFromFile",
+                  "ipMatch",
+                  "validateByteRange",
+                  "mcp_method_in",
+                  "redis_sismember",
+                  "redis_hexists"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ],
+            "$comment": "This operator takes an argument; `value` is required."
+          }
+        }
+      ]
+    },
+    "variable": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A Karna CONDITION variable. The pattern checks the namespace only, not the full name, so a valid-looking name can still resolve to nothing. ModSecurity names (ARGS, REQUEST_COOKIES, ...) are NOT accepted: use the Karna equivalents. Macro-only names are rejected on purpose — `geoip.*`, `asn.*`, `var:*`, `request.header.name:*`, `request.header_no_fp.value:*`, `request.header.referer.*` and `request.forwarded_scheme|host|port|path|prefix` live in the inspection table and resolve only as `%{...}` macros in an action or a log field; in a condition they resolve to nothing and the rule never fires. See https://karna.sicuranext.com/docs/rules.html#macro-only-vars",
+      "examples": [
+        "request.arg.value",
+        "request.arg.value:id",
+        "request.arg.name",
+        "request.query.value",
+        "request.body",
+        "request.body.json.value:user.name",
+        "request.body.urlencode.value:pwd",
+        "request.body.multipart.filename",
+        "request.header.value",
+        "request.header.value:host",
+        "request.header_no_fp.value",
+        "request.cookie.value",
+        "request.cookie.name",
+        "request.raw_path",
+        "request.path",
+        "request.path_with_query",
+        "request.basename",
+        "request.method",
+        "request.remote_addr",
+        "request.forwarded_addr",
+        "request.header.referer.path",
+        "response.status",
+        "response.header.value:content-type",
+        "response.set_cookie.value",
+        "matched.value",
+        "group:1",
+        "tx:paranoia_level",
+        "redis.ban:%{remote_addr}",
+        "connection.id",
+        "tls.fingerprint",
+        "mcp.method",
+        "request.body.xml.order.item",
+        "request.body.length",
+        "request.body.processor",
+        "request.raw_query",
+        "request.line",
+        "request.http_version",
+        "request.body.multipart.name",
+        "request.body.multipart.part.avatar",
+        "group_rx:^score_",
+        "tx:sql_injection_score",
+        "count:request.arg.value"
+      ],
+      "allOf": [
+        {
+          "pattern": "^(count:)?(request\\.|response\\.|mcp\\.|tls\\.|redis\\.|tx:|group:|group_rx:|matched\\.value$|connection\\.id$)",
+          "$comment": "Known condition-variable namespace."
+        },
+        {
+          "not": {
+            "pattern": "^(count:)?request\\.(header_no_fp\\.|header\\.name(:|$)|header\\.referer\\.|forwarded_(scheme|host|port|path|prefix))"
+          },
+          "$comment": "Macro-only request.* names: they resolve only as %{...} macros, never in a condition."
+        }
+      ]
+    },
+    "operator": {
+      "type": "string",
+      "description": "Operator name. Pair with `negated: true` to invert it.",
+      "enum": [
+        "rx",
+        "eq",
+        "ge",
+        "gt",
+        "lt",
+        "le",
+        "beginsWith",
+        "endsWith",
+        "contains",
+        "within",
+        "isSet",
+        "pm",
+        "pmFromFile",
+        "ipMatch",
+        "libinjection_sqli",
+        "libinjection_xss",
+        "validateUrlEncoding",
+        "validateUtf8Encoding",
+        "validateByteRange",
+        "unconditionalMatch",
+        "mcp_method_in",
+        "mcp_jsonrpc_valid",
+        "redis_sismember",
+        "redis_hexists"
+      ]
+    },
+    "legacyNegatedOperator": {
+      "type": "string",
+      "deprecated": true,
+      "description": "Legacy ModSecurity-style negation. Still accepted on input and normalized to `{op, negated: true}` by the engine. Prefer the canonical form.",
+      "enum": [
+        "!rx",
+        "!eq",
+        "!ge",
+        "!gt",
+        "!lt",
+        "!le",
+        "!beginsWith",
+        "!endsWith",
+        "!contains",
+        "!within",
+        "!isSet",
+        "!pm",
+        "!pmFromFile",
+        "!ipMatch",
+        "!libinjection_sqli",
+        "!libinjection_xss",
+        "!validateUrlEncoding",
+        "!validateUtf8Encoding",
+        "!validateByteRange",
+        "!mcp_method_in",
+        "!mcp_jsonrpc_valid",
+        "!redis_sismember",
+        "!redis_hexists"
+      ]
+    },
+    "transformation": {
+      "type": "string",
+      "description": "Transformation function name.",
+      "enum": [
+        "none",
+        "lowercase",
+        "urlDecode",
+        "urlDecodeUni",
+        "hexSequenceDecode",
+        "htmlEntityDecode",
+        "jsDecode",
+        "cssDecode",
+        "escapeSeqDecode",
+        "base64Decode",
+        "base64decode",
+        "removeNulls",
+        "removeWhitespace",
+        "compressWhitespace",
+        "replaceComments",
+        "removeCommentsChar",
+        "normalisePath",
+        "normalizePath",
+        "normalizePathWin",
+        "cmdLine",
+        "utf8toUnicode",
+        "validateUtf8Encoding",
+        "length",
+        "sha1",
+        "hexEncode"
+      ]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the rule does when it fires. An empty object is valid and means \"detect only\" (typical on an exclusion rule). Side-effect actions (`set_variable`, `set_log_fields`, `redis_*`, `setvar`) run on EVERY matching rule; the first rule with a TERMINAL action (`fixed_response`, `fix_matched_parts`, `rate_limit`) stops evaluation and wins. Terminal actions are enforced only when `engine_blocking_mode` is on, or after a rule applied the `engine_on` control.",
+      "properties": {
+        "fixed_response": {
+          "$ref": "#/$defs/fixedResponse"
+        },
+        "fix_matched_parts": {
+          "$ref": "#/$defs/fixMatchedParts"
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/rateLimit"
+        },
+        "redis_incr_key": {
+          "$ref": "#/$defs/redisIncrKey"
+        },
+        "redis_set": {
+          "$ref": "#/$defs/redisSet"
+        },
+        "redis_sadd": {
+          "$ref": "#/$defs/redisSadd"
+        },
+        "redis_del": {
+          "$ref": "#/$defs/redisDel"
+        },
+        "set_variable": {
+          "$ref": "#/$defs/setVariable"
+        },
+        "set_log_fields": {
+          "$ref": "#/$defs/setLogFields"
+        },
+        "setvar": {
+          "$ref": "#/$defs/setvar"
+        },
+        "log_only": {
+          "type": "boolean",
+          "description": "Record this NON-terminal match in the audit log as a real match (ModSecurity `pass,log`). Nothing is blocked or rewritten. It satisfies `auditlog_only_on_match`, so a non-terminal rule that must leave a trace needs this. `log: false` still suppresses the write. Not reachable by `rule_action_overrides`."
+        },
+        "mcp_event_action": {
+          "$ref": "#/$defs/mcpEventAction"
+        }
+      }
+    },
+    "fixedResponse": {
+      "type": "object",
+      "description": "Terminate the request with this response. The standard block. Body and headers are served verbatim: `%{var}` macros are NOT resolved here, so request data can never be reflected into a block page.",
+      "additionalProperties": false,
+      "properties": {
+        "status_code": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599,
+          "default": 403
+        },
+        "body": {
+          "type": "string",
+          "description": "Response body. Falls back to `default_block_response_body` from the plugin config, then to a per-deny-point default."
+        },
+        "headers": {
+          "$ref": "#/$defs/headerMap",
+          "description": "Response headers, merged over the built-in block headers and `default_block_response_headers`."
+        }
+      }
+    },
+    "fixMatchedParts": {
+      "type": "object",
+      "description": "Sanitize instead of blocking: strip `remove_chars_pattern` from every matched target (path, query arg, header, body) in place, then forward the request upstream. The audit log records `action: \"sanitized\"`. TAKES PRECEDENCE over `fixed_response` when both are declared on the same rule.",
+      "required": [
+        "remove_chars_pattern"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "remove_chars_pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Lua pattern matching the characters to remove.",
+          "examples": [
+            "[\"';&|`]*",
+            "[<>]"
+          ]
+        }
+      }
+    },
+    "rateLimit": {
+      "type": "object",
+      "description": "Redis-backed fixed-window rate limiter. Increments a counter keyed by plugin instance + rule id + resolved `key`, and refuses the request once the count passes `limit`. The counter is bumped regardless of `engine_blocking_mode` (so a detection-only dry run can size the threshold); the terminal 429 fires only in blocking mode. Increment and TTL are one atomic server-side script.",
+      "required": [
+        "limit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "default": "%{remote_addr}",
+          "description": "Counter key, macro-resolved. Only request-context macros resolve here: %{remote_addr}, %{request.method|host|scheme|path}, %{connection.id}. Anything else stays literal.",
+          "examples": [
+            "%{remote_addr}",
+            "%{remote_addr}:%{request.path}",
+            "%{connection.id}"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Requests allowed per window before the rule starts refusing."
+        },
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Fixed window length. A value <= 0 falls back to 60: an unbounded counter would never reset and would 429 forever."
+        },
+        "response": {
+          "type": "object",
+          "description": "Response served when the limit is exceeded. Defaults to 429 with an automatic Retry-After. Falls back to `default_ratelimit_response_body` / `_headers`, then to the block page.",
+          "additionalProperties": false,
+          "properties": {
+            "status_code": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599,
+              "default": 429
+            },
+            "body": {
+              "type": "string"
+            },
+            "headers": {
+              "$ref": "#/$defs/headerMap"
+            }
+          }
+        }
+      }
+    },
+    "redisIncrKey": {
+      "type": "object",
+      "description": "Increment a Redis counter on a match. `expire` is a fixed window: armed by the increment that created the key, re-armed if the key is ever found without a TTL, never pushed forward by later increments.",
+      "required": [
+        "key",
+        "expire"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/macroString"
+        },
+        "expire": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "TTL in seconds."
+        }
+      }
+    },
+    "redisSet": {
+      "type": "object",
+      "description": "SET key value [EX expire]. Fire-and-forget (synchronous in access, timer-deferred later); never blocks the request. Pair with an `isSet` condition on `redis.<key>` in another rule to close an auto-ban loop cluster-wide.",
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/macroString"
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "default": "1"
+        },
+        "expire": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "TTL in seconds."
+        }
+      }
+    },
+    "redisSadd": {
+      "type": "object",
+      "description": "SADD key member, optionally followed by EXPIRE. Read it back with the `redis_sismember` operator.",
+      "required": [
+        "key",
+        "member"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/macroString"
+        },
+        "member": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "expire": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "TTL in seconds, applied to the whole set."
+        }
+      }
+    },
+    "redisDel": {
+      "type": "object",
+      "description": "DEL key. The manual unban / clear primitive.",
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/macroString"
+        }
+      }
+    },
+    "setVariable": {
+      "type": "object",
+      "description": "Write a value into the Kong request context so a sibling plugin (type \"shared\") or Karna itself (type \"plugin\") can read it downstream.",
+      "required": [
+        "name",
+        "value",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "description": "Literal, or a string with `%{var}` macros. In the access phase only request-context macros resolve; any other variable stays literal until header_filter.",
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "shared",
+            "plugin"
+          ],
+          "description": "`shared` writes to kong.ctx.shared (visible to sibling plugins); `plugin` writes to kong.ctx.plugin (Karna-private). Any other value is ignored, so this field is required."
+        }
+      }
+    },
+    "setLogFields": {
+      "type": "array",
+      "description": "Extra fields added to this request's audit record. Values are resolved at log time, so any rule variable can be used as a macro.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        }
+      }
+    },
+    "setvar": {
+      "type": "array",
+      "description": "ModSecurity `setvar:tx.*` semantics: populate TX variables that a later condition in the same request can read as `tx:<name>`. `var_value` supports %{MATCHED_VAR_NAME} and %{tx.N} capture-group macros.",
+      "items": {
+        "type": "object",
+        "required": [
+          "var_name",
+          "var_value"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "var_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "var_value": {
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        }
+      }
+    },
+    "mcpEventAction": {
+      "type": "object",
+      "description": "Streaming action applied to one reassembled MCP SSE event. Only meaningful on a rule whose phase is `mcp_event`.",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "drop",
+            "replace",
+            "terminate",
+            "inject"
+          ],
+          "description": "`drop` swallows the event; `replace` substitutes its payload with `data`; `terminate` emits a final synthetic event then ends the stream; `inject` emits an extra event after the matched one."
+        },
+        "data": {
+          "type": "string",
+          "description": "Event payload for replace / terminate / inject."
+        },
+        "event_type": {
+          "type": "string",
+          "description": "SSE `event:` name. Defaults to \"error\" for terminate."
+        },
+        "id": {
+          "type": "string",
+          "description": "SSE `id:` field."
+        }
+      }
+    },
+    "headerMap": {
+      "type": "object",
+      "description": "Header name to value. Served verbatim, no macro resolution.",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number"
+        ]
+      },
+      "examples": [
+        {
+          "content-type": "text/plain",
+          "cache-control": "no-store"
+        }
+      ]
+    },
+    "macroString": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A string with optional `%{...}` macros. Redis keys and members resolve only the request-context macros (%{remote_addr}, %{request.method|host|scheme|path}, %{connection.id}); every other macro stays literal. A key written by one rule and read back by another MUST use only those, or the writer resolves it and the reader does not.",
+      "examples": [
+        "ban:%{remote_addr}",
+        "karna:fail:%{remote_addr}:%{request.path}"
+      ]
+    },
+    "ruleControl": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "description": "One rule control. Write one control per array element. The per-request family applies to every rule evaluated AFTER the carrying rule, for this request only; nothing persists. Controls on a rule that also has a terminal action are applied BEFORE that action is dispatched (ModSecurity order). None of them can switch off the always-on validation gates (method, path, headers, content type, body parser, arg count) - those are schema knobs.",
+      "properties": {
+        "remove_rule": {
+          "type": "object",
+          "description": "ctl:ruleRemoveById. Skip a rule for the rest of this request.",
+          "required": [
+            "rule_id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "A rule id, or an inclusive numeric range \"<from>-<to>\" (both ends all digits).",
+              "examples": [
+                "942100",
+                "920100-920199"
+              ]
+            }
+          }
+        },
+        "remove_rules_by_tag": {
+          "type": "object",
+          "description": "ctl:ruleRemoveByTag. Drop every rule carrying this tag for the rest of this request.",
+          "required": [
+            "tag"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "remove_target_from_rule_by_id": {
+          "type": "object",
+          "description": "ctl:ruleRemoveTargetById. Stop one rule from inspecting one field or one whole collection.",
+          "required": [
+            "rule_id",
+            "target"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "target": {
+              "$ref": "#/$defs/ctlTarget"
+            }
+          }
+        },
+        "remove_target_rule_by_tag": {
+          "type": "object",
+          "description": "ctl:ruleRemoveTargetByTag. Same as above but selected by tag. The tag \"OWASP_CRS\" is special-cased to mean ALL rules, custom ones included.",
+          "required": [
+            "tag",
+            "name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "$ref": "#/$defs/ctlTarget"
+            }
+          }
+        },
+        "engine_off": {
+          "type": "boolean",
+          "description": "ctl:ruleEngine=Off. Skip all remaining rule evaluation for this request. Wins over `engine_on`, whatever the order."
+        },
+        "detection_only": {
+          "type": "boolean",
+          "description": "ctl:ruleEngine=DetectionOnly. Rules keep matching, logging and running side effects; every terminal action is suppressed. Between this and `engine_on` the last one applied wins."
+        },
+        "engine_on": {
+          "type": "boolean",
+          "description": "ctl:ruleEngine=On. Force blocking for the rest of the request even on a service running `engine_blocking_mode: false`, or after an earlier `detection_only`. Combined with `fixed_response` on the SAME rule this is the virtual-patch shape: the control is applied first, so the block is enforced on an otherwise observing service. The audit log records `engine.forced_by_rule`."
+        },
+        "body_access_off": {
+          "type": "boolean",
+          "description": "ctl:requestBodyAccess=Off. The request body stops being inspected: `request.body`, the parsed body namespaces and the body half of `request.arg.value` all resolve empty. Query args, path, headers and cookies are unaffected."
+        },
+        "audit_request_body": {
+          "type": "boolean",
+          "description": "ctl:auditLogParts=+C. Attach the raw request body to the audit record if one is written. Enrichment, not detection: it is not recorded as a match and never forces a write. Clipped at `auditlog_request_body_max_bytes`; nothing is attached under `body_access_off`. It logs whatever the client sent, credentials included, so key it on method plus a narrow path."
+        },
+        "remove_variable_from_rule_conditions": {
+          "type": "object",
+          "description": "Load-time. Remove one variable from a rule's conditions, once, at worker start.",
+          "required": [
+            "rule_id",
+            "variable_name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "variable_name": {
+              "$ref": "#/$defs/variable"
+            }
+          }
+        },
+        "remove_variable_rx": {
+          "type": "object",
+          "deprecated": true,
+          "description": "Load-time. Produced by the SecLang `!VAR` exclusion syntax. NOTE: the engine currently has no consumer for this control, so it is a no-op. Use `remove_target_from_rule_by_id` / `remove_target_rule_by_tag` instead.",
+          "required": [
+            "name",
+            "rx"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/variable"
+            },
+            "rx": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "remove_target_rule_by_name": {
+          "type": "object",
+          "description": "Load-time. Remove a named target from one rule.",
+          "required": [
+            "rule_id",
+            "name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "remove_target_rule_by_pattern": {
+          "type": "object",
+          "description": "Load-time. Remove every target of one rule whose key matches a Lua pattern.",
+          "required": [
+            "rule_id",
+            "pattern"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pattern": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "remove_target_tag_by_pattern": {
+          "type": "object",
+          "description": "Load-time. Same as above, selected by tag.",
+          "required": [
+            "tag",
+            "pattern"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pattern": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "change_rule_action": {
+          "type": "object",
+          "description": "Load-time. Replace another rule's action, e.g. turn a CRS block into a sanitize.",
+          "required": [
+            "rule_id",
+            "action"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "action": {
+              "$ref": "#/$defs/action"
+            }
+          }
+        },
+        "change_condition_tfunc": {
+          "type": "object",
+          "description": "Load-time. Replace the transformation chain of one condition. `condition_number` is 1-based.",
+          "required": [
+            "rule_id",
+            "condition_number",
+            "new_tfunc"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "condition_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "new_tfunc": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/transformation"
+              }
+            }
+          }
+        },
+        "change_condition_value": {
+          "type": "object",
+          "description": "Load-time. Replace the operator argument of one condition. `condition_number` is 1-based.",
+          "required": [
+            "rule_id",
+            "condition_number",
+            "new_value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "condition_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "new_value": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "change_condition_variables": {
+          "type": "object",
+          "description": "Load-time. Replace the variable list of one condition. `condition_number` is 1-based.",
+          "required": [
+            "rule_id",
+            "condition_number",
+            "new_variables"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "condition_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "new_variables": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
+            }
+          }
+        },
+        "replace_condition": {
+          "type": "object",
+          "description": "Load-time. Replace one condition wholesale. `condition_number` is 1-based.",
+          "required": [
+            "rule_id",
+            "condition_number",
+            "new_condition"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "condition_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "new_condition": {
+              "$ref": "#/$defs/condition"
+            }
+          }
+        },
+        "remove_condition": {
+          "type": "object",
+          "description": "Load-time. Drop one condition from a rule. `condition_number` is 1-based.",
+          "required": [
+            "rule_id",
+            "condition_number"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "condition_number": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "add_condition": {
+          "type": "object",
+          "description": "Load-time. Append a condition to a rule, narrowing it.",
+          "required": [
+            "rule_id",
+            "condition"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "condition": {
+              "$ref": "#/$defs/condition"
+            }
+          }
+        }
+      }
+    },
+    "ctlTarget": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Either ONE field (`request.arg.value:pwd`, `request.cookie.value:session`) or a WHOLE collection as a bare namespace (`request.cookie.value`, `request.header.value`, `request.arg.value`, `request.query.value`). Names are compared lowercase. The single-field form also strips every key derived from that field: JSON expansion, the base64 variant, indexed duplicates. Both forms are namespace-gated, so a cookie target never touches a header or an arg of the same name. On a merged variable the collection form removes only the folded part: `request.query.value` on an ARGS rule drops the query half and keeps body args.",
+      "examples": [
+        "request.arg.value:pwd",
+        "request.cookie.value:session",
+        "request.cookie.value",
+        "request.header.value",
+        "request.arg.value"
+      ]
+    }
+  }
+}
