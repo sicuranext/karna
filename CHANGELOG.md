@@ -44,6 +44,29 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   standard draft 2020-12 validator works just as well, which is the point of
   publishing a schema rather than a linter.
 
+### Changed
+
+- CRS 922130 (`Multipart header contains characters outside of valid range`) is
+  now removed by `coreruleset_fix.lua`. The rule looks for an out-of-range byte
+  followed by a header name and a `:`, which is a header smuggled into a part's
+  header block. That shape is only observable in ModSecurity, where
+  `MULTIPART_PART_HEADERS` holds the whole header line; Karna maps the variable
+  to the header value alone, so the sequence the regex hunts for is not in the
+  data it is given and the intended detection can never fire. What does fire is
+  the space in front of a parameter whose value contains a `:`: on `form-data;
+  name="a:b"` the regex takes ` name="a` plus the `:`, which turns 922130 into a
+  blanket ban on any form field with a `:` in its name. Moodle quizzes
+  (`q20047:5_:flagged`), Next.js server actions (`$action_b95787:0`) and Oracle
+  BNE (`bne:uueupload`) all use one. Thirty days of production traffic: 54 hits
+  across 7 services, every one of them a false positive. The attack surface the
+  rule covers is already refused by `ka_multipart.lua` before the rule loop
+  runs — part headers are split on CRLF so a newline cannot land inside a value,
+  only `content-disposition` and `content-type` are accepted as part header
+  names, bare LF and CR in the framing are rejected, and duplicate headers are
+  rejected — so the four positive CRS tests for 922130 still get a 403, from the
+  body parser gate instead of from the rule. Same reasoning that already removed
+  920410 and 920450.
+
 ### Fixed
 
 - **`response.status` reported the upstream's status, so a rule could never see
