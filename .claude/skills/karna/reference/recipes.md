@@ -85,7 +85,10 @@ response.
 Needs Redis and `redis_inspect_enabled=true` (the threshold read is off by
 default). `redis_incr_key` needs both `key` and `expire`; the TTL is set on the
 first failure and not refreshed, so the counter is a fixed window that resets
-`expire` seconds after the first failure. The terminal block only fires in
+`expire` seconds after the first failure (a key ever found without a TTL is
+re-armed, so a counter cannot get stuck above the threshold). Key the counter
+on request-context macros only — the writer and the `redis.<key>` reader must
+derive the same string. The terminal block only fires in
 blocking mode.
 
 Count the failures (response phase). Most APIs answer a bad login with 401/403:
