@@ -46,6 +46,21 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`response.status` reported the upstream's status, so a rule could never see
+  a response Karna produced itself.** The variable was resolved from
+  `kong.service.response.get_status()`. A request Karna terminates in `access` —
+  the `rate_limit` 429, any `fixed_response` block — never reaches an upstream,
+  so there is no upstream status: `response.status` resolved to the literal
+  string `"nil"` and a `header_filter` rule keyed on it could not match. Nothing
+  was logged, and the phase itself was fine: the rule ran, the variable lied.
+  The shape this breaks is "count the 429s my own rate limit produced, and ban
+  the source once it has collected enough", which silently wrote nothing to
+  Redis. It now reads `kong.response.get_status()`, the status the client
+  receives. For a proxied request the two are identical, so an existing rule on
+  an upstream status keeps matching exactly as before; what changes is that
+  plugin-generated responses become visible, which is the point. The audit log
+  has always reported the client-facing status, so the record used to say 429
+  while no rule could see 429; the two now agree.
 - **The variable reference was audited against the engine's dispatch chain and
   corrected.** Seven names were documented as rule variables that no condition
   can resolve: `geoip.*`, `asn.*`, `var:<name>`, `request.header.name:<name>`,
