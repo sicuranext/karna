@@ -2616,9 +2616,13 @@ end
 -- plugin_conf.redis_inspect_enabled.
 -- ========================================================================
 
--- Resolve request-context macros in a string: %{remote_addr} and
--- %{request.method|host|scheme|path}. Used for the condition.value needle
--- (e.g. an IP looked up in a banned set) and inside the Redis key resolver.
+-- Resolve request-context macros in a string: %{remote_addr},
+-- %{request.method|host|scheme|path} and %{connection.id}. Used for the
+-- condition.value needle (e.g. an IP looked up in a banned set), inside the
+-- Redis key resolver, and as the first pass of replace_variable_in_string.
+-- Everything here is read straight off the request / the plugin ctx, so it
+-- resolves in every phase — which is the whole point: a key built from these
+-- macros is the same string on the write side and on the read side.
 _M.__resolve_reqctx_only = function(self, s)
     if not s or s == "" then return s end
     if not string_find(s, "%{", 1, true) then return s end  -- plain find: the literal "%{"
@@ -2627,6 +2631,16 @@ _M.__resolve_reqctx_only = function(self, s)
     s = string_gsub(s, "%%{request%.host}",    function() return kong.request.get_host() or "" end)
     s = string_gsub(s, "%%{request%.scheme}",  function() return kong.request.get_scheme() or "" end)
     s = string_gsub(s, "%%{request%.path}",    function() return kong.request.get_path() or "" end)
+    -- connection.id is pinned into the plugin ctx by ka_tls.populate at the top
+    -- of the access phase, so it is available to rules in every phase. Left
+    -- LITERAL when absent (connection ids disabled / init failed) rather than
+    -- substituted empty: an empty segment would fold every client into one
+    -- shared counter key, which is the failure mode this resolver exists to
+    -- prevent.
+    if string_find(s, "%%{connection%.id}") then
+        local cid = kong.ctx.plugin and kong.ctx.plugin.connection_id
+        if cid then s = string_gsub(s, "%%{connection%.id}", function() return cid end) end
+    end
     return s
 end
 
@@ -5258,16 +5272,25 @@ _M.__get_value_from_inspection_table = function(self, pattern, filter_out_patter
     if not filter_out_pattern then
         filter_out_pattern = "^$"
     end
-    -- `inspection_table` is populated by `get_inspection_table()` which
-    -- is invoked from `header_filter`. Access-phase callers (e.g. the
-    -- rate_limit dispatch resolving `%{remote_addr}` in the rule key)
-    -- can reach this before the table exists — return an empty result
-    -- rather than crashing on `pairs(nil)`. The macro `%{name}` then
-    -- stays unresolved in the caller's string, which is the desired
-    -- "fail-soft" behaviour: a literal `%{remote_addr}` becomes part of
-    -- the Redis key, which still functions (one counter per client
-    -- with the same literal) but is uniform across clients — better
-    -- than crashing the request.
+    -- `inspection_table` is populated by `get_inspection_table()`, which
+    -- runs in `header_filter`. Access-phase callers reach this before the
+    -- table exists — return an empty result rather than crashing on
+    -- `pairs(nil)`, and the macro stays literal in the caller's string.
+    --
+    -- Leaving it literal is a last resort, not a working fallback. It used
+    -- to be described as one ("a literal %{remote_addr} still gives one
+    -- counter per client, uniform across clients"), which is wrong twice
+    -- over: the literal is ONE key shared by every client, and the reader
+    -- of that key — the `redis.<key>` variable, which resolves macros
+    -- through `__resolve_redis_key_macros` in every phase — looks up the
+    -- RESOLVED name, so write and read diverge and the feature silently
+    -- does nothing. That is why `replace_variable_in_string` now resolves
+    -- the request-context macros itself before consulting this table:
+    -- reaching this function with a phase-independent macro is no longer
+    -- possible. What can still fall through here is a macro naming a true
+    -- inspection-table variable (`%{request.header.value:host}`,
+    -- `%{response.status}`) in a phase where the table is not built —
+    -- unresolvable by construction, so literal it stays.
     if not kong.ctx.plugin or not kong.ctx.plugin.inspection_table then
         return return_table
     end
@@ -6280,24 +6303,49 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
     end
 end
 
+-- Resolve the `%{var}` macros in a string. Two passes, in this order:
+--
+--   1. request context — `%{remote_addr}`, `%{request.method|host|scheme|path}`
+--      and `%{request_headers.X}`, read straight off the request through
+--      `__resolve_redis_key_macros`. These resolve in EVERY phase.
+--   2. everything else — looked up in the inspection table, which only exists
+--      from `header_filter` on (`get_inspection_table` populates it).
+--
+-- Pass 1 is not an optimisation, it is the fix for a silent-failure bug. The
+-- inspection table is nil during `access`, so a `%{remote_addr}` in a
+-- `redis_incr_key` key or a `set_variable` value used to stay LITERAL there.
+-- The write side of a hand-rolled counter then created the key
+-- `counter:%{remote_addr}` — one bucket shared by every client — while the
+-- read side (`redis.<key>`, which resolves through
+-- `__resolve_redis_key_macros`) looked up `counter:203.0.113.7`, a key nothing
+-- ever created. The threshold could never be crossed, and nothing was logged.
+-- The write paths and the read path now agree on a key for the same template
+-- in every phase, for the whole request-context macro set.
+--
+-- Unresolved macros are left literal (fail-soft): a template naming an
+-- inspection-table variable that is absent for this request, or resolved in a
+-- phase where the table does not exist yet, keeps its `%{...}` text rather
+-- than crashing the phase.
 _M.replace_variable_in_string = function(self, str)
-    -- get service id
-    local service = kong.router.get_service()
+    if type(str) ~= "string" then return str end
 
-    local new_str = str
-    for variable in string_gmatch(str, "%%{([^}]+)}") do
+    -- Pass 1: request context, phase-independent.
+    local new_str = self:__resolve_redis_key_macros(str)
+
+    -- Pass 2: the inspection table, for whatever pass 1 left behind.
+    for variable in string_gmatch(new_str, "%%{([^}]+)}") do
         debug("replace_variable_in_string ---> replacing variable: "..variable)
         local var_name = variable:gsub("([%-%.%+%[%]%(%)%$%^%%%?%*])", "%%%1")
         local value_list = self:__get_value_from_inspection_table(var_name)
-        -- value_list[1] is nil when the macro names a variable absent from
-        -- the inspection table (e.g. a set_variable / redis_incr_key macro
-        -- that doesn't resolve for this request). Leave the macro literal
-        -- rather than pairs(nil) crashing the phase — fail-soft, same as
-        -- resolve_request_macros.
         if value_list and type(value_list[1]) == "table" then
             for k,v in pairs(value_list[1]) do
                 debug("replace_variable_in_string ---> replacing variable: "..variable.." with value: "..v)
-                new_str = string_gsub(new_str, "%%{"..variable.."}", v)
+                -- `var_name` (escaped), not the raw name, so a magic character
+                -- in a variable name matches itself. The replacement goes
+                -- through a function because a value carrying a `%` is a valid
+                -- header / argument byte but an "invalid use of '%' in
+                -- replacement string" error to gsub — which would be a 500.
+                new_str = string_gsub(new_str, "%%{"..var_name.."}", function() return v end)
             end
         end
     end

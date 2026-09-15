@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.7",
+  VERSION = "1.5.8",
 }
 
 local ngx                 = ngx
@@ -227,6 +227,8 @@ end
 --   %{request.host}    — Host header
 --   %{request.scheme}  — http / https
 --   %{request.path}    — raw path (no querystring)
+--   %{connection.id}   — pseudonymous connection id (ka_tls), for a
+--                        per-connection rather than per-IP counter
 -- Anything else stays literal.
 local resolve_request_macros = function(str)
   if type(str) ~= "string" then return str end
@@ -243,10 +245,21 @@ local resolve_request_macros = function(str)
     ["request.host"]   = function() return tostring(kong.request.get_host() or "") end,
     ["request.scheme"] = function() return tostring(kong.request.get_scheme() or "") end,
     ["request.path"]   = function() return tostring(kong.request.get_path() or "") end,
+    -- Pinned into the plugin ctx by ka_tls.populate at the top of access, so
+    -- it is there by the time a rate_limit key is resolved. Returns nil when
+    -- connection ids are unavailable, and the macro then stays literal — an
+    -- empty segment would fold every client into one shared counter.
+    ["connection.id"]  = function()
+      local cid = kong.ctx.plugin and kong.ctx.plugin.connection_id
+      return cid and tostring(cid) or nil
+    end,
   }
   return (str:gsub("%%{([^}]+)}", function(name)
     local fn = resolvers[name]
-    if fn then return fn() end
+    if fn then
+      local v = fn()
+      if v then return v end
+    end
     return "%{" .. name .. "}"  -- leave literal
   end))
 end
@@ -597,7 +610,12 @@ local evaluate_rules = function(plugin_conf, rules, phase)
     if rule_matched_obj.action and rule_matched_obj.action.rate_limit then
       local rl = rule_matched_obj.action.rate_limit
       local limit = tonumber(rl.limit) or 0
+      -- A non-positive window is a misconfiguration, and it must not become an
+      -- unbounded counter: the counter would never reset, so every later match
+      -- would get the terminal 429 forever. Fall back to the documented
+      -- default rather than leaving a key with no TTL behind.
       local window = tonumber(rl.window_seconds) or 60
+      if window <= 0 then window = 60 end
       local key_macro = rl.key
       if type(key_macro) ~= "string" or key_macro == "" then
         key_macro = "%{remote_addr}"

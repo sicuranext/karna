@@ -318,13 +318,15 @@ condition can also throttle requests that match it. Counters live in
 Redis (`redis_host` / `redis_port` / `redis_password` in the plugin
 config; the dev image's `redis` service is the reference setup).
 
-Mechanics: when a rule with `rate_limit` fires, Karna atomically
-`INCR`s a Redis key `karna:rl:<rule_id>:<resolved_key>` and sets a
-TTL = `window_seconds` the first time the key is created (fixed-
-window semantics). If the post-increment counter exceeds `limit`,
-the rule returns the configured response (defaults to 429 Too Many
-Requests with an automatic `Retry-After` header). Under-threshold
-matches still increment the counter but flow upstream.
+Mechanics: when a rule with `rate_limit` fires, Karna increments a
+Redis key `karna:rl:<rule_id>:<resolved_key>` and arms a
+TTL = `window_seconds` on the increment that created it (fixed-window
+semantics). The increment and the TTL run in one server-side script,
+so the two cannot interleave and the counter can never end up without
+an expiry. If the post-increment counter exceeds `limit`, the rule
+returns the configured response (defaults to 429 Too Many Requests
+with an automatic `Retry-After` header). Under-threshold matches still
+increment the counter but flow upstream.
 
 Example: cap `/api/login` to 5 attempts per minute per source IP and
 return a friendly message when exceeded.
@@ -361,9 +363,9 @@ Configuration fields:
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
-| `key` | string | `"%{remote_addr}"` | Counter cardinality. Supports `%{var}` macros, currently `%{remote_addr}`, `%{request.method}`, `%{request.host}`, `%{request.scheme}`, `%{request.path}`. Unrecognised macros stay literal. |
+| `key` | string | `"%{remote_addr}"` | Counter cardinality. Supports the [request-context macros](#macros-in-rule-actions). Unrecognised macros stay literal. |
 | `limit` | number | `0` (block-all if set) | Maximum requests allowed in the window. |
-| `window_seconds` | number | `60` | TTL of the counter; fixed-window starting at first request. |
+| `window_seconds` | number | `60` | TTL of the counter; fixed-window starting at first request. A value of `0` or less falls back to `60` — an unbounded counter would never reset and would keep returning the terminal response forever. |
 | `response` | object | 429 / `Too Many Requests\r\n` | Optional override for `status_code`, `body`, `headers`. `Retry-After` is set automatically to `window_seconds` unless you supply it yourself. |
 
 Audit log integration: when the counter crosses the threshold, the
@@ -1623,8 +1625,9 @@ above, the action is a no-op.
 
 The `value` can be any JSON-encodable literal. When it's a string
 containing `%{<rule-variable>}` placeholders, those placeholders are
-resolved against Karna's inspection table before the assignment, so
-you can carry a piece of the request into the shared context:
+resolved before the assignment, so you can carry a piece of the request
+into the shared context. Which names resolve depends on the phase — see
+[Macros in rule actions](#macros-in-rule-actions):
 
 ```json
 {
@@ -1674,7 +1677,68 @@ Note: `value: false` is a legitimate "off-switch" assignment and is
 applied normally. `value` is only treated as missing when it is `nil`
 (absent from the JSON).
 
+## Macros in rule actions
+
+Several action fields accept `%{...}` template macros: the `rate_limit`
+and `redis_incr_key` counter keys, the `redis_set` / `redis_sadd` /
+`redis_del` keys, values and members, the `redis.<key>` inspection
+variable, and the `set_variable` value. They do not all draw on the same
+pool of names, and one group depends on the phase the rule runs in.
+
+**Request-context macros — resolve in every phase.** These are read
+straight off the request, so they work identically in `access`,
+`header_filter` and `body_filter`:
+
+| Macro | Value |
+|---|---|
+| `%{remote_addr}` | Client IP on the transport (`ngx.var.remote_addr`) |
+| `%{request.method}` | HTTP method |
+| `%{request.host}` | Host header |
+| `%{request.scheme}` | `http` / `https` |
+| `%{request.path}` | Request path, no querystring |
+| `%{request_headers.<name>}` | A request header, e.g. `%{request_headers.x-consumer-id}` |
+| `%{connection.id}` | Pseudonymous connection id (`kc1_<32 hex>`), stable for every request on one TCP connection — a per-connection counter key. Left literal when connection ids are unavailable. |
+
+**Inspection-table variables — `header_filter` and later only.** Any
+other rule variable (`%{request.header.value:host}`,
+`%{request.body.urlencode.value:username}`, `%{response.status}`, …)
+is looked up in the request's inspection table, which Karna builds in
+`header_filter`. A rule that uses one in the `access` phase leaves the
+macro **literal**, because the value does not exist yet.
+
+Which field accepts which:
+
+| Field | Request context | Inspection table |
+|---|---|---|
+| `rate_limit.key` | yes | no — stays literal |
+| `redis_incr_key.key` | yes | yes, from `header_filter` on |
+| `redis_set` / `redis_sadd` / `redis_del` key, value, member | yes | no — stays literal |
+| `redis.<key>` variable (the read side) | yes | no — stays literal |
+| A condition's `value` needle (Redis operators) | yes, minus `%{request_headers.X}` | no — stays literal |
+| `set_variable.value` | yes | yes, from `header_filter` on |
+| `set_log_fields.value` | only names the table also carries | yes — resolved at log time, when the table is complete |
+
+`set_log_fields` is the one field resolved purely from the inspection
+table: it runs at log time, when the table is complete, and its value
+must be a single `%{...}` macro (not a template with text around it).
+Most request-context names are also inspection-table keys, so they work
+there; `%{request_headers.<name>}` is not one and does not.
+
+An unresolvable macro is left literal rather than raising an error, so a
+typo or an early-phase lookup shows up as a `%{...}` in the key or the
+logged value instead of a failed request.
+
+Practical consequence: **a Redis key that is written by one rule and read
+back by another should only use request-context macros.** Those resolve
+to the same string on both sides in every phase, so the pair below
+increments and reads the same key whether the counter rule runs in
+`access` or in `header_filter`. Mixing an inspection-table variable into
+a key means the writer resolves it and the reader does not.
+
 ## Redis actions
+
+Keys, values and members in these actions accept the
+[request-context macros](#macros-in-rule-actions).
 
 ### Increment a counter on a failed login
 
@@ -1698,6 +1762,18 @@ applied normally. `value` is only treated as missing when it is `nil`
     "log": false
 }
 ```
+
+`expire` is the window in seconds. The increment and the expiry run in
+one server-side script: the TTL is armed by the increment that created
+the key, and re-armed if the key is ever found without one, so a counter
+cannot end up living forever. The window is fixed, not sliding — later
+increments inside it do not push the expiry out. An `expire` of `0` or
+less means no expiry at all, which is almost never what you want for a
+counter that something reads back.
+
+The rule above runs in `header_filter` because it needs the response to
+decide whether the login failed. A counter keyed only on request context
+works just as well in `access`.
 
 ### Block when the counter exceeds a threshold
 
@@ -1736,9 +1812,10 @@ With `redis_inspect_enabled`, a `redis.<key>` variable reads shared state at
 request time and the operator selects the Redis command: `isSet` → `EXISTS`,
 `eq` / `rx` / `gt` / … → `GET` then compare, `redis_sismember` → `SISMEMBER`,
 `redis_hexists` → `HEXISTS`. Keys and the `value` needle accept the
-`%{remote_addr}`, `%{request.method|host|scheme|path}`, and
-`%{request_headers.X}` macros. The inspection client is locked to a read-only
-command whitelist, so a rule can never mutate Redis through a variable.
+[request-context macros](#macros-in-rule-actions) (the needle takes the same
+set minus `%{request_headers.X}`). The inspection client is locked to a
+read-only command whitelist, so a rule can never mutate Redis through a
+variable.
 
 ```json
 {
