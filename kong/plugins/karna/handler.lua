@@ -18,6 +18,7 @@ local ka_global_rules   = require "kong.plugins.karna.ka_global_rules"
 local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
 local ka_header_names   = require "kong.plugins.karna.ka_header_names"
 local ka_tls            = require "kong.plugins.karna.ka_tls"
+local ka_redact         = require "kong.plugins.karna.ka_redact"
 local ka_version        = require "kong.plugins.karna.version"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
@@ -379,6 +380,35 @@ local get_overrides_cached = function(plugin_conf)
 
   if key then ka_rules:set(key, out) end
   return out
+end
+
+-- Compiled audit-log redaction spec, cached per (plugin instance,
+-- configuration) exactly like the override arrays above. `compile` returns nil
+-- when nothing would ever be masked, and an LRU cannot hold nil, so `false` is
+-- the "compiled to nothing" sentinel: without it a deployment with redaction
+-- switched off would recompile the spec on every logged request.
+local get_redact_spec_cached = function(plugin_conf)
+  local key = conf_cache_key("redact", plugin_conf)
+  if key then
+    local cached = ka_rules:get(key)
+    if cached ~= nil then
+      if cached == false then return nil end
+      return cached
+    end
+  end
+
+  local spec = ka_redact.compile(plugin_conf)
+  if key then
+    -- Written with an if, not `spec == nil and false or spec`: that idiom can
+    -- never yield false in Lua, so the sentinel would be stored as nil and the
+    -- "nothing to mask" answer would recompile on every logged request.
+    if spec == nil then
+      ka_rules:set(key, false)
+    else
+      ka_rules:set(key, spec)
+    end
+  end
+  return spec
 end
 
 -- Apply config-level overrides on top of the rule's declared action.
@@ -1298,11 +1328,17 @@ function plugin:log(plugin_conf)
       end
     end
 
-    -- Redact MCP-sensitive fields (Authorization, MCP-Session-Id) before
-    -- the async writer flushes the entry to disk. No-op if mcp_enabled=false
-    -- or both redact toggles are off.
-    if plugin_conf.mcp_enabled then
-      ka_mcp.redact_audit(json_log, plugin_conf)
+    -- Mask secret-bearing request/response headers (Authorization, Cookie,
+    -- API keys, and the MCP session id when mcp_redact_session_id_in_audit is
+    -- on) before the async writer flushes the entry to disk. Last step on
+    -- purpose: it also covers a header map that anything above may have
+    -- touched. Scoped to the two header maps — matched values, the URI and the
+    -- raw body attached by `audit_request_body` are left alone by design.
+    -- `get_redact_spec_cached` returns nil when nothing would be masked, so a
+    -- deployment with the feature off pays one nil check per logged request.
+    local redact_spec = get_redact_spec_cached(plugin_conf)
+    if redact_spec then
+      ka_redact.apply(json_log, redact_spec)
     end
 
     -- write log to file (one JSONL file per worker per minute; see write_auditlog)
@@ -1323,6 +1359,7 @@ plugin._internals = {
   get_plugin_dynamic_rules = get_plugin_dynamic_rules,
   get_local_request_rules  = get_local_request_rules,
   get_overrides_cached     = get_overrides_cached,
+  get_redact_spec_cached   = get_redact_spec_cached,
 }
 
 return plugin

@@ -77,6 +77,8 @@ jobs:
         run: lua ka-unittest/engine_on_control.lua
       - name: audit_request_body rule control (ctl:auditLogParts=+C — raw body in the audit record)
         run: lua ka-unittest/audit_request_body_control.lua
+      - name: Audit-log secret redaction (header masking, cookie/auth shapes, scope guard)
+        run: lua ka-unittest/auditlog_redact.lua
       - name: JSON embedded in urlencoded values (flatten regression guard)
         run: lua ka-unittest/json_in_urlencoded.lua
       - name: Redis inspection read helper (whitelist + connection behavior)
