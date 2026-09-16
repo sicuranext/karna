@@ -308,6 +308,32 @@ local schema = {
           -- operator pointed the control at. Not valid UTF-8 → base64.
           { auditlog_request_body_max_bytes = { type = "number", default = 16384 } },
 
+          -- Audit-log secret redaction. The record carries every request and
+          -- response header verbatim, so without this a Cookie or an
+          -- Authorization lands on disk in clear text and travels wherever the
+          -- log collector sends it. On by default; masking runs in the log
+          -- phase, after the response has left the client, and only on records
+          -- that are actually written.
+          --
+          -- Scope is the two header maps and nothing else. Matched values
+          -- (`matches[].matched_parts[]`, v1 `details.data`), the URI, the body
+          -- attached by the `audit_request_body` control, custom log fields and
+          -- the enrichment block are untouched: a rule that catches a secret by
+          -- accident is the signal you need to fix that rule.
+          { auditlog_redact_enabled = { type = "boolean", default = true } },
+          -- Header names whose value is masked, lowercase. An empty array
+          -- disables the generic list (the MCP toggles still apply).
+          -- `cookie` keeps the cookie names and masks the values,
+          -- `set-cookie` additionally keeps the attributes (Path, HttpOnly,
+          -- SameSite, …), and `authorization` keeps the scheme: `Bearer
+          -- [REDACTED]`. Everything else is replaced whole.
+          { auditlog_redact_headers = { type = "array", elements = { type = "string" },
+              default = { "authorization", "proxy-authorization", "cookie", "set-cookie",
+                          "x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token",
+                          "x-session-token", "x-csrf-token", "x-xsrf-token",
+                          "x-amz-security-token" } } },
+          { auditlog_redact_mask = { type = "string", default = "[REDACTED]" } },
+
           { redis_host = { type = "string", default = "localhost" } },
           { redis_port = { type = "number", default = 6379 } },
           { redis_password = { type = "string" } },

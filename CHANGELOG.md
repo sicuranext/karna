@@ -9,6 +9,42 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Audit-log secret redaction, on by default.** The audit record carried every
+  request and response header verbatim, so a `Cookie`, an `Authorization` or an
+  API key reached disk in clear text and then travelled wherever the log
+  collector sends it. Karna now masks the values of a configurable set of
+  header names, in both `v1` and `v2`. Three settings:
+  `auditlog_redact_enabled` (default `true`), `auditlog_redact_headers`
+  (default: `authorization`, `proxy-authorization`, `cookie`, `set-cookie`,
+  `x-api-key`, `api-key`, `apikey`, `x-auth-token`, `x-access-token`,
+  `x-session-token`, `x-csrf-token`, `x-xsrf-token`, `x-amz-security-token`)
+  and `auditlog_redact_mask` (default `[REDACTED]`). An empty header list
+  disables it just as well as the flag.
+  - Three headers are masked in a shape that keeps what is useful and drops
+    what is secret. `Authorization` keeps its scheme — `Bearer [REDACTED]`,
+    `Basic [REDACTED]` — because the scheme is the first thing you look at when
+    an endpoint starts answering 401, and a value with no space in it is masked
+    whole (the "scheme" would be the credential). `Cookie` keeps the cookie
+    names and masks the values, so you can still tell whether the request was
+    authenticated and which cookies were in play; separators are preserved and
+    an empty value stays empty rather than claiming a secret was there.
+    `Set-Cookie` additionally keeps the attributes — `Path`, `HttpOnly`,
+    `SameSite`, `Expires` — which is what you need when investigating a session
+    problem, while the cookie itself is always masked even when it is named
+    like an attribute.
+  - **Scope is the two header maps and nothing else.** Matched values
+    (`matches[].matched_parts[]` in v2, `transaction.messages[].details.data`
+    in v1) are deliberately untouched: a rule that catches a secret by accident
+    is exactly the signal you need to fix that rule, and CRS tuning would be
+    poorer without it. The URI, the raw body attached by the
+    `audit_request_body` control, custom log fields and the enrichment block
+    are also left alone. A token in a query string is still logged.
+  - Cost: the masking runs in the log phase, after the response has left the
+    client, and only on records that are actually written. The spec is compiled
+    once per (plugin instance, configuration) and cached like the rule packs;
+    per record it is one hash lookup per configured name against each of the two
+    maps. The loop is over the operator's list, never over the header map, so a
+    client cannot make it more expensive by sending more headers.
 - **The rule format is now published as a JSON Schema** (draft 2020-12), so an
   editor can complete and check rules as you type them and CI can reject a
   broken pack before it reaches a gateway. `docs/schema/karna-rule.schema.json`
@@ -45,6 +81,17 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   publishing a schema rather than a linter.
 
 ### Changed
+
+- `mcp_redact_authorization_in_audit` and `mcp_redact_session_id_in_audit` now
+  drive the shared redaction spec instead of their own recursive walk over the
+  audit document (`ka_mcp.redact_audit` is gone). The session id keeps its
+  documented shape, first four characters plus `***`, and is still added only
+  when `mcp_enabled` is on. Two differences worth knowing: with the generic
+  list at its default, `Authorization` is now masked as `Bearer [REDACTED]`
+  rather than `[REDACTED]`, and redaction now reaches the header maps only —
+  the old walk would also have masked a key literally named `authorization`
+  somewhere else in the document, such as inside a sibling plugin's
+  `enrichment.custom` block.
 
 - CRS 922130 (`Multipart header contains characters outside of valid range`) is
   now removed by `coreruleset_fix.lua`. The rule looks for an out-of-range byte

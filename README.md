@@ -690,6 +690,9 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `auditlog_modsec` | bool | `false` | v1 only, emit ModSecurity-compatible format. |
 | `auditlog_error_log_on_match` | bool | `false` | Mirror matched rules to nginx error log. |
 | `auditlog_request_body_max_bytes` | number | `16384` | Cap for the raw request body a rule attaches to the record with the `audit_request_body` control (`ctl:auditLogParts=+C`). Above it the body is clipped and the record says so. |
+| `auditlog_redact_enabled` | bool | `true` | Mask secret-bearing header values in the audit record. See [Audit log redaction](#audit-log-redaction). |
+| `auditlog_redact_headers` | array | `[authorization, proxy-authorization, cookie, set-cookie, x-api-key, api-key, apikey, x-auth-token, x-access-token, x-session-token, x-csrf-token, x-xsrf-token, x-amz-security-token]` | Header names whose value is masked, lowercase. An empty array disables the list. |
+| `auditlog_redact_mask` | string | `[REDACTED]` | Replacement text. |
 | `redis_host` | string | `localhost` | Redis host (rate limiting, counters, inspection reads, write actions). |
 | `redis_port` | number | `6379` | Redis port. |
 | `redis_password` | string | n/a | Redis AUTH (optional). |
@@ -1505,6 +1508,81 @@ These end up in `enrichment.custom` in the audit log:
 The custom bucket is passed through unchanged, Karna does not
 validate or clip its contents. If it's missing or empty, `custom` is
 omitted.
+
+## Audit log redaction
+
+The audit record carries every request and response header as it arrived, which
+means `Cookie`, `Authorization` and whatever API-key header your stack uses land
+on disk in clear text and then travel wherever the log collector ships them.
+Karna masks them by default, in both `v1` and `v2`:
+
+```json
+{
+    "request": {
+        "headers": {
+            "host": "example.com",
+            "authorization": "Bearer [REDACTED]",
+            "cookie": "sid=[REDACTED]; theme=[REDACTED]",
+            "x-api-key": "[REDACTED]",
+            "user-agent": "curl/8.4.0"
+        }
+    },
+    "response": {
+        "headers": {
+            "set-cookie": "sid=[REDACTED]; Path=/; HttpOnly; SameSite=Lax"
+        }
+    }
+}
+```
+
+Three headers get a shape that keeps the useful half. `Authorization` keeps its
+scheme, because Basic, Bearer and Negotiate are different problems when an
+endpoint starts answering 401, and the scheme is not a secret; a value with no
+space in it is masked whole, since then the first word IS the credential.
+`Cookie` keeps the cookie names, so you can still see whether the request was
+authenticated and which cookies were in play, and masks only the values.
+`Set-Cookie` additionally keeps the attributes — `Path`, `HttpOnly`,
+`SameSite`, `Expires` — which is exactly what you want when investigating a
+session problem, while the cookie itself is always masked, even when it happens
+to be named like an attribute.
+
+Configure it with `auditlog_redact_enabled`, `auditlog_redact_headers` and
+`auditlog_redact_mask`. The list replaces the default rather than extending it,
+and setting it to `[]` disables redaction just as well as the flag.
+
+### What is NOT redacted, and why
+
+Matched values are kept. When a rule fires, `matches[].matched_parts[]` (v2) or
+`transaction.messages[].details.data` (v1) shows what the rule actually saw,
+even when that turns out to be a session cookie or a bearer token. A rule that
+catches a secret by accident is a rule that needs fixing, and you cannot fix it
+from a log that has hidden the evidence. That signal is worth more than the
+marginal exposure, so it stays.
+
+For the same reason nothing else in the record is touched: the URI keeps its
+query string (a token in a URL is still logged), the raw body attached by the
+`audit_request_body` control is stored as received, and custom log fields and
+the enrichment block are passed through. Redaction is scoped to the two header
+maps and only to the names you listed.
+
+### Cost
+
+Nothing happens on the request path. Masking runs in the log phase, after the
+response has left the client, and only on records that are actually written —
+with `auditlog_only_on_match` most requests never get that far. The spec is
+compiled from the configuration once per plugin instance and cached; per record
+the work is one hash lookup per configured name against each of the two header
+maps. The loop is over your list, never over the header map, so a client cannot
+make it more expensive by sending three hundred headers.
+
+### MCP
+
+`mcp_redact_authorization_in_audit` and `mcp_redact_session_id_in_audit` still
+work and still only apply when `mcp_enabled` is on. They now feed the same
+redaction spec instead of walking the whole document. The session id keeps its
+own shape, first four characters plus `***`, which is enough to correlate two
+records from one session without handing the reader a usable id. Listing
+`mcp-session-id` in `auditlog_redact_headers` overrides that with a full mask.
 
 ## External plugin logging
 

@@ -24,7 +24,6 @@ local _M = {}
 
 local string_gmatch = string.gmatch
 local string_gsub   = string.gsub
-local string_lower  = string.lower
 local string_match  = string.match
 local table_insert  = table.insert
 local table_concat  = table.concat
@@ -536,37 +535,12 @@ end
 -- ------------------------------------------------------------
 -- AUDIT REDACTION
 -- ------------------------------------------------------------
-
--- Mutates an audit log entry in-place to remove or truncate sensitive
--- MCP-related fields. Driven by:
---   plugin_conf.mcp_redact_authorization_in_audit  (default true)
---   plugin_conf.mcp_redact_session_id_in_audit     (default true)
-function _M.redact_audit(audit_entry, plugin_conf)
-    if type(audit_entry) ~= "table" or type(plugin_conf) ~= "table" then return end
-
-    local redact_auth = plugin_conf.mcp_redact_authorization_in_audit
-    local redact_sess = plugin_conf.mcp_redact_session_id_in_audit
-    if not redact_auth and not redact_sess then return end
-
-    local function walk(t)
-        for k, v in pairs(t) do
-            if type(v) == "table" then
-                walk(v)
-            elseif type(k) == "string" and type(v) == "string" then
-                local kl = string_lower(k)
-                if redact_auth and kl == "authorization" then
-                    t[k] = "[REDACTED]"
-                elseif redact_sess and (kl == "mcp-session-id" or kl == "x-mcp-session-id") then
-                    if #v > 4 then
-                        t[k] = v:sub(1, 4) .. "***"
-                    else
-                        t[k] = "***"
-                    end
-                end
-            end
-        end
-    end
-    walk(audit_entry)
-end
+--
+-- Moved to modules/ka_redact.lua. `mcp_redact_authorization_in_audit` and
+-- `mcp_redact_session_id_in_audit` still drive it: they are inputs to the
+-- compiled redaction spec, and the session id keeps the same
+-- first-four-characters-plus-`***` shape it has always had. What changed is
+-- the reach — the old walk recursed over the whole audit document, the spec
+-- indexes the two header maps, which is where those headers have always been.
 
 return _M

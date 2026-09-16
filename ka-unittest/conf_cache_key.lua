@@ -117,6 +117,11 @@ for _, name in ipairs({ "ka_engine", "ka_body_parser", "ka_utils", "ka_mcp",
                         "ka_global_rules", "ka_re2_gate", "ka_header_names", "ka_tls" }) do
     package.preload["kong.plugins.karna." .. name] = function() return {} end
 end
+-- ka_redact is pure Lua with no kong/ngx globals, so the cache test runs
+-- against the real compiler rather than a stub.
+package.preload["kong.plugins.karna.ka_redact"] = function()
+    return dofile("./kong/plugins/karna/modules/ka_redact.lua")
+end
 package.preload["kong.plugins.karna.version"] = function()
     return { version = "0.0.0-test", commit = "deadbee", commit_short = "deadbee", built_at = "test" }
 end
@@ -138,7 +143,8 @@ _G.kong = {
 local handler = dofile("./kong/plugins/karna/handler.lua")
 local I = handler._internals
 assert(I and I.conf_cache_key and I.get_plugin_dynamic_rules
-       and I.get_local_request_rules and I.get_overrides_cached,
+       and I.get_local_request_rules and I.get_overrides_cached
+       and I.get_redact_spec_cached,
        "handler._internals seam missing")
 
 -- ---------------------------------------------------------------------------
@@ -339,6 +345,51 @@ local e = I.get_local_request_rules(conf("plugin-e", 30, {}))
 ok(#e.all == 0 and #e.access == 0 and #e.header_filter == 0, "no rules_request → empty views")
 ok(writes() == before_w, "no rules_request → no cache write")
 ok(#ERRORS == 0, "no parse errors were logged along the way")
+
+-- ---------------------------------------------------------------------------
+print("\n- get_redact_spec_cached: compiled once, and 'nothing to mask' is cached too")
+-- ---------------------------------------------------------------------------
+-- The audit-log redaction spec is compiled from the config and reused for every
+-- logged request, so it caches like the rule packs above. The wrinkle: an LRU
+-- cannot hold nil, and `compile` returns nil when nothing would ever be masked
+-- — without the `false` sentinel a deployment with redaction off would
+-- recompile on every single record.
+local REDACT_HEADERS = { "authorization", "cookie" }
+
+local rc1 = conf("plugin-r", 40, { auditlog_redact_enabled = true,
+                                   auditlog_redact_headers = REDACT_HEADERS })
+local before_r = writes()
+local spec1 = I.get_redact_spec_cached(rc1)
+ok(type(spec1) == "table" and spec1.names["authorization"] == "auth",
+   "a spec is compiled from the config")
+ok(writes() == before_r + 1, "the compile is cached (one write)")
+ok(keys_contain("redact:plugin-r:40"), "keyed by prefix + plugin id + __seq__")
+
+local spec2 = I.get_redact_spec_cached(rc1)
+ok(spec2 == spec1, "the second call returns the cached table, it does not recompile")
+ok(writes() == before_r + 1, "…and writes nothing more")
+
+-- a configuration edit lands on a new key, so the old spec is never reused
+local rc2 = conf("plugin-r", 41, { auditlog_redact_enabled = true,
+                                   auditlog_redact_headers = { "x-api-key" } })
+local spec3 = I.get_redact_spec_cached(rc2)
+ok(spec3 ~= spec1 and spec3.names["x-api-key"] == "full" and spec3.names["authorization"] == nil,
+   "a new __seq__ recompiles instead of serving the previous configuration")
+
+-- redaction off: nil spec, cached as `false`, never recompiled
+local rc_off = conf("plugin-r", 42, { auditlog_redact_enabled = false })
+local before_off = writes()
+ok(I.get_redact_spec_cached(rc_off) == nil, "disabled → nil spec (the log phase skips the path)")
+ok(writes() == before_off + 1, "the 'nothing to mask' answer is cached")
+ok(I.get_redact_spec_cached(rc_off) == nil, "…and stays nil")
+ok(writes() == before_off + 1, "…without a second write — no recompile per logged request")
+
+-- no cache identity available: build fresh, never guess a key
+local rc_noseq = { __plugin_id = "plugin-r", auditlog_redact_enabled = true,
+                   auditlog_redact_headers = REDACT_HEADERS }
+local before_ns = writes()
+ok(type(I.get_redact_spec_cached(rc_noseq)) == "table", "no __seq__ → still a usable spec")
+ok(writes() == before_ns, "…and nothing is cached under a guessed key")
 
 -- ---------------------------------------------------------------------------
 print("\n- rate_limit_scope: the counter key is namespaced by plugin instance")
