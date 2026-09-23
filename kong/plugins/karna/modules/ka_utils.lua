@@ -1402,28 +1402,32 @@ local function incr_with_expire(redis_client, key, expire_time)
     return tonumber(res)
 end
 
--- Optional escalation uses the SAME atomic operation as the increment. NX
--- preserves the original ban deadline when requests race across Kong workers.
--- The counter/window is deliberately retained when the shorter ban expires.
+-- Escalation, ban creation and counter reset happen atomically. NX preserves
+-- the deadline under concurrent exceedances; the reset gives the client a
+-- fresh window after the ban expires.
 local INCR_EXPIRE_BAN_LUA = [[
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return {0, 0, redis.call('TTL', KEYS[2]), 1}
+end
 local v = redis.call('INCR', KEYS[1])
 if v == 1 or redis.call('TTL', KEYS[1]) < 0 then
   redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 local created = 0
 local ttl = 0
-if v > tonumber(ARGV[2]) then
+if v >= tonumber(ARGV[2]) + tonumber(ARGV[4]) then
   if redis.call('SET', KEYS[2], '1', 'EX', ARGV[3], 'NX') then
     created = 1
+    redis.call('DEL', KEYS[1])
   end
   ttl = redis.call('TTL', KEYS[2])
 end
-return {v, created, ttl}
+return {v, created, ttl, created}
 ]]
 
 -- Called only with validated positive integer arguments and blocking enabled.
 -- Uses the same database/connection path as the existing rate-limit counter.
-_M.redis_incr_key_with_ban = function(self, key, window, ban_key, limit, seconds)
+_M.redis_incr_key_with_ban = function(self, key, window, ban_key, limit, seconds, excess)
     -- Snapshot settings before any cosocket yield; other plugin instances
     -- share this module. Explicit SELECT 0 matches the legacy counter store
     -- even when a pooled connection was previously used by Redis inspection.
@@ -1444,14 +1448,48 @@ _M.redis_incr_key_with_ban = function(self, key, window, ban_key, limit, seconds
     ok, err = red:select(0)
     if not ok then failed("select", err); return nil end
     local res, err = red:eval(INCR_EXPIRE_BAN_LUA, 2, key, ban_key,
-                             tostring(window), tostring(limit), tostring(seconds))
+                             tostring(window), tostring(limit), tostring(seconds), tostring(excess))
     if type(res) ~= "table" then
         pcall(function() red:close() end)
         kong.log.err("Karna: rate-limit/ban increment failed: ", tostring(err))
         return nil
     end
     if not red:set_keepalive(60000, 64) then pcall(function() red:close() end) end
-    return tonumber(res[1]), res[2] == 1, tonumber(res[3])
+    return tonumber(res[1]), res[2] == 1, tonumber(res[3]), res[4] == 1
+end
+
+local FIRST_ACTIVE_BAN_LUA = [[
+for i, key in ipairs(KEYS) do
+  local ttl = redis.call('TTL', key)
+  if ttl > 0 then return {i, ttl} end
+end
+return {0, 0}
+]]
+
+_M.redis_first_active_ban = function(self, keys)
+    if not keys or #keys == 0 then return nil end
+    local host, port, password = self.redis_host, self.redis_port, self.redis_password
+    local red = require("resty.redis"):new()
+    if not red then return nil end
+    red:set_timeouts(1000, 1000, 1000)
+    local ok, err = red:connect(host, port)
+    if ok and password and password ~= "" then ok, err = red:auth(password) end
+    if ok then ok, err = red:select(0) end
+    if not ok then
+        pcall(function() red:close() end)
+        kong.log.err("Karna: ban lookup failed: ", tostring(err))
+        return nil
+    end
+    local res
+    res, err = red:eval(FIRST_ACTIVE_BAN_LUA, #keys, (table.unpack or unpack)(keys))
+    if type(res) ~= "table" then
+        pcall(function() red:close() end)
+        kong.log.err("Karna: ban lookup failed: ", tostring(err))
+        return nil
+    end
+    if not red:set_keepalive(60000, 64) then pcall(function() red:close() end) end
+    local index = tonumber(res[1])
+    if index and index > 0 then return index, tonumber(res[2]) end
 end
 
 -- Increment a Redis counter and keep its fixed window armed (see

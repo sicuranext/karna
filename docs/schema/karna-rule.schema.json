@@ -431,7 +431,7 @@
     },
     "rateLimit": {
       "type": "object",
-      "description": "Redis-backed fixed-window rate limiter. Increments a counter keyed by plugin instance + rule id + resolved `key`, and refuses the request once the count passes `limit`. The counter is bumped regardless of `engine_blocking_mode` (so a detection-only dry run can size the threshold); the terminal 429 fires only in blocking mode. Increment and TTL are one atomic server-side script.",
+      "description": "Redis-backed fixed-window rate limiter. Increments a counter keyed by plugin instance + rule id + resolved `key`, and refuses the request once the count passes `limit`. An optional `ban` escalates repeated exceedances and is enforced automatically across the routed service. The counter is bumped regardless of `engine_blocking_mode` (so a detection-only dry run can size the threshold); terminal responses fire only in blocking mode. Increment, escalation and TTL are atomic Redis operations.",
       "required": [
         "limit"
       ],
@@ -474,6 +474,38 @@
             },
             "headers": {
               "$ref": "#/$defs/headerMap"
+            }
+          }
+        },
+        "ban": {
+          "type": "object",
+          "description": "Escalate repeated rate-limit exceedances into a temporary ban. Karna enforces the ban on every path of the routed service; no second rule is required. The ban key is scoped by plugin instance, service and rule.",
+          "required": [
+            "key",
+            "duration_seconds"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "$ref": "#/$defs/macroString",
+              "description": "Identity to ban, usually %{remote_addr}."
+            },
+            "after_exceedances": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000,
+              "default": 1,
+              "description": "Number of rate-limited requests before the ban starts."
+            },
+            "duration_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400,
+              "description": "Ban duration in seconds."
+            },
+            "response": {
+              "$ref": "#/$defs/fixedResponse",
+              "description": "Response served while banned. Defaults to 403."
             }
           }
         }

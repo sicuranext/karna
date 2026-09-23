@@ -912,69 +912,34 @@ karna-tls-v1|TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305
     <section id="ex-ratelimit-ban">
       <h2>Example: rate limit, then ban</h2>
       <p>A rate limit answers &ldquo;how much traffic do I tolerate&rdquo;. It does not answer &ldquo;what do I do with a client that keeps hitting the limit&rdquo;. Stretching <code>window_seconds</code> to express the second one also caps a legitimate client for the whole stretch: the rate you tolerate and how long you punish exceeding it are separate numbers, and they want separate counters.</p>
-      <p>Four rules, all Redis primitives already described above, no engine feature: <strong>5 requests per 10 seconds; after 20 refusals, banned for 2 hours</strong>. The ban is the shared <code>ban:&lt;ip&gt;</code> key from <a class="link" href="#ex-autoban">distributed auto-ban</a>, so it applies on every node and composes with anything else that writes it.</p>
+      <p>One rule expresses both numbers: <strong>5 requests per 10 seconds; after 20 refusals, banned for 2 hours</strong>.</p>
       <div class="code-card">
-        <div class="code-head"><span>rules_request, in this order</span><span class="lang">json</span></div>
-        <div class="code-body"><pre>[
-  {
-    <span class="prm">"id"</span>: <span class="str">"rl-ban-check"</span>,
-    <span class="prm">"phase"</span>: <span class="str">"access"</span>,
-    <span class="prm">"conditions"</span>: [
-      { <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"value"</span>: <span class="str">""</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.ban:%{remote_addr}"</span>] }
-    ],
-    <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> } },
-    <span class="prm">"log"</span>: <span class="kw">true</span>,
-    <span class="prm">"message"</span>: <span class="str">"source is banned"</span>,
-    <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
-  },
-  {
-    <span class="prm">"id"</span>: <span class="str">"rl-ban-arm"</span>,
-    <span class="prm">"phase"</span>: <span class="str">"access"</span>,
-    <span class="prm">"conditions"</span>: [
-      { <span class="prm">"op"</span>: <span class="str">"gt"</span>, <span class="prm">"value"</span>: <span class="str">"20"</span>, <span class="prm">"variables"</span>: [<span class="str">"redis.rl429:%{remote_addr}"</span>] }
-    ],
-    <span class="prm">"action"</span>: {
-      <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"ban:%{remote_addr}"</span>, <span class="prm">"value"</span>: <span class="str">"1"</span>, <span class="prm">"expire"</span>: <span class="num">7200</span> },
-      <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span>, <span class="prm">"body"</span>: <span class="str">"Forbidden\r\n"</span> }
-    },
-    <span class="prm">"log"</span>: <span class="kw">true</span>,
-    <span class="prm">"message"</span>: <span class="str">"20 rate-limit refusals - ban 2h"</span>,
-    <span class="prm">"tags"</span>: [<span class="str">"banlist"</span>]
-  },
-  {
+        <div class="code-head"><span>rules_request entry</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>{
     <span class="prm">"id"</span>: <span class="str">"rl-login"</span>,
     <span class="prm">"phase"</span>: <span class="str">"access"</span>,
     <span class="prm">"conditions"</span>: [
       { <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/login"</span>, <span class="prm">"variables"</span>: [<span class="str">"request.raw_path"</span>] }
     ],
     <span class="prm">"action"</span>: {
-      <span class="prm">"rate_limit"</span>: { <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>, <span class="prm">"limit"</span>: <span class="num">5</span>, <span class="prm">"window_seconds"</span>: <span class="num">10</span> }
+      <span class="prm">"rate_limit"</span>: {
+        <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>,
+        <span class="prm">"limit"</span>: <span class="num">5</span>,
+        <span class="prm">"window_seconds"</span>: <span class="num">10</span>,
+        <span class="prm">"ban"</span>: {
+          <span class="prm">"key"</span>: <span class="str">"%{remote_addr}"</span>,
+          <span class="prm">"after_exceedances"</span>: <span class="num">20</span>,
+          <span class="prm">"duration_seconds"</span>: <span class="num">7200</span>
+        }
+      }
     },
     <span class="prm">"log"</span>: <span class="kw">true</span>,
-    <span class="prm">"message"</span>: <span class="str">"login rate limit 5/10s"</span>,
+    <span class="prm">"message"</span>: <span class="str">"login rate limit with temporary ban"</span>,
     <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>]
-  },
-  {
-    <span class="prm">"id"</span>: <span class="str">"rl-429-counter"</span>,
-    <span class="prm">"phase"</span>: <span class="str">"header_filter"</span>,
-    <span class="prm">"conditions"</span>: [
-      { <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"429"</span>, <span class="prm">"variables"</span>: [<span class="str">"response.status"</span>] }
-    ],
-    <span class="prm">"action"</span>: {
-      <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"rl429:%{remote_addr}"</span>, <span class="prm">"expire"</span>: <span class="num">3600</span> }
-    },
-    <span class="prm">"log"</span>: <span class="kw">false</span>,
-    <span class="prm">"message"</span>: <span class="str">"count rate-limit refusals"</span>,
-    <span class="prm">"tags"</span>: [<span class="str">"ratelimit"</span>]
-  }
-]</pre></div>
+}</pre></div>
       </div>
-      <p>The third rule throttles and answers 429. The fourth runs on the response, sees that 429 &mdash; <code>header_filter</code> evaluates rules on Karna&rsquo;s own terminating responses, and <code>response.status</code> carries the status the client receives, so the 429 Karna generated itself is visible &mdash; and increments <code>rl429:&lt;ip&gt;</code>. The second fires as soon as that counter passes 20, writes <code>ban:&lt;ip&gt;</code> with a 2-hour expiry and blocks. From then on the first rule answers, and nothing else is touched.</p>
-      <div class="warn"><span class="lbl">Order is the design</span>The first rule with a terminal action wins and stops the pass, and <code>rate_limit</code> is terminal exactly like <code>fixed_response</code>. That is why <code>rl-ban-arm</code> sits <em>before</em> <code>rl-login</code>: swap them and a client already over the threshold gets its 429 from the limiter, the arming rule is never reached, and the ban never happens.</div>
-      <p>On <code>rl-ban-arm</code>, <code>redis_set</code> and <code>fixed_response</code> live on the same rule. Side-effect actions are applied before the terminal check, so the ban is written and only then is the request refused.</p>
-      <p>All three reads need <code>redis_inspect_enabled</code>. The keys use <code>%{remote_addr}</code> only, a request-context macro that resolves in every phase through the same resolver on the write and the read side, so the counter one rule writes is the counter the other reads. Reach for an inspection-table variable here and the two silently diverge &mdash; see <a class="link" href="#a-macros">Macros in actions</a>.</p>
-      <p>Cost: two Redis reads in <code>access</code> on every request, plus one write on the responses that were refused. Conditions are not short-circuited &mdash; every condition of a rule is evaluated &mdash; so putting a cheap condition first does not save the Redis read of the one after it. Scope the cost by attaching this configuration to the route that needs it, as a per-route plugin instance.</p>
-      <p>A simpler variant drops one rule and one read: delete <code>ban:</code> entirely, point <code>rl-ban-check</code> straight at <code>redis.rl429:%{remote_addr}</code> with <code>gt 20</code>, and give the counter a 7200 expiry. The difference is that the two hours then run from the <em>first</em> refusal rather than the twentieth, because a counter&rsquo;s TTL is armed when the key is created and later increments never push it forward.</p>
+      <p>Requests over the ordinary limit receive 429. The twentieth refusal creates the ban atomically and receives 403; later requests from the same identity receive 403 until the two hours expire. The counter is reset when the ban starts, so expiry opens a fresh rate-limit window.</p>
+      <div class="warn"><span class="lbl">Service boundary</span>The ban key includes the routed Kong service. A ban triggered by this rule covers every path of that service, including cached responses, but cannot block the same identity on another service. No Redis-inspection rule is required.</div>
     </section>
 
     <section id="ex-chain">
