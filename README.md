@@ -430,31 +430,35 @@ A rate-limit action can opt into an atomic temporary ban:
 ```json
 "rate_limit": {
   "key": "%{remote_addr}", "limit": 50, "window_seconds": 21600,
-  "ban": { "key": "%{remote_addr}", "duration_seconds": 1200 }
+  "ban": {
+    "key": "%{remote_addr}", "after_exceedances": 10,
+    "duration_seconds": 1200
+  }
 }
 ```
 
-The 51st matching request creates `karna:ban:<plugin-id>:<resolved-ban-key>`
-with `SET NX EX 1200`, in the same Redis script as the counter increment.
-Requests at or below the limit never create a ban. Concurrent exceedances
-never refresh its deadline. Detection-only requests keep counting but never
-create bans. The duration must be an integer from 1 to 86400 seconds and the
-key must be nonempty; invalid policies log an error and keep ordinary limiting.
-The counter remains in its original window, so a new matching request after
-ban expiry can trigger another ban until that window expires.
+The first 50 matching requests pass; requests 51–59 receive 429. Request 60
+creates a 20-minute ban and receives 403. Subsequent requests to the **same
+Kong service**, including other paths, receive 403 until the ban expires.
+Karna checks the ban before evaluating rules or honoring its cache bypass;
+no second rule is needed. The Redis key includes the plugin instance, routed
+service ID, rule ID and resolved ban identity, so it cannot affect another
+service. If Kong has no routed service, Karna keeps ordinary rate limiting
+and does not create or enforce a ban.
 
-**Enforcement must be configured separately:** place a rule BEFORE the limiter
-in the same plugin instance, enable `redis_inspect_enabled`, test
-`redis.karna:ban:<plugin-id>:%{remote_addr}` with `isSet`, and return a fixed
-403 response. Use the actual plugin entity UUID in place of `<plugin-id>`.
-The reader must use Redis database 0, like the existing rate-limit counters.
-Scope the plugin to the service being protected. The enforcement rule must
-not write the ban key or its TTL. With no such rule, bans are recorded but do
-not block other paths. Rules without `ban` retain their existing behavior.
+Ban creation and counter reset are atomic. Concurrent requests cannot extend
+the ban, and after expiry the client starts a fresh rate-limit window.
+`after_exceedances` defaults to 1 for existing ban configurations. It must be
+an integer from 1 to 100000; `duration_seconds` must be an integer from 1 to
+86400, and `key` must be nonempty. Invalid policies log an error and keep
+ordinary limiting. Detection-only requests keep counting but never create
+bans. A ban can set an optional `response` (`status_code`, `body`, `headers`);
+otherwise Karna returns 403 with its default block body. Rules without `ban`
+retain their existing behavior.
 
 This uses standalone Redis (a two-key EVAL; Redis Cluster cross-slot keys are
 not supported). Redis failure retains the limiter's fail-open behavior and
-logs an error. Audit records include `rate_limit_ban_key`,
+logs an error. Audit records for the triggering request include `rate_limit_ban_key`,
 `rate_limit_ban_created`, and `rate_limit_ban_ttl` (appended to data in v1).
 
 ### Override the CRS pack's actions

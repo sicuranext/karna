@@ -63,17 +63,12 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   ModSecurity name such as `ARGS` or a typo in the prefix but does not prove a
   full name resolves. Every rule example in `docs/rules.html` validates against
   it.
-- A worked example in the rule reference: **rate limit, then ban**. Five
-  requests per ten seconds, and after twenty refusals the source is banned for
-  two hours. Four rules over the Redis primitives that already existed, no
-  engine feature: the limiter answers 429, a `header_filter` rule counts those
-  429s (Karna sees its own terminating responses), and a threshold rule writes
-  the shared `ban:<ip>` key that `distributed auto-ban` already reads. Covers
-  the ordering that makes it work — `rate_limit` is terminal, so the arming
-  rule has to sit before the limiter — the two Redis reads it costs per
-  request, and a cheaper three-rule variant. Needs the `response.status` fix
-  (1.5.9): before it, the variable carried the upstream status only and the
-  counting rule never fired.
+- A `rate_limit` action can now escalate repeated refusals into a temporary
+  ban with `ban.after_exceedances` and `ban.duration_seconds`. Karna creates,
+  checks and expires the ban as part of the same rule. The ban covers every
+  path of the routed service and its Redis key includes the service ID, so it
+  cannot affect another service. Creation and counter reset are atomic; the
+  deadline is not extended by later requests, and expiry opens a fresh window.
 - `scripts/validate-rules.py` — validate a rule, a pack, or a JSON Lines file of
   rules against the bundled schemas. Resolves them locally, so it runs offline;
   exits non-zero on the first bad file. Needs `pip install jsonschema`. Any

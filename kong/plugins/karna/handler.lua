@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.9",
+  VERSION = "1.5.10",
 }
 
 local ngx                 = ngx
@@ -87,6 +87,13 @@ local function rate_limit_scope(plugin_conf)
   end)
   if ok_svc and service and service.id then return tostring(service.id) end
   return "noscope"
+end
+
+local function routed_service_id()
+  local ok, service = pcall(function()
+    return kong.router and kong.router.get_service()
+  end)
+  if ok and service and service.id then return tostring(service.id) end
 end
 
 -- Parse the rules a specific plugin instance contributes dynamically —
@@ -540,6 +547,28 @@ local rule_blocking_enabled = function(plugin_conf)
   return not detection_only_active()
 end
 
+local function valid_ban_policy(rl)
+  local ban = type(rl) == "table" and rl.ban
+  if type(ban) ~= "table" or type(ban.key) ~= "string" or ban.key == "" then return nil end
+  local duration = tonumber(ban.duration_seconds)
+  local excess = tonumber(ban.after_exceedances or 1)
+  local limit = tonumber(rl.limit)
+  local window = tonumber(rl.window_seconds) or 60
+  if window <= 0 then window = 60 end
+  if not duration or duration < 1 or duration > 86400 or duration ~= math.floor(duration)
+      or not excess or excess < 1 or excess > 100000 or excess ~= math.floor(excess)
+      or not limit or limit < 1 or limit ~= math.floor(limit)
+      or not window or window < 1 or window ~= math.floor(window) then return nil end
+  return duration, excess
+end
+
+local function service_ban_key(plugin_conf, service_id, rule)
+  local rl = rule.action and rule.action.rate_limit
+  if not service_id or not rule.id or not valid_ban_policy(rl) then return nil end
+  return "karna:ban:" .. rate_limit_scope(plugin_conf) .. ":" .. service_id
+      .. ":" .. tostring(rule.id) .. ":" .. resolve_request_macros(rl.ban.key)
+end
+
 -- Evaluate a pack of `pass`-action rules (CRS exclusion plugins +
 -- `custom_secrules` whose actions are purely ctl:* / setvar:* side
 -- effects), applying every matching rule's rule_control. Unlike the
@@ -683,23 +712,35 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       utils.redis_password = plugin_conf.redis_password
 
       local count
-      local ban = rl.ban
-      local seconds = type(ban) == "table" and tonumber(ban.duration_seconds)
-      -- Bounded opt-in; invalid policy falls back to the ordinary limiter.
-      -- No writes in DetectionOnly, even when the rule itself matches.
-      if rule_blocking_enabled(plugin_conf) and seconds and seconds >= 1
-          and seconds <= 86400 and seconds == math.floor(seconds)
-          and limit > 0 and limit == math.floor(limit)
-          and window > 0 and window == math.floor(window)
-          and type(ban.key) == "string" and ban.key ~= "" then
-        local ban_key = "karna:ban:" .. scope .. ":" .. resolve_request_macros(ban.key)
-        local created, ttl
-        count, created, ttl = utils:redis_incr_key_with_ban(full_key, window, ban_key, limit, seconds)
+      local seconds, excess = valid_ban_policy(rl)
+      local service_id = routed_service_id()
+      local ban_blocking = plugin_conf.engine_blocking_mode and not detection_only_active()
+      -- A ban requires a routed service. Without one, keep ordinary limiting
+      -- rather than creating state that could affect another service.
+      if ban_blocking and seconds and service_id and rule_matched_obj.id then
+        full_key = "karna:rl:" .. scope .. ":" .. service_id .. ":"
+            .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
+        local ban_key = service_ban_key(plugin_conf, service_id, rule_matched_obj)
+        local created, ttl, active
+        count, created, ttl, active = utils:redis_incr_key_with_ban(
+            full_key, window, ban_key, limit, seconds, excess)
         match_entry.rate_limit_ban_key = ban_key
         match_entry.rate_limit_ban_created = created
         match_entry.rate_limit_ban_ttl = ttl
+        match_entry.rate_limit_count = count
+        match_entry.rate_limit_limit = limit
+        match_entry.rate_limit_window = window
+        match_entry.rate_limit_key = full_key
+        match_entry.rate_limited = active or (count ~= nil and limit > 0 and count > limit)
+        if active then
+          local resp = rl.ban.response or {}
+          local body, headers = utils:build_block_response(plugin_conf, resp.body,
+              resp.headers, "Forbidden\r\n")
+          if not headers["retry-after"] then headers["Retry-After"] = tostring(ttl) end
+          return response_exit(tonumber(resp.status_code) or 403, body, headers)
+        end
       else
-        if ban and rule_blocking_enabled(plugin_conf) then
+        if rl.ban and ban_blocking then
           kong.log.err("Karna: invalid rate_limit.ban configuration for rule ", tostring(rule_matched_obj.id))
         end
         count = utils:redis_incr_key(full_key, window)
@@ -849,6 +890,47 @@ function plugin:init_worker()
   end
 end
 
+-- Check bans for the routed service before the cache short-circuit and before
+-- matching rule conditions. A ban triggered on one path covers every path of
+-- that service, without requiring a separate Redis-inspection rule.
+local function enforce_service_bans(plugin_conf)
+  if not plugin_conf.engine_blocking_mode then return end
+  local service_id = routed_service_id()
+  if not service_id then return end
+  local keys, policies, seen = {}, {}, {}
+  local function collect(rules)
+    for _, rule in ipairs(rules or {}) do
+      if rule.phase == "access" and rule.id and rule.action then
+        local action = apply_action_and_response_overrides(plugin_conf, rule)
+        local effective = action == rule.action and rule or { id = rule.id, action = action }
+        local key = service_ban_key(plugin_conf, service_id, effective)
+        if key and not seen[key] then
+          seen[key] = true
+          keys[#keys + 1] = key
+          policies[#policies + 1] = action.rate_limit.ban
+        end
+      end
+    end
+  end
+  local dynamic = get_plugin_dynamic_rules(plugin_conf)
+  collect(dynamic.detection.access)
+  local global = ka_global_rules.get()
+  if global then collect(global.detection.access) end
+  if plugin_conf.local_rules_enabled then collect(get_local_request_rules(plugin_conf).access) end
+  if plugin_conf.coreruleset_enabled then collect(ka_rules:get("ka_rules")) end
+  if #keys == 0 then return end
+  utils.redis_host = plugin_conf.redis_host
+  utils.redis_port = plugin_conf.redis_port
+  utils.redis_password = plugin_conf.redis_password
+  local index, ttl = utils:redis_first_active_ban(keys)
+  if not index then return end
+  local response = policies[index].response or {}
+  local body, headers = utils:build_block_response(plugin_conf, response.body,
+      response.headers, "Forbidden\r\n")
+  if not headers["retry-after"] then headers["Retry-After"] = tostring(ttl) end
+  return response_exit(tonumber(response.status_code) or 403, body, headers)
+end
+
 function plugin:access(plugin_conf)
   -- Per-request scratch context, initialised BEFORE anything can leave this
   -- function. `access` has four early exits — the cache short-circuit below, the
@@ -889,6 +971,8 @@ function plugin:access(plugin_conf)
   -- audit log `tls` / `network` blocks and the tls.* / connection.id rule
   -- variables, so it runs before any rule can ask for them. Fail-open.
   pcall(ka_tls.populate)
+
+  enforce_service_bans(plugin_conf)
 
   -- skip access phase if response sent from cache
   if kong.ctx.shared.response_from_cache then
@@ -1385,4 +1469,3 @@ plugin._internals = {
 }
 
 return plugin
-
