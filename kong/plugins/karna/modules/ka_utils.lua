@@ -663,18 +663,12 @@ _M.build_rate_limit_fields = function(self, matched)
     if type(matched) ~= "table" or matched.rate_limit_key == nil then
         return nil
     end
-    local fields = {
+    return {
         rate_limit_count  = tonumber(matched.rate_limit_count) or 0,
         rate_limit_limit  = tonumber(matched.rate_limit_limit) or 0,
         rate_limit_window = tonumber(matched.rate_limit_window) or 0,
         rate_limit_key    = tostring(matched.rate_limit_key),
     }
-    if matched.rate_limit_ban_key then
-        fields.rate_limit_ban_key = matched.rate_limit_ban_key
-        fields.rate_limit_ban_created = matched.rate_limit_ban_created == true
-        fields.rate_limit_ban_ttl = tonumber(matched.rate_limit_ban_ttl) or 0
-    end
-    return fields
 end
 
 -- Render the same metadata as one line of text, for audit log v1. v1 is the
@@ -686,18 +680,12 @@ end
 _M.build_v1_rate_limit_data = function(self, matched)
     local t = _M.build_rate_limit_fields(self, matched)
     if not t then return nil end
-    local data = "Rate limit: " .. table_concat({
+    return "Rate limit: " .. table_concat({
         "count="  .. tostring(t.rate_limit_count),
         "limit="  .. tostring(t.rate_limit_limit),
         "window=" .. tostring(t.rate_limit_window),
         "key="    .. t.rate_limit_key,
     }, " ")
-    if t.rate_limit_ban_key then
-        data = data .. " ban_key=" .. t.rate_limit_ban_key
-            .. " ban_created=" .. tostring(t.rate_limit_ban_created)
-            .. " ban_ttl=" .. tostring(t.rate_limit_ban_ttl)
-    end
-    return data
 end
 
 _M.build_enrichment_block = function(self, shared)
@@ -1400,58 +1388,6 @@ local function incr_with_expire(redis_client, key, expire_time)
         return nil
     end
     return tonumber(res)
-end
-
--- Optional escalation uses the SAME atomic operation as the increment. NX
--- preserves the original ban deadline when requests race across Kong workers.
--- The counter/window is deliberately retained when the shorter ban expires.
-local INCR_EXPIRE_BAN_LUA = [[
-local v = redis.call('INCR', KEYS[1])
-if v == 1 or redis.call('TTL', KEYS[1]) < 0 then
-  redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-local created = 0
-local ttl = 0
-if v > tonumber(ARGV[2]) then
-  if redis.call('SET', KEYS[2], '1', 'EX', ARGV[3], 'NX') then
-    created = 1
-  end
-  ttl = redis.call('TTL', KEYS[2])
-end
-return {v, created, ttl}
-]]
-
--- Called only with validated positive integer arguments and blocking enabled.
--- Uses the same database/connection path as the existing rate-limit counter.
-_M.redis_incr_key_with_ban = function(self, key, window, ban_key, limit, seconds)
-    -- Snapshot settings before any cosocket yield; other plugin instances
-    -- share this module. Explicit SELECT 0 matches the legacy counter store
-    -- even when a pooled connection was previously used by Redis inspection.
-    local host, port, password = self.redis_host, self.redis_port, self.redis_password
-    local red = require("resty.redis"):new()
-    if not red then return nil end
-    red:set_timeouts(1000, 1000, 1000)
-    local function failed(stage, err)
-        pcall(function() red:close() end)
-        kong.log.err("Karna: rate-limit/ban ", stage, " failed: ", tostring(err))
-    end
-    local ok, err = red:connect(host, port)
-    if not ok then failed("connect", err); return nil end
-    if password and password ~= "" then
-        ok, err = red:auth(password)
-        if not ok then failed("auth", err); return nil end
-    end
-    ok, err = red:select(0)
-    if not ok then failed("select", err); return nil end
-    local res, err = red:eval(INCR_EXPIRE_BAN_LUA, 2, key, ban_key,
-                             tostring(window), tostring(limit), tostring(seconds))
-    if type(res) ~= "table" then
-        pcall(function() red:close() end)
-        kong.log.err("Karna: rate-limit/ban increment failed: ", tostring(err))
-        return nil
-    end
-    if not red:set_keepalive(60000, 64) then pcall(function() red:close() end) end
-    return tonumber(res[1]), res[2] == 1, tonumber(res[3])
 end
 
 -- Increment a Redis counter and keep its fixed window armed (see

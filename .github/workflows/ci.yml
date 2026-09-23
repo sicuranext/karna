@@ -109,8 +109,6 @@ jobs:
         run: lua ka-unittest/macro_resolution_phases.lua
       - name: Redis counter keeps its TTL (atomic INCR+EXPIRE, stuck-key repair)
         run: lua ka-unittest/redis_counter_ttl.lua
-      - name: Rate-limit temporary ban (opt-in, blocking mode, scoped keys)
-        run: lua ka-unittest/rate_limit_ban.lua
       - name: response.status is the client-facing status (Karna's own 429 is visible)
         run: lua ka-unittest/response_status_variable.lua
       - name: rate_limit counter state reaches the audit log (v2 fields, v1 data slot)
