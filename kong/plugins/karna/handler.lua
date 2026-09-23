@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.8",
+  VERSION = "1.5.9",
 }
 
 local ngx                 = ngx
@@ -682,7 +682,28 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       utils.redis_port = plugin_conf.redis_port
       utils.redis_password = plugin_conf.redis_password
 
-      local count = utils:redis_incr_key(full_key, window)
+      local count
+      local ban = rl.ban
+      local seconds = type(ban) == "table" and tonumber(ban.duration_seconds)
+      -- Bounded opt-in; invalid policy falls back to the ordinary limiter.
+      -- No writes in DetectionOnly, even when the rule itself matches.
+      if rule_blocking_enabled(plugin_conf) and seconds and seconds >= 1
+          and seconds <= 86400 and seconds == math.floor(seconds)
+          and limit > 0 and limit == math.floor(limit)
+          and window > 0 and window == math.floor(window)
+          and type(ban.key) == "string" and ban.key ~= "" then
+        local ban_key = "karna:ban:" .. scope .. ":" .. resolve_request_macros(ban.key)
+        local created, ttl
+        count, created, ttl = utils:redis_incr_key_with_ban(full_key, window, ban_key, limit, seconds)
+        match_entry.rate_limit_ban_key = ban_key
+        match_entry.rate_limit_ban_created = created
+        match_entry.rate_limit_ban_ttl = ttl
+      else
+        if ban and rule_blocking_enabled(plugin_conf) then
+          kong.log.err("Karna: invalid rate_limit.ban configuration for rule ", tostring(rule_matched_obj.id))
+        end
+        count = utils:redis_incr_key(full_key, window)
+      end
       match_entry.rate_limit_count = count
       match_entry.rate_limit_limit = limit
       match_entry.rate_limit_window = window
@@ -1356,6 +1377,7 @@ end
 plugin._internals = {
   conf_cache_key           = conf_cache_key,
   rate_limit_scope         = rate_limit_scope,
+  evaluate_rules           = evaluate_rules,
   get_plugin_dynamic_rules = get_plugin_dynamic_rules,
   get_local_request_rules  = get_local_request_rules,
   get_overrides_cached     = get_overrides_cached,

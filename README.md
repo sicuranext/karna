@@ -423,6 +423,40 @@ upstream as `?name=OBrien`. `GET /signup?name=<script>alert(1)</script>`
 reaches the upstream as `?name=scriptalert(1)/script`. Same logic
 applies to body args, headers, URL path.
 
+### Temporary ban on rate-limit exceedance
+
+A rate-limit action can opt into an atomic temporary ban:
+
+```json
+"rate_limit": {
+  "key": "%{remote_addr}", "limit": 50, "window_seconds": 21600,
+  "ban": { "key": "%{remote_addr}", "duration_seconds": 1200 }
+}
+```
+
+The 51st matching request creates `karna:ban:<plugin-id>:<resolved-ban-key>`
+with `SET NX EX 1200`, in the same Redis script as the counter increment.
+Requests at or below the limit never create a ban. Concurrent exceedances
+never refresh its deadline. Detection-only requests keep counting but never
+create bans. The duration must be an integer from 1 to 86400 seconds and the
+key must be nonempty; invalid policies log an error and keep ordinary limiting.
+The counter remains in its original window, so a new matching request after
+ban expiry can trigger another ban until that window expires.
+
+**Enforcement must be configured separately:** place a rule BEFORE the limiter
+in the same plugin instance, enable `redis_inspect_enabled`, test
+`redis.karna:ban:<plugin-id>:%{remote_addr}` with `isSet`, and return a fixed
+403 response. Use the actual plugin entity UUID in place of `<plugin-id>`.
+The reader must use Redis database 0, like the existing rate-limit counters.
+Scope the plugin to the service being protected. The enforcement rule must
+not write the ban key or its TTL. With no such rule, bans are recorded but do
+not block other paths. Rules without `ban` retain their existing behavior.
+
+This uses standalone Redis (a two-key EVAL; Redis Cluster cross-slot keys are
+not supported). Redis failure retains the limiter's fail-open behavior and
+logs an error. Audit records include `rate_limit_ban_key`,
+`rate_limit_ban_created`, and `rate_limit_ban_ttl` (appended to data in v1).
+
 ### Override the CRS pack's actions
 
 For the OWASP CRS rule pack, which is the default behaviour for most
