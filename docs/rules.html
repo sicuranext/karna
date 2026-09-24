@@ -108,7 +108,7 @@
           <tr><td class="name"><code>action</code></td><td class="mono">object</td><td>What to do when the rule fires. See <a class="link" href="#actions">Actions</a>.</td></tr>
           <tr><td class="name"><code>message</code></td><td class="mono">string</td><td>Human-readable description, written to the audit log.</td></tr>
           <tr><td class="name"><code>tags</code></td><td class="mono">array</td><td>Labels used by overrides and rule controls (e.g. <code>attack-sqli</code>).</td></tr>
-          <tr><td class="name"><code>log</code></td><td class="mono">boolean</td><td>Whether a match is written to the audit log. <strong>Set it explicitly on a local rule.</strong> A rule in <code>rules_request</code> or <code>custom_secrules</code> is not logged unless <code>log</code> is <code>true</code> &mdash; only a global rules pack defaults it to true when absent, and only CRS rules are forced to true at load. A copied rate-limit rule without it throttles the client and leaves no trace, so a consumer reading <code>matches</code> sees the request as allowed.</td></tr>
+          <tr><td class="name"><code>log</code></td><td class="mono">boolean</td><td>Master switch for writing this rule to the audit log. <strong>Set it explicitly on a local rule.</strong> A rule in <code>rules_request</code> or <code>custom_secrules</code> is not logged unless <code>log</code> is <code>true</code> &mdash; only a global rules pack defaults it to true when absent, and only CRS rules are forced to true at load. Rate-limit rules additionally suppress admitted matches unless <code>rate_limit.log_all_matches</code> is true.</td></tr>
           <tr><td class="name"><code>rule_control</code></td><td class="mono">array</td><td>Optional self-modifications applied to this or other rules. See <a class="link" href="#rule-controls">Rule controls</a>.</td></tr>
         </tbody>
       </table>
@@ -411,6 +411,7 @@ npx ajv-cli validate --spec=draft2020 \
           <tr><td class="name"><code>key</code></td><td class="mono">%{remote_addr}</td><td>Counter cardinality. Accepts the <a class="link" href="#a-macros">request-context macros</a>; anything else stays literal.</td></tr>
           <tr><td class="name"><code>limit</code></td><td class="mono">0</td><td>Max requests in the window.</td></tr>
           <tr><td class="name"><code>window_seconds</code></td><td class="mono">60</td><td>Window length / counter TTL. <code>0</code> or less falls back to <code>60</code>: an unbounded counter would never reset and would keep returning the terminal 429 forever.</td></tr>
+          <tr><td class="name"><code>log_all_matches</code></td><td class="mono">false</td><td>Opt in to auditing admitted, under-limit matches. By default only limit exceedances and enforced bans are audit-eligible. The rule-level <code>log</code> flag remains the master switch.</td></tr>
           <tr><td class="name"><code>response</code></td><td class="mono">429</td><td>Optional <code>status_code</code> / <code>body</code> / <code>headers</code>. <code>Retry-After</code> is set automatically.</td></tr>
         </tbody>
       </table>
@@ -790,6 +791,7 @@ karna-tls-v1|TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305
         <div class="code-body"><pre>{
   <span class="prm">"id"</span>: <span class="str">"rl-login-per-ip"</span>,
   <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+  <span class="prm">"log"</span>: <span class="kw">true</span>,
   <span class="prm">"conditions"</span>: [
     {
       <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>,
@@ -939,6 +941,7 @@ karna-tls-v1|TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305
 }</pre></div>
       </div>
       <p>Requests over the ordinary limit receive 429. The twentieth refusal creates the ban atomically and receives 403; later requests from the same identity receive 403 until the two hours expire. The counter is reset when the ban starts, so expiry opens a fresh rate-limit window.</p>
+      <p>With <code>log: true</code>, the audit log records the refusals and every enforced ban. Admitted requests stay quiet unless the rate-limit action sets <code>log_all_matches: true</code>.</p>
       <div class="warn"><span class="lbl">Service boundary</span>The ban key includes the routed Kong service. A ban triggered by this rule covers every path of that service, including cached responses, but cannot block the same identity on another service. No Redis-inspection rule is required.</div>
     </section>
 

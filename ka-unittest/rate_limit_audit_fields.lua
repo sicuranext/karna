@@ -82,6 +82,16 @@ local utils = dofile("./kong/plugins/karna/modules/ka_utils.lua")
 local KEY  = "karna:rl:11111111-2222-3333-4444-555555555555:rl-login:203.0.113.7"
 local CONF = { engine_blocking_mode = true, paranoia_level = 1, auditlog_format = "v2" }
 
+print("\n-- audit eligibility --")
+eq(utils:is_match_audit_eligible({rule = {log = true}, audit_loggable = false}), false,
+   "an admitted rate-limit match is quiet by default")
+eq(utils:is_match_audit_eligible({rule = {log = true}, audit_loggable = true}), true,
+   "an enforcement event is audit eligible")
+eq(utils:is_match_audit_eligible({rule = {log = false}, audit_loggable = true}), false,
+   "the rule-level log flag remains the master switch")
+eq(utils:is_match_audit_eligible({rule = {log = true}}), true,
+   "ordinary matches retain their existing logging behavior")
+
 -- A match entry as handler.lua fills it at dispatch: the rule, the matched
 -- parts, and the rate_limit_* bookkeeping alongside them.
 local function rl_entry(count)
@@ -102,6 +112,19 @@ local function plain_entry()
         rule = { id = "942100", message = "SQLi", tags = { "attack-sqli" } },
         part = {},
         blocked = true,
+    }
+end
+
+local function active_ban_entry()
+    return {
+        rule = { id = "rl-login", message = "login temporarily blocked", tags = { "ratelimit" } },
+        part = {},
+        blocked = true,
+        rate_limited = true,
+        rate_limit_ban_key = "karna:ban:scope:service:rl-login:identity",
+        rate_limit_ban_created = false,
+        rate_limit_ban_active = true,
+        rate_limit_ban_ttl = 45,
     }
 end
 
@@ -126,6 +149,11 @@ eq(f.rate_limit_key,    KEY, "the key, so an operator can find or DEL it")
 ok(type(f.rate_limit_count) == "number" and type(f.rate_limit_limit) == "number"
    and type(f.rate_limit_window) == "number", "counters are numbers")
 ok(type(f.rate_limit_key) == "string", "the key is a string")
+
+local fb = utils:build_rate_limit_fields(active_ban_entry())
+eq(fb.rate_limit_key, nil, "an active ban does not invent a counter key")
+eq(fb.rate_limit_ban_active, true, "an enforced ban is marked active")
+eq(fb.rate_limit_ban_ttl, 45, "an enforced ban carries its remaining TTL")
 
 local partial = { rate_limit_key = KEY }
 local fp = utils:build_rate_limit_fields(partial)
@@ -152,6 +180,11 @@ eq(m.rate_limit_count,  6,   "v2 carries the counter")
 eq(m.rate_limit_limit,  5,   "v2 carries the limit")
 eq(m.rate_limit_window, 10,  "v2 carries the window")
 eq(m.rate_limit_key,    KEY, "v2 carries the key")
+
+local mb = utils:get_auditlog_v2({ active_ban_entry() }, CONF).matches[1]
+eq(mb.action, "banned", "an enforced ban has a distinct action")
+eq(mb.rate_limit_ban_active, true, "v2 carries active-ban state")
+eq(mb.rate_limit_ban_ttl, 45, "v2 carries the remaining ban TTL")
 
 -- The regression that started this: the entry used to be a fixed five-key
 -- literal, so the fields were dropped on the floor.
@@ -183,6 +216,12 @@ ok(d:find("count=6", 1, true) ~= nil, "v1 says the counter", d)
 ok(d:find("limit=5", 1, true) ~= nil, "v1 says the limit", d)
 ok(d:find("window=10", 1, true) ~= nil, "v1 says the window", d)
 ok(d:find("key=" .. KEY, 1, true) ~= nil, "v1 says the key", d)
+
+local db = utils:build_v1_rate_limit_data(active_ban_entry())
+ok(db:find("ban_active=true", 1, true) ~= nil,
+   "v1 records enforcement of an already-active ban", db)
+ok(db:find("count=", 1, true) == nil,
+   "v1 does not invent counter state for active-ban enforcement", db)
 
 local entry = rl_entry(6)
 local v1 = utils:get_auditlog(entry.rule, entry.part, entry)

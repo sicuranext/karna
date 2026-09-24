@@ -659,19 +659,29 @@ end
 -- `rate_limit_count` / `_limit` / `_window` / `_key` never reached the document,
 -- although the README had documented them for several releases. They are
 -- emitted now, which is what makes a throttled request answerable from the log.
+_M.is_match_audit_eligible = function(self, matched)
+    return type(matched) == "table"
+       and type(matched.rule) == "table"
+       and not not matched.rule.log
+       and matched.audit_loggable ~= false
+end
+
 _M.build_rate_limit_fields = function(self, matched)
-    if type(matched) ~= "table" or matched.rate_limit_key == nil then
+    if type(matched) ~= "table"
+       or (matched.rate_limit_key == nil and matched.rate_limit_ban_key == nil) then
         return nil
     end
-    local fields = {
-        rate_limit_count  = tonumber(matched.rate_limit_count) or 0,
-        rate_limit_limit  = tonumber(matched.rate_limit_limit) or 0,
-        rate_limit_window = tonumber(matched.rate_limit_window) or 0,
-        rate_limit_key    = tostring(matched.rate_limit_key),
-    }
+    local fields = {}
+    if matched.rate_limit_key ~= nil then
+        fields.rate_limit_count  = tonumber(matched.rate_limit_count) or 0
+        fields.rate_limit_limit  = tonumber(matched.rate_limit_limit) or 0
+        fields.rate_limit_window = tonumber(matched.rate_limit_window) or 0
+        fields.rate_limit_key    = tostring(matched.rate_limit_key)
+    end
     if matched.rate_limit_ban_key then
         fields.rate_limit_ban_key = matched.rate_limit_ban_key
         fields.rate_limit_ban_created = matched.rate_limit_ban_created == true
+        fields.rate_limit_ban_active = matched.rate_limit_ban_active == true
         fields.rate_limit_ban_ttl = tonumber(matched.rate_limit_ban_ttl) or 0
     end
     return fields
@@ -686,15 +696,19 @@ end
 _M.build_v1_rate_limit_data = function(self, matched)
     local t = _M.build_rate_limit_fields(self, matched)
     if not t then return nil end
-    local data = "Rate limit: " .. table_concat({
-        "count="  .. tostring(t.rate_limit_count),
-        "limit="  .. tostring(t.rate_limit_limit),
-        "window=" .. tostring(t.rate_limit_window),
-        "key="    .. t.rate_limit_key,
-    }, " ")
+    local data = "Rate limit:"
+    if t.rate_limit_key then
+        data = data .. " " .. table_concat({
+            "count="  .. tostring(t.rate_limit_count),
+            "limit="  .. tostring(t.rate_limit_limit),
+            "window=" .. tostring(t.rate_limit_window),
+            "key="    .. t.rate_limit_key,
+        }, " ")
+    end
     if t.rate_limit_ban_key then
         data = data .. " ban_key=" .. t.rate_limit_ban_key
             .. " ban_created=" .. tostring(t.rate_limit_ban_created)
+            .. " ban_active=" .. tostring(t.rate_limit_ban_active)
             .. " ban_ttl=" .. tostring(t.rate_limit_ban_ttl)
     end
     return data
@@ -912,6 +926,8 @@ _M.get_auditlog_v2 = function(self, matched_rules, plugin_conf)
             local action_label = "log"
             if matched.sanitized then
                 action_label = "sanitized"
+            elseif matched.rate_limit_ban_active then
+                action_label = "banned"
             elseif matched.rate_limited then
                 action_label = "rate_limited"
             elseif rule.action and rule.action.fixed_response then

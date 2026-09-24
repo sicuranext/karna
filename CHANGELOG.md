@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-24
+
 ### Added
 
 - **Audit-log secret redaction, on by default.** The audit record carried every
@@ -76,6 +78,13 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   publishing a schema rather than a linter.
 
 ### Changed
+
+- **Rate-limit rules now audit enforcement events by default instead of every
+  admitted match.** Limit exceedances, ban creation and requests refused by an
+  active ban remain visible. Set `rate_limit.log_all_matches: true` to restore
+  the previous per-match stream for capacity analysis. The rule-level `log`
+  flag remains the master switch. Active-ban records carry their remaining TTL
+  and use `action: "banned"` in audit format v2.
 
 - `mcp_redact_authorization_in_audit` and `mcp_redact_session_id_in_audit` now
   drive the shared redaction spec instead of their own recursive walk over the
@@ -1524,7 +1533,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.5.8...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/sicuranext/karna/compare/v1.5.10...v1.6.0
 [1.5.8]: https://github.com/sicuranext/karna/compare/v1.5.7...v1.5.8
 [1.5.7]: https://github.com/sicuranext/karna/compare/v1.5.6...v1.5.7
 [1.5.6]: https://github.com/sicuranext/karna/compare/v1.5.5...v1.5.6

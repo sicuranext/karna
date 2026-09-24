@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.5.10",
+  VERSION = "1.6.0",
 }
 
 local ngx                 = ngx
@@ -569,6 +569,15 @@ local function service_ban_key(plugin_conf, service_id, rule)
       .. ":" .. tostring(rule.id) .. ":" .. resolve_request_macros(rl.ban.key)
 end
 
+-- Rate-limit matches are noisy by nature: every request admitted by the rule
+-- still matches its conditions. Keep the useful enforcement events by default
+-- and let operators opt into the former per-match stream explicitly.
+local function set_rate_limit_audit_eligibility(match_entry, rl)
+  match_entry.audit_loggable = rl.log_all_matches == true
+      or match_entry.rate_limited == true
+      or match_entry.rate_limit_ban_active == true
+end
+
 -- Evaluate a pack of `pass`-action rules (CRS exclusion plugins +
 -- `custom_secrules` whose actions are purely ctl:* / setvar:* side
 -- effects), applying every matching rule's rule_control. Unlike the
@@ -727,11 +736,13 @@ local evaluate_rules = function(plugin_conf, rules, phase)
         match_entry.rate_limit_ban_key = ban_key
         match_entry.rate_limit_ban_created = created
         match_entry.rate_limit_ban_ttl = ttl
+        match_entry.rate_limit_ban_active = active
         match_entry.rate_limit_count = count
         match_entry.rate_limit_limit = limit
         match_entry.rate_limit_window = window
         match_entry.rate_limit_key = full_key
         match_entry.rate_limited = active or (count ~= nil and limit > 0 and count > limit)
+        set_rate_limit_audit_eligibility(match_entry, rl)
         if active then
           local resp = rl.ban.response or {}
           local body, headers = utils:build_block_response(plugin_conf, resp.body,
@@ -750,6 +761,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       match_entry.rate_limit_window = window
       match_entry.rate_limit_key = full_key
       match_entry.rate_limited = (count ~= nil and limit > 0 and count > limit)
+      set_rate_limit_audit_eligibility(match_entry, rl)
 
       if rule_blocking_enabled(plugin_conf) and match_entry.rate_limited then
         local resp = rl.response or {}
@@ -897,17 +909,23 @@ local function enforce_service_bans(plugin_conf)
   if not plugin_conf.engine_blocking_mode then return end
   local service_id = routed_service_id()
   if not service_id then return end
-  local keys, policies, seen = {}, {}, {}
-  local function collect(rules)
-    for _, rule in ipairs(rules or {}) do
+  local keys, policies, audit_rules, seen = {}, {}, {}, {}
+  local function collect(rule_pack)
+    for _, rule in ipairs(rule_pack or {}) do
       if rule.phase == "access" and rule.id and rule.action then
         local action = apply_action_and_response_overrides(plugin_conf, rule)
-        local effective = action == rule.action and rule or { id = rule.id, action = action }
+        local effective = rule
+        if action ~= rule.action then
+          effective = {}
+          for k, v in pairs(rule) do effective[k] = v end
+          effective.action = action
+        end
         local key = service_ban_key(plugin_conf, service_id, effective)
         if key and not seen[key] then
           seen[key] = true
           keys[#keys + 1] = key
           policies[#policies + 1] = action.rate_limit.ban
+          audit_rules[#audit_rules + 1] = effective
         end
       end
     end
@@ -924,6 +942,18 @@ local function enforce_service_bans(plugin_conf)
   utils.redis_password = plugin_conf.redis_password
   local index, ttl = utils:redis_first_active_ban(keys)
   if not index then return end
+  local active_rule = audit_rules[index]
+  table.insert(kong.ctx.plugin.ka_matched_rules, {
+    rule = active_rule,
+    part = nil,
+    blocked = true,
+    audit_loggable = true,
+    rate_limited = true,
+    rate_limit_ban_key = keys[index],
+    rate_limit_ban_created = false,
+    rate_limit_ban_active = true,
+    rate_limit_ban_ttl = ttl,
+  })
   local response = policies[index].response or {}
   local body, headers = utils:build_block_response(plugin_conf, response.body,
       response.headers, "Forbidden\r\n")
@@ -1366,7 +1396,7 @@ function plugin:log(plugin_conf)
     local loggable_matches = {}
     if kong.ctx.plugin.ka_matched_rules and #kong.ctx.plugin.ka_matched_rules > 0 then
       for _, matched in pairs(kong.ctx.plugin.ka_matched_rules) do
-        if matched.rule.log then
+        if utils:is_match_audit_eligible(matched) then
           loggable_matches[#loggable_matches + 1] = matched
         end
       end
