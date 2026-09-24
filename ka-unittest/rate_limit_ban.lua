@@ -1,7 +1,8 @@
 -- A configured rate-limit ban is created and enforced by one rule, across all
 -- paths of its routed service, without affecting another service.
 local active_rule = {
-    id = 'login', phase = 'access',
+    id = 'login', phase = 'access', log = true,
+    message = 'synthetic login limit', tags = {'ratelimit'},
     action = {rate_limit = {
         key = '%{remote_addr}', limit = 2, window_seconds = 60,
         ban = {key = '%{remote_addr}', after_exceedances = 2, duration_seconds = 20},
@@ -103,17 +104,21 @@ local function run()
     return response
 end
 
-assert(run() == nil)
-assert(run() == nil)
-assert(run().status == 429)
+assert(run() == nil and last_match.audit_loggable == false)
+assert(run() == nil and last_match.audit_loggable == false)
+assert(run().status == 429 and last_match.audit_loggable == true)
 local triggered = run()
 assert(triggered.status == 403 and triggered.headers['Retry-After'] == '20')
-assert(last_match.rate_limit_ban_created and last_match.rate_limit_count == 4)
+assert(last_match.rate_limit_ban_created and last_match.rate_limit_ban_active
+    and last_match.rate_limit_count == 4 and last_match.audit_loggable == true)
 assert(last_counter_key == 'karna:rl:plugin-a:service-a:login:203.0.113.9')
 assert(last_ban_key == 'karna:ban:plugin-a:service-a:login:203.0.113.9')
 
 path, cache_hit = '/other', true
 assert(run().status == 403)
+assert(last_match.rule.id == 'login' and last_match.rule.message == 'synthetic login limit')
+assert(last_match.rate_limit_ban_active and not last_match.rate_limit_ban_created
+    and last_match.audit_loggable == true)
 
 service_id, cache_hit = 'service-b', false
 assert(run() == nil)
@@ -122,6 +127,11 @@ assert(last_ban_key == 'karna:ban:plugin-a:service-b:login:203.0.113.9')
 service_id, conf.engine_blocking_mode = 'service-c', false
 assert(run() == nil and run() == nil and run() == nil and run() == nil)
 assert(not bans['karna:ban:plugin-a:service-c:login:203.0.113.9'])
+
+service_id, conf.engine_blocking_mode = 'service-d', true
+active_rule.action.rate_limit.log_all_matches = true
+assert(run() == nil and last_match.audit_loggable == true)
+active_rule.action.rate_limit.log_all_matches = nil
 print('integrated ban enforcement and service isolation: passed')
 
 -- Execute the real Redis scripts against a clocked in-memory Redis fixture.
@@ -201,7 +211,9 @@ assert(incr('counter-a', 'ban-a') == nil)
 local fields = real_utils:build_rate_limit_fields({
     rate_limit_key = 'counter-a', rate_limit_count = 60, rate_limit_limit = 50,
     rate_limit_window = 21600, rate_limit_ban_key = 'ban-a',
-    rate_limit_ban_created = true, rate_limit_ban_ttl = 1200,
+    rate_limit_ban_created = true, rate_limit_ban_active = true,
+    rate_limit_ban_ttl = 1200,
 })
-assert(fields.rate_limit_ban_created and fields.rate_limit_ban_ttl == 1200)
+assert(fields.rate_limit_ban_created and fields.rate_limit_ban_active
+    and fields.rate_limit_ban_ttl == 1200)
 print('atomic threshold, fixed deadline, reset and lookup: passed')

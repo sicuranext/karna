@@ -66,7 +66,7 @@
     },
     "log": {
       "type": "boolean",
-      "description": "Whether a match is written to the audit log. The default depends on the channel, and the difference bites: a rule in `rules_request` or `custom_secrules` is NOT logged unless you set `log: true` here, so a copied rate-limit rule throttles the client and never appears in the audit log. Rules in a global rules pack default to true when the field is absent, and every CRS rule is forced to true at load. Set it explicitly on every local rule you want to see."
+      "description": "Master switch for writing this rule to the audit log. The default depends on the channel: a rule in `rules_request` or `custom_secrules` is NOT logged unless you set `log: true`; rules in a global rules pack default to true when absent, and every CRS rule is forced to true at load. Rate-limit rules additionally suppress admitted, under-limit matches unless `rate_limit.log_all_matches` is true."
     },
     "paranoia_level": {
       "description": "Minimum paranoia level at which this rule runs. The rule is skipped when `paranoia_level` in the plugin config is lower. Defaults to 1.",
@@ -457,6 +457,11 @@
           "minimum": 1,
           "default": 60,
           "description": "Fixed window length. A value <= 0 falls back to 60: an unbounded counter would never reset and would 429 forever."
+        },
+        "log_all_matches": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt in to auditing every matching request, including requests admitted below the limit. By default, a rate-limit rule is audit-eligible only when the limit is exceeded or a temporary ban is enforced. The rule-level `log` flag remains the master switch."
         },
         "response": {
           "type": "object",

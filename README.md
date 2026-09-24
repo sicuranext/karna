@@ -366,15 +366,16 @@ Configuration fields:
 | `key` | string | `"%{remote_addr}"` | Counter cardinality. Supports the [request-context macros](#macros-in-rule-actions). Unrecognised macros stay literal. |
 | `limit` | number | `0` (block-all if set) | Maximum requests allowed in the window. |
 | `window_seconds` | number | `60` | TTL of the counter; fixed-window starting at first request. A value of `0` or less falls back to `60` — an unbounded counter would never reset and would keep returning the terminal response forever. |
+| `log_all_matches` | bool | `false` | Opt in to auditing admitted, under-limit matches. By default only limit exceedances and enforced bans are audit-eligible. The rule-level `log` flag remains the master switch. |
 | `response` | object | 429 / `Too Many Requests\r\n` | Optional override for `status_code`, `body`, `headers`. `Retry-After` is set automatically to `window_seconds` unless you supply it yourself. |
 
 Audit log integration: when the counter crosses the threshold, the
 match is logged with `action: "rate_limited"` plus
 `rate_limit_count` / `rate_limit_limit` / `rate_limit_window` /
-`rate_limit_key` fields. Under-threshold matches log with
-`action: "log"` and the same metadata, so a dashboard can show
-"requests on this rule, threshold pressure" without the rule needing
-to fire its terminal action.
+`rate_limit_key` fields. Under-threshold matches are quiet by default;
+set `log_all_matches: true` to log them with `action: "log"` and the same
+metadata. The rule-level `log` flag still controls whether any of these
+events are written.
 
 Detection-only mode (`engine_blocking_mode=false`) still increments
 the counter, useful for dialing in a threshold before turning the
@@ -459,7 +460,9 @@ retain their existing behavior.
 This uses standalone Redis (a two-key EVAL; Redis Cluster cross-slot keys are
 not supported). Redis failure retains the limiter's fail-open behavior and
 logs an error. Audit records for the triggering request include `rate_limit_ban_key`,
-`rate_limit_ban_created`, and `rate_limit_ban_ttl` (appended to data in v1).
+`rate_limit_ban_created`, `rate_limit_ban_active`, and `rate_limit_ban_ttl`
+(appended to data in v1). Requests refused by an already-active ban are also
+audited, with `action: "banned"` in v2 and the remaining TTL in both formats.
 
 ### Override the CRS pack's actions
 
