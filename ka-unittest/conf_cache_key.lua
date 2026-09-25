@@ -99,6 +99,9 @@ package.preload["kong.plugins.karna.ka_compile"] = function()
             if action == nil then return true end
             return type(action) == "table" and next(action) == nil
         end,
+        -- The pre-body split is pinned by prebody_controls.lua against the real
+        -- compiler; here nothing is pre-body so every control keeps its slot.
+        is_prebody_control = function() return false end,
     }
 end
 

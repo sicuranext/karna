@@ -1017,12 +1017,19 @@ are what `coreruleset_fix.lua` uses to patch FP-prone CRS rules:
 `remove_variable_from_rule_conditions`, `remove_variable_rx`,
 `remove_target_rule_by_pattern`, `remove_target_tag_by_pattern`.
 
-> **The always-on validation gates cannot be reached from a rule control.** The
-> method, path, denied-header, content-type/charset, body-parser and
-> argument-count checks all run *before* the first rule is evaluated, so no
-> control — `engine_off`, `detection_only`, `engine_on`, `body_access_off` — can
-> switch them off or on. To loosen those, use the plugin schema
-> (`request_content_type_enforce`, `limit_arg_num`, `request_methods_allowed`, …).
+> **The always-on validation gates cannot be reached from a rule control, with
+> one exception.** The method, path, denied-header and content-type/charset
+> checks run *before* the first rule is evaluated, so no control — `engine_off`,
+> `detection_only`, `engine_on`, `body_access_off` — can switch them off or on.
+> The three **body gates** (content-type enforce, body parser, argument count)
+> run after the *pre-body controls pass*: control-only access rules whose
+> conditions never read the body (path, headers, cookies, query string —
+> ModSecurity phase 1) are evaluated first, and a `body_access_off` they apply
+> takes the body out of those three gates. The body is then never parsed for
+> that request. Nothing else reaches a gate: `engine_off`, `detection_only` and
+> `engine_on` set in that pass change nothing for any gate. To loosen a gate
+> for everyone, use the plugin schema (`request_content_type_enforce`,
+> `limit_arg_num`, `request_methods_allowed`, …).
 
 ### `change_rule_action`
 
@@ -1330,6 +1337,23 @@ endpoint from paying for a full scan of megabytes that will never match anything
 "rule_control": [
     { "body_access_off": true }
 ]
+```
+
+When the carrying rule is control-only and its conditions never read the body
+(path, headers, cookies, query string — `request.arg.*` counts as body, it
+parses it), it runs in the **pre-body controls pass**, before the three body
+gates (`request_content_type_enforce`, the body parser, `limit_arg_num`). The
+body is then never read, never parsed and never counted for that request: an
+endpoint that legitimately receives a 20 000-field form can be excluded with
+one rule keyed on its path, without raising `limit_arg_num` for the whole
+service. That is ModSecurity's phase 1. A rule that reads ARGS or the body to
+decide, or that carries an action next to the control, keeps running after the
+gates, as before. Same split on every channel: `custom_secrules` and CRS
+plugins, the global pack, `rules_request`.
+
+```
+SecRule REQUEST_URI "@rx ^/[a-z]{2}/api/catalog/price-lookup$" \
+    "id:10001010,phase:1,pass,nolog,ctl:requestBodyAccess=Off"
 ```
 
 ### `audit_request_body`

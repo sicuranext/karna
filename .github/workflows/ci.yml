@@ -85,6 +85,8 @@ jobs:
         run: lua ka-unittest/redis_inspect.lua
       - name: Global rules pack (file + Redis sources, dedup, controls split, HMAC, replay guard)
         run: lua ka-unittest/global_rules.lua
+      - name: Pre-body rule controls (ctl:requestBodyAccess=Off reaches the body gates, body never parsed)
+        run: lua ka-unittest/prebody_controls.lua
       - name: URI + client-IP variable resolvers (path family, remote_addr vs forwarded_addr)
         run: lua ka-unittest/variable_resolution.lua
       - name: WordPress ctl target exclusion (ARGS:name body-param removal + namespace gate)

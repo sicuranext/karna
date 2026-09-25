@@ -100,9 +100,11 @@ The actual files live under `kong/plugins/karna/modules/` and `kong/plugins/karn
 - **The audit-log directory must be writable by the Kong worker user.** The dev image chowns `/usr/local/openresty/nginx/logs` to `kong:kong` for this reason. On a custom deployment, ensure the configured `auditlog_path` matches.
 
 ## Always-on validation gates (not toggle-gated)
-The access phase runs four request-validation methods *before* the rule
+The access phase runs the request-validation methods below *before* the rule
 loops, and they fire regardless of `coreruleset_enabled` /
-`local_rules_enabled`:
+`local_rules_enabled`. Order inside `handler.lua:access`: the four header-level
+gates → the rule-control store → the **pre-body controls pass** → the three
+body gates → everything else:
 
 - `engine:method_allowed(plugin_conf)` — vs `request_methods_allowed`
 - `engine:uri_path_check_violation(plugin_conf)` — special-char / invalid-char limits in path
@@ -127,6 +129,37 @@ allow-lists (`limit_special_chars_in_path`, `request_methods_allowed`,
 …). When debugging "why was this blocked with all toggles off?", these
 are usually the answer.
 
+**The one exception: `body_access_off` from the pre-body controls pass.**
+Control-only access rules whose conditions never read the body
+(`ka_compile.is_prebody_control`: `_prebody` is computed by `compile_rules`
+from an explicit allow-list of body-free variables — `request.arg.*` counts
+as body, `request.body.processor` does not) are evaluated BEFORE the three
+body gates (`check_request_content_type_enforce`, `check_request_body_parser`,
+`check_request_arg_count`), from every channel: `custom_secrules` / CRS plugins
+(`get_plugin_dynamic_rules(...).controls_prebody.access`), the global pack
+(`pack.controls_prebody.access`, partitioned after compile in
+`ka_global_rules.build_sources`), `rules_request`
+(`get_local_request_rules(...).access_prebody`, removed from `.access` so each
+rule runs once). A `ctl:requestBodyAccess=Off` they apply makes the three body
+gates see no body through the getters' `body_cache_key` (`raw:nobody`): the
+body is never read, parsed or counted for that request. This is ModSecurity
+phase 1, and the fix for "legit 20 000-field form on one endpoint": one
+path-keyed rule instead of a service-wide `limit_arg_num`. `engine_off`,
+`detection_only` and `engine_on` set in that pass change nothing for any gate.
+Unit-tested in `ka-unittest/prebody_controls.lua`; load test in
+`ka-stress-test/argmem_load.py` (needs the env-gated `X-Karna-Profile: mem|gc`
+probe, `KARNA_PROFILE` set on the worker).
+
+Why it was needed (2026-09-25): before the pass, a 20 000-argument urlencoded
+POST on a path with such a rule cost ~30 MB of garbage per request (3 MB
+urlencoded parse in `check_request_arg_count`, 26.5 MB RE2 pre-pass transform
+cache over 40 000 values at the top of the first `loop_rules`) BEFORE the rule
+could switch the body off, because `seclang.__get_action` emitted
+`{setvar = {}}` for every rule, so every SecLang `pass,ctl:*` rule failed
+`is_control_only` and was filed as detection. The Lua heap oscillated at 4× its
+baseline and the worker RSS ratcheted up to the heap high-water mark and never
+came back (LuaJIT allocator retention). After: ~0.1 MB per request.
+
 ## Optional integration points (for chained-plugin deployments)
 
 Karna can opportunistically read state set by sibling plugins. These are
@@ -143,7 +176,7 @@ all guarded — when no sibling plugin sets them, Karna works fine in isolation.
 - `ka-unittest/` — unit test snippets
 - `ka-regression-tests/` — regression suite (requires `busted` + a kong/ngx mock — see `kong_ngx_global.lua`)
 - `ka-integration-tests/` — `hurl`-based end-to-end against a running Kong
-- `ka-stress-test/` — Python load test
+- `ka-stress-test/` — Python load tests (`stress.py` generic; `argmem_load.py` many-argument POSTs with per-worker Lua heap / RSS sampling through the `X-Karna-Profile: mem|gc` probe, `KARNA_PROFILE` + one worker)
 - `crs-regression-test/` — official OWASP CRS regression suite runner
 
 CI runs on GitHub Actions (`.github/workflows/ci.yml`): a Lua syntax check,

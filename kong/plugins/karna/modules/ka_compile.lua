@@ -96,6 +96,7 @@ local _RULE_INTERNAL_FIELDS = {
     _compiled        = true,
     _compiled_logged = true,
     _needs_body      = true,  -- precomputed "rule cannot fire without a request body" flag
+    _prebody         = true,  -- precomputed "no condition reads the request body" flag
     _crs_cat         = true,  -- CRS ruleset category code (floor(id/1000)) for per-type gating
 }
 
@@ -535,6 +536,82 @@ local function condition_requires_body(condition)
     return nvars > 0
 end
 
+-- A variable is "pre-body" when the engine resolves it without reading the
+-- request body: request line, headers, cookies, query string, client address,
+-- TX / rule variables, enrichment, TLS, Redis. This is the ModSecurity phase 1
+-- surface, and it decides which control-only rules may run BEFORE the body
+-- gates (see `is_prebody_control` and the pre-body pass in handler.lua:access).
+--
+-- An explicit allow-list, so anything new or unknown defaults to "needs the
+-- body" and keeps today's ordering. `request.arg.*` (ARGS) is body-bearing:
+-- resolving it parses the body. `request.body.processor` is not — it derives
+-- from Content-Type alone. `matched.*` is neutral: it refers to what an earlier
+-- condition of the same rule matched, and that condition decides.
+local _PREBODY_EXACT = {
+    ["request.method"]           = true,
+    ["request.scheme"]           = true,
+    ["request.host"]             = true,
+    ["request.port"]             = true,
+    ["request.http_version"]     = true,
+    ["request.line"]             = true,
+    ["request.path"]             = true,
+    ["request.raw_path"]         = true,
+    ["request.path_with_query"]  = true,
+    ["request.raw_query"]        = true,
+    ["request.basename"]         = true,
+    ["request.remote_addr"]      = true,
+    ["request.forwarded_addr"]   = true,
+    ["request.forwarded_scheme"] = true,
+    ["request.forwarded_host"]   = true,
+    ["request.forwarded_port"]   = true,
+    ["request.forwarded_path"]   = true,
+    ["request.forwarded_prefix"] = true,
+    ["remote_addr"]              = true,
+    ["request.body.processor"]   = true,
+    ["request.header.value"]     = true,
+    ["request.header.name"]      = true,
+    ["request.cookie.value"]     = true,
+    ["request.cookie.name"]      = true,
+    ["request.query.value"]      = true,
+    ["request.query.name"]       = true,
+    ["connection.id"]            = true,
+    ["matched.value"]            = true,
+}
+local _PREBODY_PREFIX = {
+    "request.header.value:", "request.header.name:", "request.header_no_fp.value:",
+    "request.header.referer.", "request.cookie.value:", "request.cookie.name:",
+    "request.query.value:", "request.query.name:",
+    "tx:", "var:", "geoip.", "asn.", "tls.", "redis.", "matched.",
+}
+function _M.is_prebody_var(v)
+    if type(v) ~= "string" then return false end
+    if v:find("^count:") then return _M.is_prebody_var(v:sub(7)) end
+    if _PREBODY_EXACT[v] then return true end
+    for _, p in ipairs(_PREBODY_PREFIX) do
+        if v:sub(1, #p) == p then return true end
+    end
+    return false
+end
+
+-- A rule is pre-body when EVERY variable of EVERY condition is pre-body, so
+-- evaluating it never triggers the body parser. Conservative: a rule with no
+-- conditions, a malformed condition or an unknown variable is not pre-body.
+local function rule_is_prebody(rule)
+    if type(rule.conditions) ~= "table" or #rule.conditions == 0 then return false end
+    for _, condition in ipairs(rule.conditions) do
+        if type(condition) ~= "table" or type(condition.variables) ~= "table" then
+            return false
+        end
+        local nvars = 0
+        for _, v in pairs(condition.variables) do
+            nvars = nvars + 1
+            if not _M.is_prebody_var(v) then return false end
+        end
+        if nvars == 0 then return false end
+    end
+    return true
+end
+
 local function compile_rule_conditions(rule)
     if not rule.conditions then return end
     local needs_body = false
@@ -572,6 +649,7 @@ local function compile_rule_conditions(rule)
         end
     end
     rule._needs_body = needs_body
+    rule._prebody = rule_is_prebody(rule)
 end
 
 -- Convenience: compile a list of rules in-place, attaching the closure
@@ -608,6 +686,19 @@ function _M.is_control_only(rule)
     if action == nil then return true end
     if type(action) ~= "table" then return false end
     return next(action) == nil
+end
+
+-- A control-only ACCESS rule whose conditions never read the request body
+-- (`_prebody`, set by compile_rules). These are the rules the handler evaluates
+-- in the pre-body controls pass, before the body gates — ModSecurity phase 1 —
+-- so that a `ctl:requestBodyAccess=Off` keyed on the path or a header takes
+-- the body out of the body-parser and argument-count gates, and the body is
+-- never parsed at all for that request. Requires compile_rules to have run on
+-- the rule (an uncompiled rule is never pre-body).
+function _M.is_prebody_control(rule)
+    return _M.is_control_only(rule)
+       and rule.phase == "access"
+       and rule._prebody == true
 end
 
 -- Is this condition the "variable is absent" form? Canonical shape is

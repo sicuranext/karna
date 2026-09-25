@@ -28,7 +28,7 @@ Not toggleable: anomaly scoring (949/959/980), response rules (95x), init (901),
 - `request_headers_denied` (array; default content-encoding/proxy/lock-token/content-range/if) — **gate**.
 - `request_content_type_allowed` (array) / `request_content_type_charset_allowed` (array; utf-8/iso-8859-1/iso-8859-15/windows-1252) — **gate**.
 - `request_content_type_enforce` (bool, `true`) — **gate**. A body-bearing request must declare a `Content-Type` present in `request_content_type_allowed`; bodies with no/unknown CT (text/plain, octet-stream, image/*, …) can't be parsed into args, so they're blocked by default ("deny what you can't inspect"). Set `false` to accept arbitrary body content types.
-- `limit_arg_num` (num, `255`) — **gate** (DoS protection against rules×args blow-up).
+- `limit_arg_num` (num, `255`) — **gate** (DoS protection against rules×args blow-up). Counts query + body arguments. A path-keyed control-only rule with `body_access_off` runs before this gate and takes the body out of the count (the body is then never parsed), so a single endpoint with huge legitimate forms is excluded with a rule, not by raising the limit for the whole service.
 - `limit_arg_name_length` (num, `100`), `limit_arg_value_length` (num, `400`), `total_arg_value_length` (num, `64000`).
 - `restricted_extensions` (array) — blocked path extensions, aligned with CRS `tx.restricted_extensions`.
 - `ignore_from_local_ips` (bool, `false`) — when `true`, skip WAF for loopback/RFC1918 source IPs. Default `false` = inspect everything. **If set `true`, local-sourced attacks (incl. from an LB's private egress IP) no-op.**

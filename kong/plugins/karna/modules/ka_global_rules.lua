@@ -306,6 +306,12 @@ end
 local function empty_pack(version)
     local pack = {
         all = {}, controls = {}, detection = {},
+        -- Access-phase controls whose conditions never read the request body
+        -- (`rule._prebody`, set by the injected compiler). The handler runs
+        -- them BEFORE the body gates; the rest of `controls.access` runs after,
+        -- as before. Only access has a pre-body slot: the other phases have no
+        -- body gate in front of them.
+        controls_prebody = { access = {} },
         version = version,
         n_json = 0, n_seclang = 0, n_dropped = 0,
         n_controls = 0, n_detection = 0,
@@ -315,6 +321,24 @@ local function empty_pack(version)
         pack.detection[phase] = {}
     end
     return pack
+end
+
+-- Move the pre-body controls out of `controls.access` into
+-- `controls_prebody.access`. Runs after compile, because `_prebody` is a
+-- compiler output and this module does not require ka_compile; without a
+-- compiler (plain-Lua unit tests, or a compile failure) nothing moves and every
+-- control keeps running after the body gates. Relative order is preserved in
+-- both lists.
+local function partition_prebody(pack)
+    local before, kept = pack.controls.access, {}
+    for _, rule in ipairs(before) do
+        if rule._prebody == true then
+            pack.controls_prebody.access[#pack.controls_prebody.access + 1] = rule
+        else
+            kept[#kept + 1] = rule
+        end
+    end
+    pack.controls.access = kept
 end
 
 -- Numeric-aware id sort, same policy as the CRS loader in ka_engine:
@@ -484,6 +508,7 @@ _M.build_sources = function(sources, version)
     if _M._compile and #pack.all > 0 then
         pcall(_M._compile, pack.all, nil)
     end
+    partition_prebody(pack)
 
     return pack, errors
 end
@@ -509,6 +534,7 @@ end
 _M.recombine = function()
     local combined = {
         all = {}, controls = {}, detection = {},
+        controls_prebody = { access = {} },
         n_duplicates = 0, duplicate_ids = {},
     }
     for _, phase in ipairs(PHASES) do
@@ -518,6 +544,8 @@ _M.recombine = function()
 
     local seen = {}
     local steps = {
+        { pack = _M._file_pack,  kind = "controls_prebody", source = "file"  },
+        { pack = _M._redis_pack, kind = "controls_prebody", source = "redis" },
         { pack = _M._file_pack,  kind = "controls",  source = "file"  },
         { pack = _M._redis_pack, kind = "controls",  source = "redis" },
         { pack = _M._file_pack,  kind = "detection", source = "file"  },
@@ -527,8 +555,10 @@ _M.recombine = function()
     for _, step in ipairs(steps) do
         if step.pack then
             for _, phase in ipairs(PHASES) do
+                -- controls_prebody has an access slot only.
                 local target = combined[step.kind][phase]
-                for _, rule in ipairs(step.pack[step.kind][phase]) do
+                local source_list = target and step.pack[step.kind] and step.pack[step.kind][phase]
+                for _, rule in ipairs(source_list or {}) do
                     local id = tostring(rule.id)
                     local owner = seen[id]
                     if owner then
