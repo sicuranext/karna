@@ -679,7 +679,17 @@ function seclang.__get_tags(actions)
 end
 
 function seclang.__get_action(actions)
-    local action = {["setvar"] = {}}
+    -- `setvar` is attached below only when the rule carries at least one
+    -- setvar: directive. This used to start as `{setvar = {}}`, which made
+    -- EVERY parsed action non-empty — so a `pass,ctl:*` exclusion (no
+    -- disruptive action, no setvar) failed `is_control_only` and was filed as
+    -- a detection rule. It still applied its ctl:* on match, through the
+    -- inline path of loop_rules, but it never reached the controls pass and
+    -- so could never run before the body gates (see the pre-body controls
+    -- pass in handler.lua:access). The two readers of action.setvar
+    -- (ka_engine `__match_rule_conditions_impl`, handler.lua overrides) both
+    -- test for its presence first.
+    local action = {}
     -- `block` is the CRS spelling ("do the configured disruptive action"),
     -- `deny` the classic ModSec one — hand-written rules (custom_secrules,
     -- the global rules pack) overwhelmingly use `deny`. Both become a
@@ -703,6 +713,7 @@ function seclang.__get_action(actions)
     while true do
         local vvar,vvalue = setvars()
         if vvalue then
+            action["setvar"] = action["setvar"] or {}
             table.insert(action["setvar"], {var_name=vvar, var_value=vvalue})
         else
             break

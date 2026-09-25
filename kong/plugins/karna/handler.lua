@@ -36,6 +36,8 @@ local debug = kong.log.debug
 -- profiling trigger in the access phase is dead code.
 local _KARNA_PROFILE_ENABLED = os.getenv("KARNA_PROFILE") ~= nil
 
+
+
 -- Per-plugin_conf cache key for the three compiled-config caches below
 -- (get_plugin_dynamic_rules, get_local_request_rules, get_overrides_cached).
 --
@@ -174,13 +176,28 @@ local get_plugin_dynamic_rules = function(plugin_conf)
   -- See ka_compile.compile_rule for the contract.
   ka_compile.compile_rules(parsed, plugin_conf)
 
+  -- Three buckets, not two: `controls_prebody.access` holds the control-only
+  -- access rules whose conditions never read the request body (path, headers,
+  -- cookies, query — ModSecurity phase 1). The access handler runs them BEFORE
+  -- the body gates, so a `ctl:requestBodyAccess=Off` keyed on the path takes
+  -- the body out of the body-parser and argument-count gates and the body is
+  -- never parsed for that request. Everything else keeps its slot after the
+  -- gates. See ka_compile.is_prebody_control.
   local split = {
     all = parsed,
+    controls_prebody = { access = {} },
     controls  = { access = {}, header_filter = {} },
     detection = { access = {}, header_filter = {} },
   }
   for _, rule in ipairs(parsed) do
-    local bucket = ka_compile.is_control_only(rule) and split.controls or split.detection
+    local bucket
+    if ka_compile.is_prebody_control(rule) then
+      bucket = split.controls_prebody
+    elseif ka_compile.is_control_only(rule) then
+      bucket = split.controls
+    else
+      bucket = split.detection
+    end
     local phase_list = bucket[rule.phase]
     -- A phase this channel never evaluates (body_filter, mcp_event, or a typo
     -- in `phase:N`) lands nowhere rather than being parked where it would never
@@ -214,9 +231,16 @@ end
 --                    rules, not the whole set filtered per request — this
 --                    is why there is no separate `rules_response` config
 --                    array; the phase field plus this cache do the job.
+--   .access_prebody: the control-only access rules whose conditions never
+--                    read the body (ka_compile.is_prebody_control). They run
+--                    in the pre-body controls pass, before the body gates,
+--                    and are NOT in .access — each rule runs exactly once.
+--                    Same split the SecLang channel and the global pack get,
+--                    so a `body_access_off` keyed on the path behaves the
+--                    same whichever channel it arrives on.
 local get_local_request_rules = function(plugin_conf)
   if not plugin_conf.rules_request or #plugin_conf.rules_request == 0 then
-    return { all = {}, access = {}, header_filter = {} }
+    return { all = {}, access = {}, header_filter = {}, access_prebody = {} }
   end
   local key = conf_cache_key("local_request_rules", plugin_conf)
   local cached = key and ka_rules:get(key)
@@ -241,7 +265,20 @@ local get_local_request_rules = function(plugin_conf)
 
   ka_compile.compile_rules(all, plugin_conf)
 
-  local result = { all = all, access = access, header_filter = header_filter }
+  -- `_prebody` is a compiler output, so the partition comes after compile.
+  local access_prebody, access_rest = {}, {}
+  for _, rule in ipairs(access) do
+    if ka_compile.is_prebody_control(rule) then
+      access_prebody[#access_prebody + 1] = rule
+    else
+      access_rest[#access_rest + 1] = rule
+    end
+  end
+
+  local result = {
+    all = all, access = access_rest, header_filter = header_filter,
+    access_prebody = access_prebody,
+  }
   if key then ka_rules:set(key, result) end
   return result
 end
@@ -537,9 +574,11 @@ end
 -- `detection_only` mutually exclusive (last applied wins) and never lets
 -- `engine_on` survive next to `engine_off`.
 --
--- Note the always-on validation gates in ka_engine read plugin_conf directly:
--- they run before any rule control exists, so they cannot be turned off (or
--- on) here.
+-- Note the always-on validation gates in ka_engine read plugin_conf directly,
+-- never this function: neither `detection_only` nor `engine_on` changes what a
+-- gate does. The one control a gate honours is `body_access_off`, and only the
+-- three body gates, through the body getters (see the pre-body controls pass
+-- in plugin:access).
 local rule_blocking_enabled = function(plugin_conf)
   local rc = kong.ctx.plugin and kong.ctx.plugin.rule_controls
   if rc and rc.engine_on == true then return true end
@@ -1030,6 +1069,12 @@ function plugin:access(plugin_conf)
   --   X-Karna-Profile: start  → begin LuaJIT sampling profiler
   --   X-Karna-Profile: stop   → stop + flush report to
   --                             /tmp/karna-jitp.txt
+  --   X-Karna-Profile: mem    → JSON memory snapshot of THIS worker: Lua heap
+  --                             (collectgarbage("count")) and RSS from
+  --                             /proc/self/status (ka-stress-test/argmem_load.py)
+  --   X-Karna-Profile: gc     → same, after a full collectgarbage("collect"):
+  --                             the live set, without the garbage the
+  --                             incremental collector has not reached yet
   -- Run with KONG_NGINX_WORKER_PROCESSES=1 so all load hits the one
   -- worker the profiler is attached to.
   if _KARNA_PROFILE_ENABLED then
@@ -1040,6 +1085,27 @@ function plugin:access(plugin_conf)
     elseif pdir == "stop" then
       pcall(function() require("jit.p").stop() end)
       return kong.response.exit(200, "profile stopped\n")
+    elseif pdir == "mem" or pdir == "gc" then
+      local lua_kb_before = collectgarbage("count")
+      if pdir == "gc" then collectgarbage("collect") end
+      local lua_kb = collectgarbage("count")
+      local rss_kb
+      local f = io.open("/proc/self/status", "r")
+      if f then
+        for line in f:lines() do
+          local v = line:match("^VmRSS:%s*(%d+)")
+          if v then rss_kb = tonumber(v) break end
+        end
+        f:close()
+      end
+      return kong.response.exit(200, cjson.encode({
+        worker_id     = ngx.worker.id(),
+        pid           = ngx.worker.pid(),
+        lua_kb        = lua_kb,
+        lua_kb_before = lua_kb_before,
+        rss_kb        = rss_kb,
+        collected     = (pdir == "gc"),
+      }), { ["content-type"] = "application/json" })
     end
   end
 
@@ -1072,6 +1138,26 @@ function plugin:access(plugin_conf)
 
   -- Rule Evaluation (access phase). ka_matched_rules and enable_check_arg_len
   -- are initialised at the top of this function.
+  --
+  -- Order, and why:
+  --   1. the four header-level gates (method, path, denied headers,
+  --      content-type charset) — hard limits, nothing can switch them off;
+  --   2. the per-request rule-control store and the TX bag;
+  --   3. the PRE-BODY controls pass: control-only access rules whose
+  --      conditions never read the body (ka_compile.is_prebody_control), from
+  --      every channel — custom_secrules / CRS plugins, the global pack,
+  --      rules_request. This is ModSecurity phase 1: a
+  --      `ctl:requestBodyAccess=Off` keyed on the path or a header is applied
+  --      here, BEFORE the body is read;
+  --   4. the three body gates (content-type enforce, body parser, argument
+  --      count). Under body_access_off from step 3 they see no body: the body
+  --      is never parsed, nothing is counted, nothing is blocked — and the
+  --      ~30 MB a 20 000-argument form used to allocate before the switch-off
+  --      rule could run is not allocated at all;
+  --   5. everything else as before: post-body controls, detection rules,
+  --      global, local, CRS.
+  -- Only body_access_off reaches a gate, and only the body gates: engine_off,
+  -- detection_only and engine_on set in step 3 change nothing for any gate.
 
   -- check if method is allowed
   engine:method_allowed(plugin_conf)
@@ -1084,24 +1170,6 @@ function plugin:access(plugin_conf)
 
   -- check if content-type charset is allowed
   engine:check_request_content_type_charset(plugin_conf)
-
-  -- block body-bearing requests whose content-type Karna cannot parse into
-  -- ARGS (no content-type / text/plain / octet-stream / …) — closes the
-  -- uninspectable-body bypass class. Gated by request_content_type_enforce.
-  engine:check_request_content_type_enforce(plugin_conf)
-
-  -- pre-validate request body parser (multipart hardening flags reject
-  -- malformed payloads upstream of rule evaluation; without this gate
-  -- the rejection produces an empty values table and slips through).
-  engine:check_request_body_parser(plugin_conf)
-
-  -- DoS guard: cap arguments (query + urlencoded + multipart parts + JSON
-  -- keys) at limit_arg_num. The body is parsed+cached above, so counting
-  -- is cheap; over the limit we skip the ~160-rule scan (the real cost).
-  -- In blocking mode this already returned 403; the flag only matters in
-  -- detection mode, where we still skip the scan so a pathological request
-  -- can't pin the worker.
-  local ka_arg_limit_exceeded = engine:check_request_arg_count(plugin_conf)
 
   -- (rule_variables initialised at the top of this function)
 
@@ -1138,10 +1206,10 @@ function plugin:access(plugin_conf)
   --   _has_removed_tags              = bool                   → gate for the per-rule tag walk (perf)
   --   _has_tag_targets               = bool                   → gate for the per-rule tag-target walk (perf)
   --
-  -- The always-on validation gates (method / path / headers / content-type /
-  -- body-parser / arg-count) run BEFORE this store exists, so no rule control —
-  -- engine_off, detection_only or body_access_off — can switch them off. To
-  -- loosen those, use the schema knobs.
+  -- The header-level gates above ran before this store existed. The body gates
+  -- below run after the pre-body controls pass and honour exactly one entry of
+  -- it, body_access_off; every other control is invisible to every gate. To
+  -- loosen a gate, use the schema knobs.
   kong.ctx.plugin.rule_controls = {
     ids = {},
     ids_targets = {},
@@ -1170,18 +1238,66 @@ function plugin:access(plugin_conf)
   local dfiles = ka_rules:get("ka_dfiles")
 
   -- get service local request rules from the per-plugin_conf cache.
-  -- The cache carries both the full list (for cross-phase consumption
-  -- via kong.ctx.plugin.local_rules) and the access-phase subset.
-  -- See get_local_request_rules for the cache key + parse contract.
+  -- The cache carries the full list (for cross-phase consumption via
+  -- kong.ctx.plugin.local_rules), the access-phase subset and the pre-body
+  -- controls subset. See get_local_request_rules for the cache key + parse
+  -- contract.
   local local_request_rules_cache = get_local_request_rules(plugin_conf)
   kong.ctx.plugin.local_rules = local_request_rules_cache.all
   local local_rules_request = local_request_rules_cache.access
 
+  -- CRS exclusion plugins + inline custom_secrules, parsed and split once per
+  -- (plugin instance, configuration). See get_plugin_dynamic_rules.
+  local plugin_dyn_rules = get_plugin_dynamic_rules(plugin_conf)
+
+  -- Global rules (disk and/or Redis pack, see ka_global_rules.lua). The pack
+  -- reference is pinned in kong.ctx.plugin so later phases (header_filter,
+  -- mcp_event) see the same snapshot even if the poll timer swaps the pack
+  -- mid-request.
+  local global_rules_pack = ka_global_rules.get()
+  kong.ctx.plugin.global_rules = global_rules_pack
+
+  -- PRE-BODY controls pass (ModSecurity phase 1). Control-only access rules
+  -- whose conditions never read the request body, from every channel, in the
+  -- same channel order the post-body passes use: custom_secrules / CRS plugins,
+  -- then the global pack, then rules_request. Multi-match: every matching rule
+  -- contributes its ctl:*. A rule listed here is not evaluated again later.
+  apply_pass_rule_controls(plugin_conf, plugin_dyn_rules.controls_prebody.access, "access")
+  if global_rules_pack and global_rules_pack.controls_prebody
+     and #global_rules_pack.controls_prebody.access > 0 then
+    apply_pass_rule_controls(plugin_conf, global_rules_pack.controls_prebody.access, "access")
+  end
+  if plugin_conf.local_rules_enabled and #local_request_rules_cache.access_prebody > 0 then
+    apply_pass_rule_controls(plugin_conf, local_request_rules_cache.access_prebody, "access")
+  end
+
+  -- block body-bearing requests whose content-type Karna cannot parse into
+  -- ARGS (no content-type / text/plain / octet-stream / …) — closes the
+  -- uninspectable-body bypass class. Gated by request_content_type_enforce,
+  -- exempt under body_access_off (a body the operator switched off is not
+  -- "uninspectable", it is uninspected by decision).
+  engine:check_request_content_type_enforce(plugin_conf)
+
+  -- pre-validate request body parser (multipart hardening flags reject
+  -- malformed payloads upstream of rule evaluation; without this gate
+  -- the rejection produces an empty values table and slips through).
+  -- Under body_access_off the getter resolves empty without parsing.
+  engine:check_request_body_parser(plugin_conf)
+
+  -- DoS guard: cap arguments (query + urlencoded + multipart parts + JSON
+  -- keys) at limit_arg_num. The body is parsed+cached above, so counting
+  -- is cheap; over the limit we skip the ~160-rule scan (the real cost).
+  -- In blocking mode this already returned 403; the flag only matters in
+  -- detection mode, where we still skip the scan so a pathological request
+  -- can't pin the worker. Under body_access_off only the query is counted.
+  local ka_arg_limit_exceeded = engine:check_request_arg_count(plugin_conf)
+
   -- Over the argument-count limit (detection mode): the body parsed clean
   -- but carries more args than limit_arg_num. Skip all rule evaluation —
   -- scanning a pathological request is the DoS. Setup above (local_rules,
-  -- tx_variables) already ran so later phases stay consistent; the
-  -- violation is recorded in ka_matched_rules for the audit log.
+  -- tx_variables, global pack pin) already ran so later phases stay
+  -- consistent; the violation is recorded in ka_matched_rules for the audit
+  -- log.
   if ka_arg_limit_exceeded then
     return
   end
@@ -1203,7 +1319,9 @@ function plugin:access(plugin_conf)
   -- exclusions, in this same slot. That puts them AHEAD of global, local and CRS
   -- rules: a rule an operator wrote by hand for this specific service wins over
   -- the shipped packs, and its ctl:* siblings have already been applied.
-  local plugin_dyn_rules = get_plugin_dynamic_rules(plugin_conf)
+  --
+  -- The pre-body controls of this channel already ran, before the body gates;
+  -- `controls.access` is the remainder (controls that read ARGS or the body).
   apply_pass_rule_controls(plugin_conf, plugin_dyn_rules.controls.access, "access")
   if #plugin_dyn_rules.detection.access > 0 then
     evaluate_rules(plugin_conf, plugin_dyn_rules.detection.access, "access")
@@ -1220,20 +1338,17 @@ function plugin:access(plugin_conf)
   -- Global rules (disk and/or Redis pack, see ka_global_rules.lua).
   -- Evaluated on EVERY service — no per-service opt-out — AFTER the rule
   -- controls above (so ctl:* exclusions and rule_action_overrides can tame a
-  -- global rule per service) and BEFORE local + CRS rules. The pack
-  -- reference is pinned in kong.ctx.plugin so later phases (header_filter,
-  -- mcp_event) see the same snapshot even if the poll timer swaps the pack
-  -- mid-request.
+  -- global rule per service) and BEFORE local + CRS rules. The pack was
+  -- fetched and pinned in kong.ctx.plugin above, before the pre-body pass.
   --
-  -- The pack arrives pre-split: `controls` (exclusion rules — only
-  -- rule_control, no action) runs first on the multi-match path so every
+  -- The pack arrives pre-split: `controls_prebody` already ran before the
+  -- body gates; `controls` (the remaining exclusion rules — only
+  -- rule_control, no action) runs first here on the multi-match path so every
   -- matching exclusion contributes its ctl:* side effects, then `detection`
   -- runs on the standard first-terminal-wins path. That split is what makes
   -- rule order inside a pack irrelevant: a blocking rule matching early can
   -- no longer swallow an exclusion declared after it. Within each list the
   -- order is disk before Redis.
-  local global_rules_pack = ka_global_rules.get()
-  kong.ctx.plugin.global_rules = global_rules_pack
   if global_rules_pack then
     if #global_rules_pack.controls.access > 0 then
       apply_pass_rule_controls(plugin_conf, global_rules_pack.controls.access, "access")
@@ -1243,7 +1358,8 @@ function plugin:access(plugin_conf)
     end
   end
 
-  -- loop local rules
+  -- loop local rules (rules_request minus the pre-body controls, which ran
+  -- before the body gates)
   if plugin_conf.local_rules_enabled then
     evaluate_rules(plugin_conf, local_rules_request, "access")
   end

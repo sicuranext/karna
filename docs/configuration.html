@@ -155,7 +155,7 @@
 
     <section id="gates">
       <h2>Validation gates &amp; limits</h2>
-      <p>Request-shape limits. Four of these run as <strong>always-on gates</strong> before the rule loops and fire regardless of <code>engine_blocking_mode</code> and the CRS toggles: allowed methods, path character limits, denied headers, and content-type/charset. Treat them as hard limits — to loosen, raise the value or extend the allow-list.</p>
+      <p>Request-shape limits. Four of these run as <strong>always-on gates</strong> before the rule loops and fire regardless of <code>engine_blocking_mode</code> and the CRS toggles: allowed methods, path character limits, denied headers, and content-type/charset. Treat them as hard limits — to loosen, raise the value or extend the allow-list. The three <strong>body gates</strong> (<code>request_content_type_enforce</code>, the body parser, <code>limit_arg_num</code>) are hard limits too, with one exception: a control-only rule keyed on the path or a header that applies <code>body_access_off</code> (<code>ctl:requestBodyAccess=Off</code>) runs before them and takes the body out of all three, so the body of that request is never parsed or counted. See <a class="link" href="rules.html#rule-controls">rule controls</a>.</p>
       <table class="doc-table">
         <thead><tr><th>Option</th><th class="mono">Type · default</th><th>Description</th></tr></thead>
         <tbody>

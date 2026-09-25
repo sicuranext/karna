@@ -7,6 +7,50 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **`ctl:requestBodyAccess=Off` keyed on the path now reaches the body gates,
+  and the body is never parsed.** Control-only access rules whose conditions
+  never read the request body (path, headers, cookies, query string —
+  ModSecurity phase 1) are now evaluated in a *pre-body controls pass*, before
+  the three body gates (`request_content_type_enforce`, the body parser,
+  `limit_arg_num`). A `body_access_off` applied there takes the body out of all
+  three: nothing is read, parsed or counted, nothing is blocked, and the rule
+  loops that follow see no body as before. This is what an endpoint that
+  legitimately receives a 20 000-field form needs: one rule keyed on its path,
+  no `limit_arg_num` change for the rest of the service. The four header-level
+  gates (method, path, denied headers, content-type charset) are untouched, and
+  `engine_off` / `detection_only` / `engine_on` set in the pass still change
+  nothing for any gate. Same split on every channel: `custom_secrules` and CRS
+  exclusion plugins, the global pack, `rules_request`. A control that reads
+  ARGS or the body, or that carries an action next to its control, keeps its
+  slot after the gates.
+  - Why: on such an endpoint, raising `limit_arg_num` to let the forms through
+    made every request parse the body (~3 MB) and run the RE2 pre-pass over
+    40 000 values (~26 MB) *before* the operator's switch-off rule could run.
+    Under load the worker's Lua heap oscillated at four times its baseline and
+    its RSS ratcheted up to the high-water mark without coming back, until the
+    pods were killed for memory. With the pass in front of the gates the same
+    request allocates ~0.1 MB and answers in 10-20 ms instead of 0.5-2 s.
+  - `ka-stress-test/argmem_load.py` reproduces it: many-argument POSTs at a
+    fixed rate, with the worker's Lua heap and RSS sampled through the new
+    env-gated `X-Karna-Profile: mem` / `gc` probe (`KARNA_PROFILE` set,
+    one worker).
+  - Ordering note for `rules_request`: a control-only rule that qualifies now
+    runs before the other local rules regardless of its position in the array.
+    Only a configuration where a local blocking rule was expected to fire
+    *before* a path-keyed control on the same path observes a difference.
+
+### Fixed
+
+- **SecLang `pass,ctl:*` rules were never filed as controls.** The parser gave
+  every rule an action of `{setvar = {}}`, so a rule with no disruptive action
+  and no `setvar:` still had a non-empty action and went to the detection list
+  instead of the controls pass, on `custom_secrules`, CRS exclusion plugins and
+  the global pack alike. Its `ctl:*` still applied on match, but only after the
+  RE2 pre-pass had already run over the whole request. `setvar` is now emitted
+  only when declared.
+
 ## [1.6.0] - 2026-09-24
 
 ### Added

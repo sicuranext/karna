@@ -324,11 +324,14 @@ end
 -- ctl:requestBodyAccess=Off, set by a rule control earlier in this request.
 -- Read by the three body getters and by the two rule loops.
 --
--- The getters fold this into their CACHE KEY rather than clearing the cache: the
--- always-on `check_request_body_parser` gate parses the body before any rule
--- control exists, so by the time the flag flips the "raw"/"b64" entries are
--- already warm. A distinct key means a flag set halfway through a request is
--- still honoured, with no invalidation logic to get wrong.
+-- The getters fold this into their CACHE KEY rather than clearing the cache: a
+-- body-reading rule (or the always-on `check_request_body_parser` gate, when the
+-- control comes from a post-body rule) can have parsed the body before the flag
+-- flips, so the "raw"/"b64" entries may already be warm. A distinct key means a
+-- flag set halfway through a request is still honoured, with no invalidation
+-- logic to get wrong. When the control comes from the pre-body pass
+-- (handler.lua:access) the flag is set before any getter runs, and the body is
+-- never parsed at all.
 local function body_access_off()
     local rc = kong.ctx and kong.ctx.plugin and kong.ctx.plugin.rule_controls
     return (rc and rc.body_access_off) == true
@@ -4263,6 +4266,12 @@ end
 -- late, header_filter-phase check_arg_len applies — so the cap is
 -- configurable on the fly and there is no new schema knob.
 --
+-- Under ctl:requestBodyAccess=Off from the pre-body controls pass
+-- (handler.lua:access) the body getter resolves empty without parsing, so
+-- only the query string is counted here and the body is never parsed for
+-- that request. That is the ModSecurity phase-1 semantics: a body the
+-- operator switched off is neither inspected nor counted.
+--
 -- Counting: one `.name:` key is emitted per argument (file or non-file
 -- part, query param, urlencoded field, JSON key). The per-part header
 -- sub-namespace (`request.body.multipart.part.header.name:`) is excluded
@@ -6704,6 +6713,14 @@ _M.check_request_content_type_enforce = function(self, plugin_conf)
     -- Content-Length OR Transfer-Encoding, so a chunked body with no
     -- Content-Length is still caught.
     if not request_has_body() then
+        return
+    end
+
+    -- ctl:requestBodyAccess=Off from a pre-body rule control: the operator has
+    -- decided this body is not inspected, so "uninspectable" is not a reason
+    -- to block it. Same exemption the body-parser and argument-count gates get
+    -- through the body getters (see the pre-body pass in handler.lua:access).
+    if body_access_off() then
         return
     end
 

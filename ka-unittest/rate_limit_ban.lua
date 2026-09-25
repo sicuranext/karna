@@ -17,7 +17,12 @@ end
 package.preload['kong.plugins.karna.ka_engine'] = function() return engine end
 package.preload['kong.plugins.karna.ka_utils'] = function() return utils end
 package.preload['kong.plugins.karna.ka_compile'] = function()
-    return {compile_rules = function() end}
+    -- No rule here is a control, so nothing is pre-body (see prebody_controls.lua).
+    return {
+        compile_rules = function() end,
+        is_control_only = function() return false end,
+        is_prebody_control = function() return false end,
+    }
 end
 package.preload['kong.plugins.karna.ka_global_rules'] = function()
     return {get = function() end}
