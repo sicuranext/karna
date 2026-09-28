@@ -117,6 +117,8 @@ jobs:
         run: lua ka-unittest/response_status_variable.lua
       - name: rate_limit counter state reaches the audit log (v2 fields, v1 data slot)
         run: lua ka-unittest/rate_limit_audit_fields.lua
+      - name: header_filter local rules on a sibling-cache hit (context created, single evaluation)
+        run: lua ka-unittest/header_filter_cache_hit.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

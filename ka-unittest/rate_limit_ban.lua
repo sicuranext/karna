@@ -73,14 +73,15 @@ engine.loop_rules = function(_, _, rules)
 end
 
 local counts, bans, last_counter_key, last_ban_key = {}, {}, nil, nil
-utils.redis_first_active_ban = function(_, keys)
+engine.get_redis_conf = function() return {} end
+utils.redis_first_active_ban = function(_, _, keys)
     for i, key in ipairs(keys) do if bans[key] then return i, bans[key] end end
 end
-utils.redis_incr_key = function(_, key)
+utils.redis_incr_key = function(_, _, key)
     counts[key] = (counts[key] or 0) + 1
     return counts[key]
 end
-utils.redis_incr_key_with_ban = function(_, key, _, ban_key, limit, seconds, excess)
+utils.redis_incr_key_with_ban = function(_, _, key, _, ban_key, limit, seconds, excess)
     last_counter_key, last_ban_key = key, ban_key
     if bans[ban_key] then return 0, false, bans[ban_key], true end
     counts[key] = (counts[key] or 0) + 1
@@ -168,10 +169,14 @@ local function command(op, key, a, b, c, d)
     elseif op == 'DEL' then store[key] = nil; return value and 1 or 0
     else error('unexpected command ' .. op) end
 end
+-- The counter and the ban live in the configured database, like every other
+-- key a rule touches: the stub pins the SELECT and the pool name per database.
+local selected, pool_name
 local red = {
     close = function() end, set_keepalive = function() return true end,
-    set_timeouts = function() end, connect = function() return true end,
-    select = function(_, db) assert(db == 0); return true end,
+    set_timeouts = function() end,
+    connect = function(_, _, _, opts) pool_name = opts and opts.pool; return true end,
+    select = function(_, db) assert(db == 2); selected = true; return true end,
 }
 function red:eval(script, nkeys, ...)
     if fail then return nil, 'synthetic Redis error' end
@@ -187,8 +192,9 @@ function red:eval(script, nkeys, ...)
 end
 package.preload['resty.redis'] = function() return {new = function() return red end} end
 local real_utils = dofile('kong/plugins/karna/modules/ka_utils.lua')
+local rconf = real_utils:redis_conf({redis_host = 'redis', redis_port = 6379, redis_database = 2})
 local function incr(counter, ban)
-    return real_utils:redis_incr_key_with_ban(counter, 21600, ban, 50, 1200, 10)
+    return real_utils:redis_incr_key_with_ban(rconf, counter, 21600, ban, 50, 1200, 10)
 end
 for i = 1, 50 do
     local count, created, ttl, active = incr('counter-a', 'ban-a')
@@ -206,8 +212,10 @@ now = 90
 count, created, ttl, active = incr('counter-a', 'ban-a')
 assert(count == 0 and not created and ttl == 1110 and active)
 assert(store['ban-a'].deadline == deadline)
-local index, remaining = real_utils:redis_first_active_ban({'ban-b', 'ban-a'})
+selected, pool_name = nil, nil
+local index, remaining = real_utils:redis_first_active_ban(rconf, {'ban-b', 'ban-a'})
 assert(index == 2 and remaining == 1110)
+assert(selected and pool_name == 'redis:6379:2')
 now = 1200
 count, created, ttl, active = incr('counter-a', 'ban-a')
 assert(count == 1 and not created and ttl == 0 and not active)

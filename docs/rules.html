@@ -218,6 +218,7 @@ npx ajv-cli validate --spec=draft2020 \
           <tr><td class="name"><code>mcp_event</code></td><td>Per reassembled SSE event (Karna-native)</td><td>A single Model Context Protocol event. Rules can drop / replace / terminate / inject events. Non-MCP requests skip this phase.</td></tr>
         </tbody>
       </table>
+      <div class="note"><span class="lbl">Cached responses</span>When a plugin earlier in the chain serves the response from its cache and flags it with <code>kong.ctx.shared.response_from_cache</code>, Kong skips Karna&rsquo;s <code>access</code> phase but still runs <code>header_filter</code>. Local <code>header_filter</code> rules are evaluated there anyway, cached response or not, on a request context built for the purpose: request headers, cookies, <code>tls.*</code> and <code>%{remote_addr}</code> resolve; the body namespaces resolve empty (the body is never read outside <code>access</code>); Redis actions run through a timer, so a cached response gains no synchronous round trip. Everything else &mdash; the Karna headers, CRS exclusion plugins, <code>custom_secrules</code>, the global pack, the 5xx mask &mdash; still skips a cached response. This is the phase to use for a request-side counter that must see every asset a client fetches. <em>Requires a release after 1.6.0</em>; before that, a cache hit skipped every rule.</div>
     </section>
 
     <section id="variables">
