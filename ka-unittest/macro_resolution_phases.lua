@@ -153,7 +153,7 @@ print("\n-- access phase: the real redis_incr_key action --")
 -- Kong global.
 local real_incr = utils.redis_incr_key
 local incr_calls = {}
-utils.redis_incr_key = function(_, key, expire)
+utils.redis_incr_key = function(_, _, key, expire)
     incr_calls[#incr_calls + 1] = { key = key, expire = expire }
     return #incr_calls
 end

@@ -42,7 +42,13 @@
 --   5. a counter already stuck with `TTL -1` repairs itself on the next hit;
 --   6. no expiry configured still means no expiry (unchanged);
 --   7. the deferred (timer) variant behaves identically;
---   8. a Redis error returns nil — callers fail open — and never throws.
+--   8. a Redis error returns nil — callers fail open — and never throws;
+--   9. the connection is opened with the plugin's Redis settings — the
+--      configured timeouts, the database, the keepalive pool — like every
+--      other Redis operation a rule performs. The counter used to open a
+--      fresh connection per increment with fixed 1 s timeouts, no keepalive
+--      and no SELECT, so a `redis_incr_key` wrote to database 0 while the
+--      `redis.<key>` read of the same rule set looked in `redis_database`.
 --
 -- Fixtures are synthetic.
 --
@@ -91,9 +97,12 @@ _G.kong = {
 -- ---------------------------------------------------------------------------
 -- store[key] = { value = <number>, expires = <seconds> or nil }
 local store, SCRIPT_CALLS, WIRE, LAST_SCRIPT, EVAL_ERROR
+-- what the connection was opened with (section 9)
+local LAST_TIMEOUTS, LAST_POOL, LAST_SELECT, LAST_KEEPALIVE, CONNECT_ERROR
 
 local function reset_store()
     store, SCRIPT_CALLS, WIRE, LAST_SCRIPT, EVAL_ERROR = {}, {}, {}, nil, nil
+    LAST_TIMEOUTS, LAST_POOL, LAST_SELECT, LAST_KEEPALIVE, CONNECT_ERROR = nil, nil, nil, nil, nil
 end
 
 -- The command set the counter needs, with Redis' own semantics:
@@ -146,9 +155,20 @@ package.preload["resty.redis"] = function()
     local mod = {}
     function mod:new()
         local red = {}
-        function red:set_timeouts(...) WIRE[#WIRE + 1] = "set_timeouts" end
-        function red:connect(h, p)     WIRE[#WIRE + 1] = "connect"; return true end
+        function red:set_timeouts(c, s, r)
+            WIRE[#WIRE + 1] = "set_timeouts"; LAST_TIMEOUTS = { c, s, r }
+        end
+        function red:connect(h, p, opts)
+            WIRE[#WIRE + 1] = "connect"; LAST_POOL = opts and opts.pool
+            if CONNECT_ERROR then return nil, CONNECT_ERROR end
+            return true
+        end
         function red:auth(pw)          WIRE[#WIRE + 1] = "auth"; return true end
+        function red:select(db)        WIRE[#WIRE + 1] = "select"; LAST_SELECT = db; return true end
+        function red:set_keepalive(i, p)
+            WIRE[#WIRE + 1] = "set_keepalive"; LAST_KEEPALIVE = { i, p }; return 1
+        end
+        function red:close()           WIRE[#WIRE + 1] = "close"; return 1 end
         -- resty.redis hands back ngx.null for a missing key, not nil
         function red:get(k)
             WIRE[#WIRE + 1] = "get"
@@ -176,7 +196,8 @@ end
 local utils_override = os.getenv("KARNA_UNIT_UTILS")
 if utils_override == "" then utils_override = nil end
 local utils = dofile(utils_override or "./kong/plugins/karna/modules/ka_utils.lua")
-utils.redis_host, utils.redis_port, utils.redis_password = "127.0.0.1", 6379, nil
+-- the connection settings a plugin config hands to every Redis helper
+local CONF = utils:redis_conf({ redis_host = "127.0.0.1", redis_port = 6379 })
 
 local function ttl_of(key)
     local slot = store[key]
@@ -199,7 +220,7 @@ end
 print("\n-- the shape of the conversation with Redis --")
 
 reset_store()
-utils:redis_incr_key("karna:rl:900001:203.0.113.7", 60)
+utils:redis_incr_key(CONF, "karna:rl:900001:203.0.113.7", 60)
 
 eq(count(WIRE, "eval"), 1, "one eval per increment")
 eq(count(WIRE, "get"), 0, "no GET on the wire — the racy read is gone")
@@ -218,18 +239,18 @@ print("\n-- the counter and its window --")
 reset_store()
 local KEY = "karna:rl:900001:203.0.113.7"
 
-eq(utils:redis_incr_key(KEY, 60), 1, "first increment returns 1")
+eq(utils:redis_incr_key(CONF, KEY, 60), 1, "first increment returns 1")
 eq(ttl_of(KEY), 60, "the window is armed on the call that created the key")
 
 SCRIPT_CALLS = {}
-eq(utils:redis_incr_key(KEY, 60), 2, "second increment returns 2")
+eq(utils:redis_incr_key(CONF, KEY, 60), 2, "second increment returns 2")
 eq(ttl_of(KEY), 60, "a key created by a PREVIOUS call still carries a TTL")
 eq(table.concat(SCRIPT_CALLS, ","), "INCR,TTL",
    "the second increment checks the TTL and leaves the armed window alone")
 
 -- the window is not pushed forward on every hit: fixed window, not sliding
 store[KEY].expires = 12
-utils:redis_incr_key(KEY, 60)
+utils:redis_incr_key(CONF, KEY, 60)
 eq(ttl_of(KEY), 12, "an armed window is NOT reset by a later increment")
 
 -- ---------------------------------------------------------------------------
@@ -238,11 +259,11 @@ eq(ttl_of(KEY), 12, "an armed window is NOT reset by a later increment")
 print("\n-- the window elapses between two calls (the race) --")
 
 reset_store()
-utils:redis_incr_key(KEY, 10)
+utils:redis_incr_key(CONF, KEY, 10)
 eq(value_of(KEY), 1, "counter open at 1")
 store[KEY] = nil                       -- the 10s window elapses; Redis drops the key
 SCRIPT_CALLS = {}
-eq(utils:redis_incr_key(KEY, 10), 1, "the next hit opens a fresh window at 1")
+eq(utils:redis_incr_key(CONF, KEY, 10), 1, "the next hit opens a fresh window at 1")
 eq(ttl_of(KEY), 10, "the recreated key gets a TTL")
 eq(table.concat(SCRIPT_CALLS, ","), "INCR,EXPIRE",
    "the increment that recreated the key armed the window")
@@ -264,7 +285,7 @@ eq(ttl_of(KEY), -1,
    "the OLD algorithm leaves the recreated key with TTL -1 (the bug, reproduced)")
 reset_store()
 store[KEY] = { value = 5, expires = 10 }
-utils:redis_incr_key(KEY, 10)
+utils:redis_incr_key(CONF, KEY, 10)
 ok(ttl_of(KEY) > 0, "the shipped helper cannot reach that state — there is no `between`")
 
 -- ---------------------------------------------------------------------------
@@ -276,7 +297,7 @@ reset_store()
 store[KEY] = { value = 6900, expires = nil }       -- what the deployment found
 eq(ttl_of(KEY), -1, "precondition: the stuck counter has no expiry")
 SCRIPT_CALLS = {}
-eq(utils:redis_incr_key(KEY, 10), 6901, "the stuck counter still increments")
+eq(utils:redis_incr_key(CONF, KEY, 10), 6901, "the stuck counter still increments")
 eq(ttl_of(KEY), 10, "and the window is re-armed, so it drains on its own")
 eq(table.concat(SCRIPT_CALLS, ","), "INCR,TTL,EXPIRE",
    "the repair is the TTL<0 branch, not the created-it branch")
@@ -288,13 +309,13 @@ print("\n-- no window configured --")
 
 reset_store()
 SCRIPT_CALLS = {}
-eq(utils:redis_incr_key(KEY, nil), 1, "increments with no expire argument")
+eq(utils:redis_incr_key(CONF, KEY, nil), 1, "increments with no expire argument")
 eq(ttl_of(KEY), -1, "and arms no expiry, as before")
 eq(count(SCRIPT_CALLS, "EXPIRE"), 0, "no EXPIRE is issued when no window is configured")
 
 reset_store()
 SCRIPT_CALLS = {}
-utils:redis_incr_key(KEY, 0)
+utils:redis_incr_key(CONF, KEY, 0)
 eq(ttl_of(KEY), -1, "an expire of 0 is treated as no window")
 eq(count(SCRIPT_CALLS, "EXPIRE"), 0, "and issues no EXPIRE")
 
@@ -303,7 +324,7 @@ eq(count(SCRIPT_CALLS, "EXPIRE"), 0, "and issues no EXPIRE")
 -- ---------------------------------------------------------------------------
 print("\n-- redis_incr_key_async (the header_filter / body_filter path) --")
 
-local conf = { redis_host = "127.0.0.1", redis_port = 6379, redis_password = nil }
+local conf = utils:redis_conf({ redis_host = "127.0.0.1", redis_port = 6379, redis_password = nil })
 
 reset_store()
 utils.redis_incr_key_async(false, utils, conf, KEY, 60)
@@ -331,7 +352,7 @@ print("\n-- Redis errors --")
 reset_store()
 ERRLOG = {}
 EVAL_ERROR = "ERR connection reset by peer"
-local called_ok, res = pcall(utils.redis_incr_key, utils, KEY, 60)
+local called_ok, res = pcall(utils.redis_incr_key, utils, CONF, KEY, 60)
 ok(called_ok, "a failing eval does not throw", res)
 eq(res, nil, "and returns nil, so rate_limit fails open")
 ok(#ERRLOG > 0, "the failure is logged")
@@ -341,6 +362,61 @@ ERRLOG = {}
 EVAL_ERROR = "ERR connection reset by peer"
 local async_ok, async_err = pcall(utils.redis_incr_key_async, false, utils, conf, KEY, 60)
 ok(async_ok, "a failing eval in the timer does not throw", async_err)
+
+-- ---------------------------------------------------------------------------
+-- 9. the connection is opened with the plugin's Redis settings
+-- ---------------------------------------------------------------------------
+print("\n-- connection settings (timeouts, database, keepalive) --")
+
+local FULL = utils:redis_conf({
+    redis_host = "10.0.0.5", redis_port = 6380, redis_password = "s3cret",
+    redis_database = 3, redis_timeout_ms = 20,
+    redis_keepalive_pool_size = 8, redis_keepalive_idle_ms = 15000,
+})
+
+reset_store()
+eq(utils:redis_incr_key(FULL, KEY, 60), 1, "increments with the full settings")
+ok(LAST_TIMEOUTS and LAST_TIMEOUTS[1] == 20 and LAST_TIMEOUTS[2] == 20 and LAST_TIMEOUTS[3] == 20,
+   "connect / send / read timeouts are redis_timeout_ms, not a fixed second",
+   LAST_TIMEOUTS and table.concat(LAST_TIMEOUTS, ","))
+eq(count(WIRE, "auth"), 1, "AUTH when a password is configured")
+eq(LAST_SELECT, 3, "SELECT redis_database, so the counter lands where redis.<key> reads")
+ok(LAST_KEEPALIVE and LAST_KEEPALIVE[1] == 15000 and LAST_KEEPALIVE[2] == 8,
+   "the connection goes back to the pool with the configured idle / size",
+   LAST_KEEPALIVE and table.concat(LAST_KEEPALIVE, ","))
+eq(count(WIRE, "close"), 0, "a healthy connection is pooled, not closed")
+eq(LAST_POOL, "10.0.0.5:6380:3", "the pool is named per host:port:database")
+
+reset_store()
+utils:redis_incr_key(CONF, KEY, 60)
+eq(count(WIRE, "select"), 0, "database 0: no SELECT")
+eq(count(WIRE, "auth"), 0, "no password: no AUTH")
+ok(LAST_TIMEOUTS and LAST_TIMEOUTS[1] == 50, "default timeout is 50 ms", LAST_TIMEOUTS and LAST_TIMEOUTS[1])
+ok(LAST_KEEPALIVE and LAST_KEEPALIVE[1] == 60000 and LAST_KEEPALIVE[2] == 64,
+   "default keepalive is 60 s / 64 connections")
+eq(LAST_POOL, "127.0.0.1:6379:0", "database 0 has its own pool")
+
+reset_store()
+utils.redis_incr_key_async(false, utils, FULL, KEY, 60)
+eq(LAST_SELECT, 3, "the timer variant SELECTs the same database")
+ok(LAST_TIMEOUTS and LAST_TIMEOUTS[1] == 20, "and uses the same timeouts")
+ok(LAST_KEEPALIVE ~= nil, "and pools its connection too")
+
+reset_store()
+ERRLOG = {}
+CONNECT_ERROR = "connection refused"
+local c_ok, c_res = pcall(utils.redis_incr_key, utils, FULL, KEY, 60)
+ok(c_ok, "a connect failure does not throw", c_res)
+eq(c_res, nil, "and returns nil (fail open)")
+ok(#ERRLOG > 0 and ERRLOG[1]:find("connect", 1, true), "the failing stage is logged", ERRLOG[1])
+eq(count(WIRE, "eval"), 0, "nothing is sent on a failed connect")
+eq(count(WIRE, "set_keepalive"), 0, "and nothing is pooled")
+
+reset_store()
+EVAL_ERROR = "ERR connection reset by peer"
+utils:redis_incr_key(FULL, KEY, 60)
+eq(count(WIRE, "close"), 1, "a command error closes the connection")
+eq(count(WIRE, "set_keepalive"), 0, "and does not pool it")
 
 print(string.format("\n%d test(s) failed", fails))
 os.exit(fails == 0 and 0 or 1)

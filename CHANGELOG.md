@@ -9,6 +9,30 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Local `header_filter` rules now run on a sibling-cache hit.** When a
+  plugin earlier in the chain serves the response from its cache — it exits in
+  `access` and sets `kong.ctx.shared.response_from_cache` — Kong skips Karna's
+  `access` but still runs its `header_filter`, which returned at once on the
+  flag. A local rule with `phase: "header_filter"` therefore never saw a cached
+  response, and a request-side counter kept by such a rule (per client, keyed
+  on a request header such as `Sec-Fetch-Dest`) missed every cached asset and
+  never reached its threshold, while the audit log listed those requests as
+  served. The phase now evaluates the local response-phase rules on a cache
+  hit, on a per-request context it creates itself since `access` never ran
+  (scratch tables, the rule-control store, the TLS block, the inspection
+  table), and returns as before for everything else: the Karna headers, MCP,
+  `custom_secrules` and CRS exclusion plugins, the global pack and the 5xx mask
+  still skip a cached response, which was inspected when it was stored. Zero
+  cost for a service without local response rules. Non-terminal actions
+  already defer their Redis writes to a timer outside `access`, so a cached
+  response gains no synchronous round trip. Only a deployment that already had
+  local `header_filter` rules on a service behind such a cache sees a change:
+  those rules now fire on cache hits too, terminal ones included.
+  - The request body is never read outside `rewrite` / `access`
+    (`kong.request.get_raw_body` is not callable elsewhere): a response-phase
+    rule on a request whose `access` was skipped resolves the body namespaces
+    empty instead of failing inside `header_filter`.
+
 - **`ctl:requestBodyAccess=Off` keyed on the path now reaches the body gates,
   and the body is never parsed.** Control-only access rules whose conditions
   never read the request body (path, headers, cookies, query string —
@@ -43,6 +67,25 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`redis_incr_key` and the rate-limit counters ignored the plugin's Redis
+  settings.** The counter helper opened a fresh connection per increment with
+  fixed 1 s connect / send / read timeouts, never returned it to the keepalive
+  pool, never issued `SELECT redis_database`, and stashed host / port /
+  password in module state shared by every plugin instance on the worker. A
+  rule that wrote a counter with `redis_incr_key` on `redis_database: 3` and
+  read it back with `redis.<key>` was looking in two different databases, and
+  a counter action on a busy path (an asset counter, ~100 matches a second)
+  cost a TCP handshake plus `AUTH` per increment. Every counter and ban helper
+  — `redis_incr_key`, the `rate_limit` counter, the temporary-ban increment
+  and lookup — now uses the same connection settings as the inspection reads
+  and the write actions: `redis_timeout_ms`, `redis_database`,
+  `redis_keepalive_pool_size` / `redis_keepalive_idle_ms`. The keepalive pool
+  is named per host, port and database, so a pooled connection is never
+  reused across databases by two plugin instances on one worker.
+  - Upgrade note for a deployment with `redis_database` other than 0:
+    rate-limit counters and temporary bans now live in that database, like
+    every other key Karna touches. Counters and bans present in database 0 at
+    upgrade time are not carried over; they expire on their own.
 - **SecLang `pass,ctl:*` rules were never filed as controls.** The parser gave
   every rule an action of `{setvar = {}}`, so a rule with no disruptive action
   and no `setvar:` still had a non-empty action and went to the detection list

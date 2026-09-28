@@ -754,10 +754,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       local resolved_key = resolve_request_macros(key_macro)
       local scope = rate_limit_scope(plugin_conf)
       local full_key = "karna:rl:" .. scope .. ":" .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
-
-      utils.redis_host = plugin_conf.redis_host
-      utils.redis_port = plugin_conf.redis_port
-      utils.redis_password = plugin_conf.redis_password
+      local rconf = engine:get_redis_conf(plugin_conf)
 
       local count
       local seconds, excess = valid_ban_policy(rl)
@@ -771,7 +768,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
         local ban_key = service_ban_key(plugin_conf, service_id, rule_matched_obj)
         local created, ttl, active
         count, created, ttl, active = utils:redis_incr_key_with_ban(
-            full_key, window, ban_key, limit, seconds, excess)
+            rconf, full_key, window, ban_key, limit, seconds, excess)
         match_entry.rate_limit_ban_key = ban_key
         match_entry.rate_limit_ban_created = created
         match_entry.rate_limit_ban_ttl = ttl
@@ -793,7 +790,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
         if rl.ban and ban_blocking then
           kong.log.err("Karna: invalid rate_limit.ban configuration for rule ", tostring(rule_matched_obj.id))
         end
-        count = utils:redis_incr_key(full_key, window)
+        count = utils:redis_incr_key(rconf, full_key, window)
       end
       match_entry.rate_limit_count = count
       match_entry.rate_limit_limit = limit
@@ -976,10 +973,7 @@ local function enforce_service_bans(plugin_conf)
   if plugin_conf.local_rules_enabled then collect(get_local_request_rules(plugin_conf).access) end
   if plugin_conf.coreruleset_enabled then collect(ka_rules:get("ka_rules")) end
   if #keys == 0 then return end
-  utils.redis_host = plugin_conf.redis_host
-  utils.redis_port = plugin_conf.redis_port
-  utils.redis_password = plugin_conf.redis_password
-  local index, ttl = utils:redis_first_active_ban(keys)
+  local index, ttl = utils:redis_first_active_ban(engine:get_redis_conf(plugin_conf), keys)
   if not index then return end
   local active_rule = audit_rules[index]
   table.insert(kong.ctx.plugin.ka_matched_rules, {
@@ -1000,6 +994,38 @@ local function enforce_service_bans(plugin_conf)
   return response_exit(tonumber(response.status_code) or 403, body, headers)
 end
 
+-- Per-request scratch tables the engine writes into (the value and variable
+-- caches, the matched rules, the `var:` rule variables) plus the one flag a
+-- rule can flip. `access` creates them before anything can leave the phase;
+-- `header_filter` creates them when access never ran for the request (a
+-- sibling plugin served the response from its cache) and local response-phase
+-- rules are about to be evaluated. See the comment at the top of plugin:access.
+local function init_request_scratch()
+  kong.ctx.plugin.ka_value_cache = {}
+  kong.ctx.plugin.ka_variable_cache = {}
+  kong.ctx.plugin.ka_matched_rules = {}
+  kong.ctx.plugin.rule_variables = {}
+  -- Variables that can be overwritten by rules
+  kong.ctx.plugin.enable_check_arg_len = true
+end
+
+-- The empty per-request rule-control store. Its fields are documented where
+-- access creates it, after the always-on validation gates.
+local function new_rule_controls()
+  return {
+    ids = {},
+    ids_targets = {},
+    tags = {},
+    removed_tags = {},
+    remove_target_from_all_rules = {},
+    engine_off = false,
+    detection_only = false,
+    engine_on = false,
+    body_access_off = false,
+    audit_request_body = false,
+  }
+end
+
 function plugin:access(plugin_conf)
   -- Per-request scratch context, initialised BEFORE anything can leave this
   -- function. `access` has four early exits — the cache short-circuit below, the
@@ -1015,12 +1041,7 @@ function plugin:access(plugin_conf)
   -- Deliberately NOT hoisted: `kong.ctx.plugin.rule_controls`, which is created
   -- after the always-on validation gates precisely so no `ctl:*` directive can
   -- switch them off. See the comment at its assignment below.
-  kong.ctx.plugin.ka_value_cache = {}
-  kong.ctx.plugin.ka_variable_cache = {}
-  kong.ctx.plugin.ka_matched_rules = {}
-  kong.ctx.plugin.rule_variables = {}
-  -- Variables that can be overwritten by rules
-  kong.ctx.plugin.enable_check_arg_len = true
+  init_request_scratch()
 
   -- Request header NAMES in wire order and casing, for the audit log
   -- (`request.header_names` + `header_names_capture`, both formats). Captured
@@ -1210,18 +1231,7 @@ function plugin:access(plugin_conf)
   -- below run after the pre-body controls pass and honour exactly one entry of
   -- it, body_access_off; every other control is invisible to every gate. To
   -- loosen a gate, use the schema knobs.
-  kong.ctx.plugin.rule_controls = {
-    ids = {},
-    ids_targets = {},
-    tags = {},
-    removed_tags = {},
-    remove_target_from_all_rules = {},
-    engine_off = false,
-    detection_only = false,
-    engine_on = false,
-    body_access_off = false,
-    audit_request_body = false,
-  }
+  kong.ctx.plugin.rule_controls = new_rule_controls()
 
   -- get the CRS rule pack (loaded from disk at init_worker)
   local rules = ka_rules:get("ka_rules")
@@ -1373,6 +1383,35 @@ end
 
 function plugin:header_filter(plugin_conf)
   if kong.ctx.shared.response_from_cache then
+    -- A sibling plugin served this response from its cache and exited in
+    -- access before Karna ran, so the request was never inspected and
+    -- kong.ctx.plugin is empty. Local rules of this phase are evaluated
+    -- anyway: a response-phase rule sees every response Karna's header_filter
+    -- runs on, cached or not. Otherwise a request-side counter kept by such a
+    -- rule (per client, keyed on a request header) misses every cached asset
+    -- and never reaches its threshold. Everything else stays skipped: the
+    -- Karna headers, MCP, custom_secrules / CRS exclusion plugins, the global
+    -- pack (its snapshot is pinned in access) and the 5xx mask all inspect the
+    -- upstream response, and a cached one was inspected when it was stored.
+    -- Zero cost for a service with no local response rule. Non-terminal
+    -- actions defer their Redis writes to a timer in this phase, so nothing
+    -- here adds a synchronous round trip to a cached response. The scratch
+    -- tables and the rule-control store are created only when access did not
+    -- (a cache below Karna in the chain leaves an access that already ran).
+    if plugin_conf.local_rules_enabled then
+      local header_filter_rules = get_local_request_rules(plugin_conf).header_filter
+      if #header_filter_rules > 0 then
+        if not kong.ctx.plugin.ka_matched_rules then
+          init_request_scratch()
+        end
+        if not kong.ctx.plugin.rule_controls then
+          kong.ctx.plugin.rule_controls = new_rule_controls()
+        end
+        pcall(ka_tls.populate)
+        engine:get_inspection_table(plugin_conf)
+        evaluate_rules(plugin_conf, header_filter_rules, "header_filter")
+      end
+    end
     return
   end
 

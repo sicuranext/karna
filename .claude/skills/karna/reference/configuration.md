@@ -73,10 +73,10 @@ To loosen a gate, raise its value / extend its allow-list. They cannot be turned
 
 ## Redis (optional; backs rate_limit, redis_incr_key, redis.<key> inspection, redis_sismember/redis_hexists ops, redis_set/sadd/del write actions)
 - `redis_host` (str, `localhost`), `redis_port` (num, `6379`), `redis_password` (str, optional).
-- `redis_database` (num, `0`) — DB index; `SELECT` issued only when > 0.
+- `redis_database` (num, `0`) — DB index; `SELECT` issued only when > 0. Every key Karna touches lives here: inspection reads, write actions, the `redis_incr_key` / `rate_limit` counters, temporary bans.
 - `redis_inspect_enabled` (bool, `false`) — master switch for `redis.<key>` reads + `redis_sismember`/`redis_hexists`. Off by default (no rule opens a Redis connection unless you ask). Does NOT gate the write actions or rate_limit/redis_incr_key.
-- `redis_timeout_ms` (num, `50`) — connect/send/read timeout for inspection reads (kept short so a slow Redis can't stall the request path).
-- `redis_keepalive_pool_size` (num, `64`), `redis_keepalive_idle_ms` (num, `60000`) — inspection client connection pool.
+- `redis_timeout_ms` (num, `50`) — connect/send/read timeout for EVERY Redis operation a rule performs (inspection reads, write actions, `redis_incr_key` / `rate_limit` counters, bans); kept short so a slow Redis can't stall the request path.
+- `redis_keepalive_pool_size` (num, `64`), `redis_keepalive_idle_ms` (num, `60000`) — keepalive pool, per host:port:database (a pooled connection is never reused across databases).
 - `redis_on_error` (str, `skip`; one_of skip/fail_open/fail_closed) — inspection read when Redis is down: `skip`/`fail_open` = no match (traffic flows), `fail_closed` = match (deny on unreadable shared state). Default `skip` keeps a Redis outage from blocking traffic.
 - Read-only boundary: the inspection client enforces a deny-by-default command whitelist (GET/EXISTS/SISMEMBER/HEXISTS/TTL/… only). A `redis.<key>` variable can never run a write/admin/scripting/scan command; mutations go only through the write actions.
 - The global rules pack loader is a SEPARATE, worker-global Redis connection configured by env vars (`KARNA_REDIS_URL`, `KARNA_GLOBAL_RULES_HMAC_KEY`, `KARNA_GLOBAL_RULES_POLL` — see `deploy.md`), not by these per-service options. Redis is not required for global rules at all: `KARNA_GLOBAL_RULES_PATH` loads the same pack from a JSON file (or a directory of them) on disk. See `rules.md` → Global rules.

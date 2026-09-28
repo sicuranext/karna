@@ -303,6 +303,16 @@ local function get_raw_request_body()
     if ctx and ctx.ka_raw_body ~= nil then
         return ctx.ka_raw_body or nil
     end
+    -- kong.request.get_raw_body() is callable in rewrite and access only. A
+    -- request whose body was never read there (a sibling plugin's early exit
+    -- skipped the access phase, and a response-phase rule now asks for it) has
+    -- no readable body: record the attempt instead of throwing from a phase
+    -- that cannot turn an error into a response.
+    local phase = get_phase()
+    if phase ~= "access" and phase ~= "rewrite" then
+        if ctx then ctx.ka_raw_body = false end
+        return nil
+    end
     local body = request_get_raw_body()
     if not body then
         local body_file = ngx_req_get_body_file()
@@ -358,6 +368,23 @@ local response_exit                     = kong.response.exit
 
 local body_parser                       = require "kong.plugins.karna.ka_body_parser"
 local utils                             = require "kong.plugins.karna.ka_utils"
+
+-- Per-request Redis connection settings (ka_utils.redis_conf), built once from
+-- the plugin config and pinned in kong.ctx.plugin so the inspection reads, the
+-- write actions and the counters of one request share one table instead of
+-- each rebuilding it. A fresh table when there is no request context.
+local function get_redis_conf(plugin_conf)
+    local ctx = kong.ctx and kong.ctx.plugin
+    local rconf = ctx and ctx.karna_redis_conf
+    if not rconf then
+        rconf = utils:redis_conf(plugin_conf)
+        if ctx then ctx.karna_redis_conf = rconf end
+    end
+    return rconf
+end
+_M.get_redis_conf = function(self, plugin_conf)
+    return get_redis_conf(plugin_conf)
+end
 local seclang                           = require "kong.plugins.karna.ka_seclang"
 local libinjection                      = require "kong.plugins.karna.libinjection"
 
@@ -3427,20 +3454,7 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- (the resolved value is command-dependent — see the write guard).
                 if string_find(variable, "^redis%.") then
                     if plugin_conf.redis_inspect_enabled then
-                        local rconf = kong.ctx.plugin.karna_redis_conf
-                        if not rconf then
-                            rconf = {
-                                host                = plugin_conf.redis_host,
-                                port                = plugin_conf.redis_port,
-                                password            = plugin_conf.redis_password,
-                                database            = plugin_conf.redis_database,
-                                timeout_ms          = plugin_conf.redis_timeout_ms,
-                                keepalive_pool_size = plugin_conf.redis_keepalive_pool_size,
-                                keepalive_idle_ms   = plugin_conf.redis_keepalive_idle_ms,
-                                on_error            = plugin_conf.redis_on_error,
-                            }
-                            kong.ctx.plugin.karna_redis_conf = rconf
-                        end
+                        local rconf = get_redis_conf(plugin_conf)
                         local key = self:__resolve_redis_key_macros(variable:sub(7))  -- after "redis."
                         local rop = condition.op or ""
                         if rop:sub(1, 1) == "!" then rop = rop:sub(2) end
@@ -6253,19 +6267,19 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
     -- redis_incr_key: bump a named counter (key supports %{var}
     -- macros). In access we increment synchronously; in later phases
     -- (header_filter / body_filter / log) the cosocket API is not
-    -- available inline, so defer to a 0-delay timer.
+    -- available inline, so defer to a 0-delay timer. Same connection
+    -- settings (timeouts, database, keepalive pool) as the reads and
+    -- the write actions below.
     if action.redis_incr_key
        and action.redis_incr_key.key
        and action.redis_incr_key.expire then
         local key_resolved = self:replace_variable_in_string(action.redis_incr_key.key)
+        local rconf = get_redis_conf(plugin_conf)
         if phase == "access" then
-            utils.redis_host = plugin_conf and plugin_conf.redis_host
-            utils.redis_port = plugin_conf and plugin_conf.redis_port
-            utils.redis_password = plugin_conf and plugin_conf.redis_password
-            utils:redis_incr_key(key_resolved, action.redis_incr_key.expire)
+            utils:redis_incr_key(rconf, key_resolved, action.redis_incr_key.expire)
         else
             local ok, err = ngx.timer.at(0, utils.redis_incr_key_async, utils,
-                                         plugin_conf, key_resolved, action.redis_incr_key.expire)
+                                         rconf, key_resolved, action.redis_incr_key.expire)
             if not ok then
                 kong.log.err("Karna: error scheduling redis_incr_key timer: ", err)
             end
@@ -6281,13 +6295,7 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
     if (action.redis_set and action.redis_set.key)
        or (action.redis_sadd and action.redis_sadd.key and action.redis_sadd.member ~= nil)
        or (action.redis_del and action.redis_del.key) then
-        local rconf = {
-            host = plugin_conf.redis_host, port = plugin_conf.redis_port,
-            password = plugin_conf.redis_password, database = plugin_conf.redis_database,
-            timeout_ms = plugin_conf.redis_timeout_ms,
-            keepalive_pool_size = plugin_conf.redis_keepalive_pool_size,
-            keepalive_idle_ms = plugin_conf.redis_keepalive_idle_ms,
-        }
+        local rconf = get_redis_conf(plugin_conf)
         local function do_write(op, key, arg, ttl)
             if phase == "access" then
                 utils:redis_write(rconf, op, key, arg, ttl)

@@ -25,9 +25,6 @@ local internal_dev_host     = "karna-test"
 local _M = {}
 
 _M.auditlog_path = ""
-_M.redis_host = ""
-_M.redis_port = 6379
-_M.redis_password = nil
 
 --_M.debug = function (i) return end
 --_M.inspect = kong.log.inspect
@@ -1348,30 +1345,79 @@ _M.write_auditlog = function(premature, json_log, auditlog_path, timestamp, work
     end
 end
 
-_M.redis_connect = function(self)
-    local redis_client = require "resty.redis"
-    local red = redis_client:new()
+-- Per-service Redis connection settings, read once from the plugin config.
+-- One shape for every Redis operation Karna performs on behalf of a rule: the
+-- `redis.<key>` inspection reads, the write actions, the counters behind
+-- `redis_incr_key` and `rate_limit`, and the temporary bans. The engine pins
+-- one per request in kong.ctx.plugin (ka_engine.get_redis_conf).
+_M.redis_conf = function(self, plugin_conf)
+    plugin_conf = plugin_conf or {}
+    return {
+        host                = plugin_conf.redis_host,
+        port                = plugin_conf.redis_port,
+        password            = plugin_conf.redis_password,
+        database            = plugin_conf.redis_database,
+        timeout_ms          = plugin_conf.redis_timeout_ms,
+        keepalive_pool_size = plugin_conf.redis_keepalive_pool_size,
+        keepalive_idle_ms   = plugin_conf.redis_keepalive_idle_ms,
+        on_error            = plugin_conf.redis_on_error,
+    }
+end
 
-    if not red then
-        kong.log.err("Karna: failed to connect to Redis")
+-- A kept-alive socket stays SELECTed into the database it last used, and a
+-- SELECT is only issued for a database other than 0. Naming the pool per
+-- host:port:database keeps a pooled connection from ever being reused across
+-- databases by two plugin instances on the same worker.
+local function redis_pool_name(conf)
+    return tostring(conf and conf.host or "localhost") .. ":"
+        .. tostring(conf and conf.port or 6379) .. ":"
+        .. tostring(tonumber(conf and conf.database) or 0)
+end
+
+-- Open a connection with the settings in `conf` (see `redis_conf`): the
+-- configured timeouts on connect / send / read, AUTH when a password is set,
+-- SELECT when the database is not 0. Returns the client, or nil plus the stage
+-- that failed and its error. On success the caller hands the client back to
+-- the pool with `redis_release`; on a command error it closes it, so a possibly
+-- broken socket is never pooled.
+local function redis_open(conf)
+    local red = require("resty.redis"):new()
+    if not red then return nil, "init", "client init failed" end
+
+    local t = tonumber(conf and conf.timeout_ms) or 50
+    red:set_timeouts(t, t, t)
+
+    local ok, err = red:connect(conf and conf.host or "localhost",
+                                conf and conf.port or 6379,
+                                { pool = redis_pool_name(conf) })
+    if not ok then return nil, "connect", err end
+
+    if conf and conf.password and conf.password ~= "" then
+        ok, err = red:auth(conf.password)
+        if not ok then
+            pcall(function() red:close() end)
+            return nil, "auth", err
+        end
     end
 
-    red:set_timeouts(1000, 1000, 1000)
-
-    local ok, err = red:connect(self.redis_host, self.redis_port)
-    if not ok then
-        kong.log.err("Karna: failed to connect to Redis " .. err)
-    end
-
-    if self.redis_password then
-        local auth_ok, err = red:auth(self.redis_password)
-        if not auth_ok then
-            kong.log.err("Karna: failed to authenticate to Redis: ", err)
-            return
+    local db = tonumber(conf and conf.database) or 0
+    if db > 0 then
+        ok, err = red:select(db)
+        if not ok then
+            pcall(function() red:close() end)
+            return nil, "select", err
         end
     end
 
     return red
+end
+
+local function redis_release(conf, red)
+    local pool = tonumber(conf and conf.keepalive_pool_size) or 64
+    local idle = tonumber(conf and conf.keepalive_idle_ms) or 60000
+    if not red:set_keepalive(idle, pool) then
+        pcall(function() red:close() end)
+    end
 end
 
 -- Fixed-window counter: increment, and arm the window TTL when this call is
@@ -1442,35 +1488,22 @@ return {v, created, ttl, created}
 ]]
 
 -- Called only with validated positive integer arguments and blocking enabled.
--- Uses the same database/connection path as the existing rate-limit counter.
-_M.redis_incr_key_with_ban = function(self, key, window, ban_key, limit, seconds, excess)
-    -- Snapshot settings before any cosocket yield; other plugin instances
-    -- share this module. Explicit SELECT 0 matches the legacy counter store
-    -- even when a pooled connection was previously used by Redis inspection.
-    local host, port, password = self.redis_host, self.redis_port, self.redis_password
-    local red = require("resty.redis"):new()
-    if not red then return nil end
-    red:set_timeouts(1000, 1000, 1000)
-    local function failed(stage, err)
-        pcall(function() red:close() end)
+-- Same connection settings as every other Redis operation a rule performs
+-- (`conf`, see `redis_conf`), the counter store included.
+_M.redis_incr_key_with_ban = function(self, conf, key, window, ban_key, limit, seconds, excess)
+    local red, stage, err = redis_open(conf)
+    if not red then
         kong.log.err("Karna: rate-limit/ban ", stage, " failed: ", tostring(err))
-    end
-    local ok, err = red:connect(host, port)
-    if not ok then failed("connect", err); return nil end
-    if password and password ~= "" then
-        ok, err = red:auth(password)
-        if not ok then failed("auth", err); return nil end
-    end
-    ok, err = red:select(0)
-    if not ok then failed("select", err); return nil end
-    local res, err = red:eval(INCR_EXPIRE_BAN_LUA, 2, key, ban_key,
-                             tostring(window), tostring(limit), tostring(seconds), tostring(excess))
-    if type(res) ~= "table" then
-        pcall(function() red:close() end)
-        kong.log.err("Karna: rate-limit/ban increment failed: ", tostring(err))
         return nil
     end
-    if not red:set_keepalive(60000, 64) then pcall(function() red:close() end) end
+    local res, eerr = red:eval(INCR_EXPIRE_BAN_LUA, 2, key, ban_key,
+                              tostring(window), tostring(limit), tostring(seconds), tostring(excess))
+    if type(res) ~= "table" then
+        pcall(function() red:close() end)
+        kong.log.err("Karna: rate-limit/ban increment failed: ", tostring(eerr))
+        return nil
+    end
+    redis_release(conf, red)
     return tonumber(res[1]), res[2] == 1, tonumber(res[3]), res[4] == 1
 end
 
@@ -1482,58 +1515,55 @@ end
 return {0, 0}
 ]]
 
-_M.redis_first_active_ban = function(self, keys)
+_M.redis_first_active_ban = function(self, conf, keys)
     if not keys or #keys == 0 then return nil end
-    local host, port, password = self.redis_host, self.redis_port, self.redis_password
-    local red = require("resty.redis"):new()
-    if not red then return nil end
-    red:set_timeouts(1000, 1000, 1000)
-    local ok, err = red:connect(host, port)
-    if ok and password and password ~= "" then ok, err = red:auth(password) end
-    if ok then ok, err = red:select(0) end
-    if not ok then
-        pcall(function() red:close() end)
-        kong.log.err("Karna: ban lookup failed: ", tostring(err))
+    local red, stage, err = redis_open(conf)
+    if not red then
+        kong.log.err("Karna: ban lookup ", stage, " failed: ", tostring(err))
         return nil
     end
-    local res
-    res, err = red:eval(FIRST_ACTIVE_BAN_LUA, #keys, (table.unpack or unpack)(keys))
+    local res, eerr = red:eval(FIRST_ACTIVE_BAN_LUA, #keys, (table.unpack or unpack)(keys))
     if type(res) ~= "table" then
         pcall(function() red:close() end)
-        kong.log.err("Karna: ban lookup failed: ", tostring(err))
+        kong.log.err("Karna: ban lookup failed: ", tostring(eerr))
         return nil
     end
-    if not red:set_keepalive(60000, 64) then pcall(function() red:close() end) end
+    redis_release(conf, red)
     local index = tonumber(res[1])
     if index and index > 0 then return index, tonumber(res[2]) end
 end
 
 -- Increment a Redis counter and keep its fixed window armed (see
--- `incr_with_expire` above). Returns the new counter value on success, or nil
--- if Redis is unreachable / the increment failed; callers (notably the
--- `rate_limit` rule action) treat nil as "counter unavailable, fail open".
-_M.redis_incr_key = function(self, key, expire_time)
-    local redis_client = self:redis_connect()
-    if not redis_client then return nil end
-
-    return incr_with_expire(redis_client, key, expire_time)
+-- `incr_with_expire` above), on a connection opened with `conf` (see
+-- `redis_conf`): the configured timeouts, database and keepalive pool, the
+-- same as every other Redis operation a rule performs. Returns the new counter
+-- value on success, or nil if Redis is unreachable / the increment failed;
+-- callers (notably the `rate_limit` rule action) treat nil as "counter
+-- unavailable, fail open".
+_M.redis_incr_key = function(self, conf, key, expire_time)
+    local red, stage, err = redis_open(conf)
+    if not red then
+        kong.log.err("Karna: redis ", stage, " (counter): ", tostring(err))
+        return nil
+    end
+    local count = incr_with_expire(red, key, expire_time)
+    if count == nil then
+        -- network / protocol error: do not pool a possibly-broken connection
+        pcall(function() red:close() end)
+        return nil
+    end
+    redis_release(conf, red)
+    return count
 end
 
 -- Deferred variant (0-delay timer), used when the `redis_incr_key` action
--- fires outside `access` and the cosocket API is not available inline.
--- Same counter semantics as the synchronous path — one script, no GET.
-_M.redis_incr_key_async = function(premature, self, plugin_conf, key, expire_time)
-    if not premature then
-        self.redis_host = plugin_conf.redis_host
-        self.redis_port = plugin_conf.redis_port
-        self.redis_password = plugin_conf.redis_password
-
-        local redis_client = self:redis_connect()
-
-        if redis_client then
-            incr_with_expire(redis_client, key, expire_time)
-        end
-    end
+-- fires outside `access` and the cosocket API is not available inline. Same
+-- counter semantics and the same connection settings as the synchronous path;
+-- cosocket pools are per worker, so the timer reuses the request-phase
+-- connections too.
+_M.redis_incr_key_async = function(premature, self, conf, key, expire_time)
+    if premature then return end
+    self:redis_incr_key(conf, key, expire_time)
 end
 
 -- Read-only Redis command whitelist for rule inspection. Deny by default:
@@ -1569,7 +1599,8 @@ _M.redis_inspect_read = function(self, conf, cmd, ...)
     red:set_timeouts(t, t, t)
 
     local ok, err = red:connect(conf and conf.host or "localhost",
-                                conf and conf.port or 6379)
+                                conf and conf.port or 6379,
+                                { pool = redis_pool_name(conf) })
     if not ok then return nil, "redis connect: " .. tostring(err) end
 
     if conf and conf.password and conf.password ~= "" then
@@ -1633,7 +1664,8 @@ _M.redis_write = function(self, conf, op, key, arg, ttl)
     local t = tonumber(conf and conf.timeout_ms) or 50
     red:set_timeouts(t, t, t)
 
-    local ok, err = red:connect(conf and conf.host or "localhost", conf and conf.port or 6379)
+    local ok, err = red:connect(conf and conf.host or "localhost", conf and conf.port or 6379,
+                                { pool = redis_pool_name(conf) })
     if not ok then kong.log.err("Karna: redis connect (write): ", tostring(err)); return nil end
 
     if conf and conf.password and conf.password ~= "" then

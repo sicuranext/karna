@@ -46,7 +46,7 @@ the engine when an operator / transform / action / control is added or renamed.
 Set a rule's `phase` to one of these. Custom rules run in `access` and
 `header_filter` only.
 - `access` — before upstream. Inspects method/path/query/headers/cookies/parsed body. Can block, sanitize, modify. Most rules.
-- `header_filter` — after upstream responds. Sees the request plus `response.status` / `response.header.*` / `response.set_cookie.*` (resolvable in conditions, not just in `%{}` macros). Use this to react to the response — e.g. count a failed login by its status.
+- `header_filter` — after upstream responds. Sees the request plus `response.status` / `response.header.*` / `response.set_cookie.*` (resolvable in conditions, not just in `%{}` macros). Use this to react to the response — e.g. count a failed login by its status. Also evaluated on a **sibling-cache hit** (a plugin earlier in the chain served the response from its cache and set `kong.ctx.shared.response_from_cache`; Kong skips Karna's `access` there, so it is the only phase where local rules see such a request): request headers / cookies / `tls.*` / `%{remote_addr}` resolve, the body namespaces resolve empty, Redis actions go through a timer. A request-side counter that must see every asset a client fetches (cached or not) belongs in this phase. Releases up to 1.6.0 skipped every rule on a cache hit.
 - `body_filter` — response body. Custom rules in this phase are **not currently evaluated** (the handler dispatch is commented out); the phase is used internally for MCP SSE reassembly.
 - `mcp_event` — per reassembled SSE event (Karna-native, MCP only); can drop/replace/terminate/inject events.
 
