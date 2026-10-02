@@ -440,11 +440,12 @@
         "key": {
           "type": "string",
           "default": "%{remote_addr}",
-          "description": "Counter key, macro-resolved. Only request-context macros resolve here: %{remote_addr}, %{request.method|host|scheme|path}, %{connection.id}. Anything else stays literal.",
+          "description": "Counter key, macro-resolved. These resolve here: %{remote_addr}, %{request.method|host|scheme|path}, %{connection.id}, %{request_cookies.<name>} and %{sha256:<macro>}. Anything else stays literal. When a cookie macro has no value (cookie missing or empty) the request is not counted at all, so cookieless clients never share one bucket.",
           "examples": [
             "%{remote_addr}",
             "%{remote_addr}:%{request.path}",
-            "%{connection.id}"
+            "%{connection.id}",
+            "sid:%{sha256:request_cookies.sid}"
           ]
         },
         "limit": {
@@ -493,7 +494,7 @@
           "properties": {
             "key": {
               "$ref": "#/$defs/macroString",
-              "description": "Identity to ban, usually %{remote_addr}."
+              "description": "Identity to ban, usually %{remote_addr}. Same macros as rate_limit.key; a cookie macro with no value bans nothing."
             },
             "after_exceedances": {
               "type": "integer",
@@ -732,10 +733,12 @@
     "macroString": {
       "type": "string",
       "minLength": 1,
-      "description": "A string with optional `%{...}` macros. Redis keys and members resolve only the request-context macros (%{remote_addr}, %{request.method|host|scheme|path}, %{connection.id}); every other macro stays literal. A key written by one rule and read back by another MUST use only those, or the writer resolves it and the reader does not.",
+      "description": "A string with optional `%{...}` macros. Redis keys and members resolve the request-context macros (%{remote_addr}, %{request.method|host|scheme|path}, %{request_headers.<name>}, %{connection.id}) and the per-client key macros: %{request_cookies.<name>} (one request cookie, name case-insensitive, first duplicate wins), %{response_set_cookie.<name>} (one response Set-Cookie value, header_filter on) and %{sha256:<macro>} (lowercase hex SHA-256 of any of these). Raw cookie values are cut to 256 bytes. A per-client macro with no value skips the write and makes the redis.<key> read match neither isSet nor its negation. Every other macro stays literal. A key written by one rule and read back by another MUST use only these, or the writer resolves it and the reader does not. See https://karna.sicuranext.com/docs/rules.html#a-client-macros",
       "examples": [
         "ban:%{remote_addr}",
-        "karna:fail:%{remote_addr}:%{request.path}"
+        "karna:fail:%{remote_addr}:%{request.path}",
+        "cart:%{sha256:request_cookies.sid}:t",
+        "sid:%{response_set_cookie.sid}"
       ]
     },
     "ruleControl": {
