@@ -7,6 +7,41 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-02
+
+### Added
+
+- **Cookie values, Set-Cookie values and hashing in Redis key macros.** A rule
+  pair that marks a client in one request and checks it in a later one needs a
+  key built from one cookie, and there was no way to write it:
+  `%{request_headers.cookie}` is the whole `Cookie` line, and
+  `%{request.cookie.value:<n>}` resolved only from `header_filter` on and never
+  on the `redis.<key>` read side, so writer and reader ended up on different
+  keys without a word. Three new macros, resolved by the same function for
+  `redis_set` / `redis_sadd` / `redis_del`, `redis_incr_key`, the
+  `redis.<key>` read and the `rate_limit` key / `ban.key`, in every phase:
+  - `%{request_cookies.<name>}`: one request cookie, read off the `Cookie`
+    header (so it works in `access`). Name case-insensitive, first duplicate
+    wins, value raw (no `%HH` decoding) and trimmed.
+  - `%{response_set_cookie.<name>}`: the value of the response `Set-Cookie`
+    for that name, attributes dropped; with several headers for one name the
+    last one wins, as in the browser. Has a value from `header_filter` on.
+  - `%{sha256:<macro>}`: lowercase hex SHA-256 of any key macro, the older
+    ones included (`%{sha256:request_headers.authorization}`), so a session id
+    is not stored in Redis in clear. `resty.sha256`, bundled with OpenResty.
+  - Raw cookie values are cut to 256 bytes before they go into a key; a hashed
+    value is hashed whole.
+  - **A missing or empty cookie never builds a key.** The write is skipped
+    (debug log), a `rate_limit` keyed on it counts and bans nothing, and the
+    `redis.<key>` read is *unknown*: neither `isSet` nor its negated form
+    matches and Redis is not queried, whatever `redis_on_error` says.
+    Otherwise every cookieless client would share one key. The same applies to
+    a deletion `Set-Cookie` (`sid=; Max-Age=0`), to `response_set_cookie` in
+    `access`, and to `sha256:` of a missing value.
+  - `%{request_headers.<name>}` is unchanged: a missing header still resolves
+    to an empty string, since existing rules may rely on it. The hashed form
+    follows the new absent rule.
+
 ### Changed
 
 - **Local `header_filter` rules now run on a sibling-cache hit.** When a
@@ -1620,7 +1655,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/sicuranext/karna/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/sicuranext/karna/compare/v1.5.10...v1.6.0
 [1.5.8]: https://github.com/sicuranext/karna/compare/v1.5.7...v1.5.8
 [1.5.7]: https://github.com/sicuranext/karna/compare/v1.5.6...v1.5.7

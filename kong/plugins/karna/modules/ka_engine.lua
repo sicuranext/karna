@@ -2683,18 +2683,186 @@ _M.__resolve_reqctx_only = function(self, s)
     return s
 end
 
--- Resolve macros allowed inside a Redis key: request context (above) plus
--- request headers, so a key can be derived from the client IP or a header
--- like x-consumer-id (e.g. `ban:%{remote_addr}`, `acl:%{request_headers.x-consumer-id}`).
+-- Resolve macros allowed inside a Redis key: request context (above), request
+-- headers, and the per-client macros below, so a key can be derived from the
+-- client IP, a header like x-consumer-id or one cookie (e.g.
+-- `ban:%{remote_addr}`, `acl:%{request_headers.x-consumer-id}`,
+-- `cart:%{sha256:request_cookies.sid}:t`).
+--
+-- Returns the resolved string and an `absent` flag. The flag is set when one
+-- of the macros resolved by `__resolve_client_key_macros` had no value for
+-- this request; callers then skip the write, or treat the read as unknown.
+--
+-- `%{request_headers.X}` keeps its historical behaviour: a missing header
+-- resolves to "" and does not set the flag. Existing rules may rely on it, so
+-- it is left as it is. The hashed form `%{sha256:request_headers.X}` is new and
+-- follows the absent rule.
 _M.__resolve_redis_key_macros = function(self, s)
-    if not s or s == "" then return s end
+    if not s or s == "" then return s, false end
     s = self:__resolve_reqctx_only(s)
     if string_find(s, "%%{request_headers%.", 1, false) then
         s = string_gsub(s, "%%{request_headers%.([%w%-_]+)}", function(h)
             return kong.request.get_header(h) or ""
         end)
     end
-    return s
+    return self:__resolve_client_key_macros(s)
+end
+
+-- Longest raw cookie / Set-Cookie value used in a key. A value is truncated to
+-- this many bytes before it goes into a key; a hashed value is hashed whole,
+-- since its digest is fixed-length anyway.
+local KEY_MACRO_VALUE_CAP = 256
+_M.KEY_MACRO_VALUE_CAP = KEY_MACRO_VALUE_CAP
+
+local function trim(s)
+    return (string_gsub(s, "^%s*(.-)%s*$", "%1"))
+end
+
+-- Value of the first request cookie called `name` (already lowercased), read
+-- straight off the `Cookie` header so it resolves in `access`. Same split and
+-- the same `name=value` pattern as `__get_values_request_cookie`, names
+-- compared lowercase, value raw (no %HH decoding). An empty value counts as
+-- absent: it would put every client into one shared key.
+_M.__request_cookie_value = function(name)
+    local raw = request_get_header("Cookie")
+    if type(raw) == "table" then raw = table.concat(raw, "; ") end
+    if type(raw) ~= "string" or raw == "" then return nil end
+    for seg in string_gmatch(raw .. ";", "(.-);") do
+        local k, v = string_match(seg, "([^=]+)=?(.*)")
+        if k and string_lower(trim(k)) == name then
+            v = trim(v)
+            if v == "" then return nil end
+            return v
+        end
+    end
+    return nil
+end
+
+-- Phases where the response headers exist. Elsewhere (access) a
+-- `response_set_cookie` macro is absent.
+local RESPONSE_PHASES = { header_filter = true, body_filter = true, log = true }
+
+-- Value of the response `Set-Cookie` whose cookie name is `name` (already
+-- lowercased): the text between the first `=` and the first `;`, attributes
+-- dropped. When several Set-Cookie headers carry the same name, the LAST one
+-- wins, which is the one the browser keeps. An empty value (a deletion
+-- cookie, `sid=; Max-Age=0`) counts as absent.
+_M.__response_set_cookie_value = function(name)
+    if not RESPONSE_PHASES[ngx.get_phase()] then return nil end
+    local ok, headers = pcall(kong.response.get_headers)
+    if not ok or type(headers) ~= "table" then return nil end
+    local sc
+    for k, v in pairs(headers) do
+        if type(k) == "string" and string_lower(k) == "set-cookie" then sc = v; break end
+    end
+    if sc == nil then return nil end
+    if type(sc) ~= "table" then sc = { sc } end
+    local found
+    for _, line in ipairs(sc) do
+        if type(line) == "string" then
+            local k, v = string_match(string_match(line, "^[^;]*"), "([^=]+)=?(.*)")
+            if k and string_lower(trim(k)) == name then found = trim(v) end
+        end
+    end
+    if found == nil or found == "" then return nil end
+    return found
+end
+
+-- SHA-256, lowercase hex. resty.sha256 + resty.string ship with OpenResty
+-- (FFI over OpenSSL, no extra dependency); loaded on first use so the module
+-- stays requirable from plain-Lua unit tests. Returns nil when unavailable:
+-- the caller then treats the macro as absent rather than writing the value
+-- in clear.
+local resty_sha256, resty_string
+_M._sha256_hex = function(s)
+    if resty_sha256 == nil then
+        local ok1, m1 = pcall(require, "resty.sha256")
+        local ok2, m2 = pcall(require, "resty.string")
+        if not ok1 or not ok2 then return nil end
+        resty_sha256, resty_string = m1, m2
+    end
+    local h = resty_sha256:new()
+    if not h then return nil end
+    h:update(s)
+    return resty_string.to_hex(h:final())
+end
+
+-- The value behind one key macro name, for the hash modifier: nil when the
+-- request has no value for it (or the name is not a key macro).
+_M.__key_macro_value = function(self, name)
+    local v
+    if name == "remote_addr" then
+        v = ngx.var.remote_addr
+    elseif name == "request.method" then
+        v = kong.request.get_method()
+    elseif name == "request.host" then
+        v = kong.request.get_host()
+    elseif name == "request.scheme" then
+        v = kong.request.get_scheme()
+    elseif name == "request.path" then
+        v = kong.request.get_path()
+    elseif name == "connection.id" then
+        v = kong.ctx.plugin and kong.ctx.plugin.connection_id
+    else
+        local h = string_match(name, "^request_headers%.([%w%-_]+)$")
+        if h then
+            v = kong.request.get_header(h)
+            if type(v) == "table" then v = v[1] end
+        else
+            local c = string_match(name, "^request_cookies%.(.+)$")
+            if c then
+                v = _M.__request_cookie_value(string_lower(c))
+            else
+                c = string_match(name, "^response_set_cookie%.(.+)$")
+                if c then v = _M.__response_set_cookie_value(string_lower(c)) end
+            end
+        end
+    end
+    if v == nil then return nil end
+    v = tostring(v)
+    if v == "" then return nil end
+    return v
+end
+
+-- The per-client key macros: `%{request_cookies.<name>}`,
+-- `%{response_set_cookie.<name>}` and the hash modifier `%{sha256:<macro>}`
+-- (any key macro, the older ones included). Run LAST, after the request
+-- context and header passes, in one gsub, so a resolved cookie value is never
+-- scanned for macros again. A macro with no value stays literal and sets the
+-- returned `absent` flag: a key built around it would be shared by every
+-- client that lacks the cookie, so the caller must not use it.
+_M.__resolve_client_key_macros = function(self, s)
+    if type(s) ~= "string" or not string_find(s, "%{", 1, true) then return s, false end
+    if not string_find(s, "%{request_cookies.", 1, true)
+       and not string_find(s, "%{response_set_cookie.", 1, true)
+       and not string_find(s, "%{sha256:", 1, true) then
+        return s, false
+    end
+    local absent = false
+    s = string_gsub(s, "%%{([^}]+)}", function(name)
+        local inner = string_match(name, "^sha256:(.+)$")
+        if inner then
+            local v = self:__key_macro_value(inner)
+            local hx = v and _M._sha256_hex(v)
+            if not hx then
+                absent = true
+                debug("Karna: key macro has no value for this request: %{" .. name .. "}")
+                return nil
+            end
+            return hx
+        end
+        if string_find(name, "^request_cookies%.") or string_find(name, "^response_set_cookie%.") then
+            local v = self:__key_macro_value(name)
+            if not v then
+                absent = true
+                debug("Karna: key macro has no value for this request: %{" .. name .. "}")
+                return nil
+            end
+            return string_sub(v, 1, KEY_MACRO_VALUE_CAP)
+        end
+        return nil  -- not ours: leave it for the other passes
+    end)
+    return s, absent
 end
 
 -- @redis_sismember: is the resolved `condition.value` (the member) a member
@@ -3455,10 +3623,20 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 if string_find(variable, "^redis%.") then
                     if plugin_conf.redis_inspect_enabled then
                         local rconf = get_redis_conf(plugin_conf)
-                        local key = self:__resolve_redis_key_macros(variable:sub(7))  -- after "redis."
+                        local key, key_absent = self:__resolve_redis_key_macros(variable:sub(7))  -- after "redis."
                         local rop = condition.op or ""
                         if rop:sub(1, 1) == "!" then rop = rop:sub(2) end
-                        if rop == "redis_sismember" or rop == "redis_hexists" then
+                        if key_absent then
+                            -- A per-client macro in the key (a cookie, a
+                            -- Set-Cookie value) has no value for this request.
+                            -- The write side skipped the same key, so there is
+                            -- nothing to look up, and the request is not
+                            -- "absent from the set" either: it is unknown.
+                            -- Neither `isSet` nor `!isSet` may match, whatever
+                            -- `redis_on_error` says (Redis was never asked).
+                            values = {}
+                            _ka_redis_unknown = true
+                        elseif rop == "redis_sismember" or rop == "redis_hexists" then
                             -- the operator runs the redis command; hand it the key
                             values = { [variable] = key }
                         elseif rop == "isSet" then
@@ -6273,9 +6451,12 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
     if action.redis_incr_key
        and action.redis_incr_key.key
        and action.redis_incr_key.expire then
-        local key_resolved = self:replace_variable_in_string(action.redis_incr_key.key)
+        local key_resolved, key_absent = self:replace_variable_in_string(action.redis_incr_key.key)
         local rconf = get_redis_conf(plugin_conf)
-        if phase == "access" then
+        if key_absent then
+            debug("Karna: redis_incr_key skipped (rule " .. tostring(rule.id)
+                  .. "), a key macro has no value: " .. tostring(action.redis_incr_key.key))
+        elseif phase == "access" then
             utils:redis_incr_key(rconf, key_resolved, action.redis_incr_key.expire)
         else
             local ok, err = ngx.timer.at(0, utils.redis_incr_key_async, utils,
@@ -6306,18 +6487,38 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
                 end
             end
         end
+        -- A per-client macro (cookie, Set-Cookie value) with no value for this
+        -- request skips the write: the key, or the stored value, would hold the
+        -- literal macro and be shared by every client without that cookie.
+        local function skipped(op, template)
+            debug("Karna: redis_" .. op .. " skipped (rule " .. tostring(rule.id)
+                  .. "), a key macro has no value: " .. tostring(template))
+        end
         if action.redis_set and action.redis_set.key then
-            local key = self:__resolve_redis_key_macros(tostring(action.redis_set.key))
-            local val = self:__resolve_redis_key_macros(tostring(action.redis_set.value ~= nil and action.redis_set.value or "1"))
-            do_write("set", key, val, action.redis_set.expire)
+            local key, absent_k = self:__resolve_redis_key_macros(tostring(action.redis_set.key))
+            local val, absent_v = self:__resolve_redis_key_macros(tostring(action.redis_set.value ~= nil and action.redis_set.value or "1"))
+            if absent_k or absent_v then
+                skipped("set", action.redis_set.key)
+            else
+                do_write("set", key, val, action.redis_set.expire)
+            end
         end
         if action.redis_sadd and action.redis_sadd.key and action.redis_sadd.member ~= nil then
-            local key = self:__resolve_redis_key_macros(tostring(action.redis_sadd.key))
-            local member = self:__resolve_redis_key_macros(tostring(action.redis_sadd.member))
-            do_write("sadd", key, member, action.redis_sadd.expire)
+            local key, absent_k = self:__resolve_redis_key_macros(tostring(action.redis_sadd.key))
+            local member, absent_m = self:__resolve_redis_key_macros(tostring(action.redis_sadd.member))
+            if absent_k or absent_m then
+                skipped("sadd", action.redis_sadd.key)
+            else
+                do_write("sadd", key, member, action.redis_sadd.expire)
+            end
         end
         if action.redis_del and action.redis_del.key then
-            do_write("del", self:__resolve_redis_key_macros(tostring(action.redis_del.key)), nil, nil)
+            local key, absent_k = self:__resolve_redis_key_macros(tostring(action.redis_del.key))
+            if absent_k then
+                skipped("del", action.redis_del.key)
+            else
+                do_write("del", key, nil, nil)
+            end
         end
     end
 
@@ -6331,9 +6532,12 @@ end
 
 -- Resolve the `%{var}` macros in a string. Two passes, in this order:
 --
---   1. request context — `%{remote_addr}`, `%{request.method|host|scheme|path}`
---      and `%{request_headers.X}`, read straight off the request through
---      `__resolve_redis_key_macros`. These resolve in EVERY phase.
+--   1. request context — `%{remote_addr}`, `%{request.method|host|scheme|path}`,
+--      `%{request_headers.X}`, `%{request_cookies.X}`,
+--      `%{response_set_cookie.X}` and `%{sha256:...}`, read straight off the
+--      request / response through `__resolve_redis_key_macros`. These resolve
+--      in EVERY phase (`response_set_cookie` only has a value from
+--      `header_filter` on).
 --   2. everything else — looked up in the inspection table, which only exists
 --      from `header_filter` on (`get_inspection_table` populates it).
 --
@@ -6352,11 +6556,14 @@ end
 -- inspection-table variable that is absent for this request, or resolved in a
 -- phase where the table does not exist yet, keeps its `%{...}` text rather
 -- than crashing the phase.
+--
+-- Second return value: true when a per-client key macro (cookie, Set-Cookie,
+-- hash) had no value. `redis_incr_key` skips the increment on it.
 _M.replace_variable_in_string = function(self, str)
-    if type(str) ~= "string" then return str end
+    if type(str) ~= "string" then return str, false end
 
     -- Pass 1: request context, phase-independent.
-    local new_str = self:__resolve_redis_key_macros(str)
+    local new_str, absent = self:__resolve_redis_key_macros(str)
 
     -- Pass 2: the inspection table, for whatever pass 1 left behind.
     for variable in string_gmatch(new_str, "%%{([^}]+)}") do
@@ -6376,7 +6583,7 @@ _M.replace_variable_in_string = function(self, str)
         end
     end
 
-    return new_str
+    return new_str, absent
 end
 
 _M.check_arg_len = function(self, plugin_conf)

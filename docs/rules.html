@@ -218,7 +218,7 @@ npx ajv-cli validate --spec=draft2020 \
           <tr><td class="name"><code>mcp_event</code></td><td>Per reassembled SSE event (Karna-native)</td><td>A single Model Context Protocol event. Rules can drop / replace / terminate / inject events. Non-MCP requests skip this phase.</td></tr>
         </tbody>
       </table>
-      <div class="note"><span class="lbl">Cached responses</span>When a plugin earlier in the chain serves the response from its cache and flags it with <code>kong.ctx.shared.response_from_cache</code>, Kong skips Karna&rsquo;s <code>access</code> phase but still runs <code>header_filter</code>. Local <code>header_filter</code> rules are evaluated there anyway, cached response or not, on a request context built for the purpose: request headers, cookies, <code>tls.*</code> and <code>%{remote_addr}</code> resolve; the body namespaces resolve empty (the body is never read outside <code>access</code>); Redis actions run through a timer, so a cached response gains no synchronous round trip. Everything else &mdash; the Karna headers, CRS exclusion plugins, <code>custom_secrules</code>, the global pack, the 5xx mask &mdash; still skips a cached response. This is the phase to use for a request-side counter that must see every asset a client fetches. <em>Requires a release after 1.6.0</em>; before that, a cache hit skipped every rule.</div>
+      <div class="note"><span class="lbl">Cached responses</span>When a plugin earlier in the chain serves the response from its cache and flags it with <code>kong.ctx.shared.response_from_cache</code>, Kong skips Karna&rsquo;s <code>access</code> phase but still runs <code>header_filter</code>. Local <code>header_filter</code> rules are evaluated there anyway, cached response or not, on a request context built for the purpose: request headers, cookies, <code>tls.*</code> and <code>%{remote_addr}</code> resolve; the body namespaces resolve empty (the body is never read outside <code>access</code>); Redis actions run through a timer, so a cached response gains no synchronous round trip. Everything else &mdash; the Karna headers, CRS exclusion plugins, <code>custom_secrules</code>, the global pack, the 5xx mask &mdash; still skips a cached response. This is the phase to use for a request-side counter that must see every asset a client fetches. <em>Requires 1.7.0 or later</em>; before that, a cache hit skipped every rule.</div>
     </section>
 
     <section id="variables">
@@ -464,11 +464,41 @@ npx ajv-cli validate --spec=draft2020 \
       <h3 id="a-macros">Macros in actions</h3>
       <p>Action fields that accept <code>%{...}</code> templates do not all draw on the same pool of names, and one group depends on the phase the rule runs in.</p>
       <p><strong>Request-context macros resolve in every phase</strong> &mdash; they are read straight off the request: <code>%{remote_addr}</code>, <code>%{request.method}</code>, <code>%{request.host}</code>, <code>%{request.scheme}</code>, <code>%{request.path}</code>, <code>%{request_headers.&lt;name&gt;}</code> and <code>%{connection.id}</code>.</p>
+      <p id="a-client-macros"><strong>Per-client key macros</strong> pick one cookie out of the request or the response, and can hash any key macro. They are meant for Redis keys that mark a client in one request and check it in a later one.</p>
+      <table class="doc-table">
+        <thead><tr><th class="mono">Macro</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td class="name"><code>%{request_cookies.&lt;name&gt;}</code></td><td>The value of one request cookie, read off the <code>Cookie</code> header, so it resolves in <code>access</code> too. The name is matched case-insensitively; with a duplicate cookie the first one wins. The value is used raw (no <code>%HH</code> decoding), trimmed, and cut to 256 bytes.</td></tr>
+          <tr><td class="name"><code>%{response_set_cookie.&lt;name&gt;}</code></td><td>The value of the response <code>Set-Cookie</code> for that cookie name: the text after <code>=</code> up to the first <code>;</code>, attributes dropped. With several <code>Set-Cookie</code> headers for the same name the last one wins, which is the one the browser keeps. It has a value only from <code>header_filter</code> on; in <code>access</code> it is absent. Cut to 256 bytes.</td></tr>
+          <tr><td class="name"><code>%{sha256:&lt;macro&gt;}</code></td><td>The lowercase hex SHA-256 of another key macro, for example <code>%{sha256:request_cookies.sid}</code> or <code>%{sha256:request_headers.authorization}</code>. The whole value is hashed (no 256-byte cut). Use it so a session id never sits in Redis in clear. SHA-256 comes from <code>resty.sha256</code>, which ships with OpenResty and calls OpenSSL, so it adds no dependency and costs about a microsecond per key.</td></tr>
+        </tbody>
+      </table>
+      <p><strong>An absent value never builds a key.</strong> When the cookie is missing, has an empty value (<code>sid=</code>, or a deletion <code>Set-Cookie</code>), or a hashed macro has nothing to hash, the key would be the same for every such client. So the write actions (<code>redis_set</code>, <code>redis_sadd</code>, <code>redis_del</code>, <code>redis_incr_key</code>) skip the write, a <code>rate_limit</code> keyed on it counts nothing and bans nothing, and the <code>redis.&lt;key&gt;</code> read is <em>unknown</em>: neither <code>isSet</code> nor its negated form matches, and Redis is not queried, whatever <code>redis_on_error</code> says. Skips are logged at debug level. <code>%{request_headers.&lt;name&gt;}</code> keeps its older behaviour, a missing header resolves to an empty string, for compatibility with existing rules; use <code>%{sha256:request_headers.&lt;name&gt;}</code> when a missing header must not share a key.</p>
+      <div class="code-card">
+        <div class="code-head"><span>mark a session on a good response, check it on a later request</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>[
+  {
+    <span class="prm">"id"</span>: <span class="str">"cart-mark"</span>, <span class="prm">"phase"</span>: <span class="str">"header_filter"</span>,
+    <span class="prm">"conditions"</span>: [ { <span class="prm">"variables"</span>: [<span class="str">"response.status"</span>], <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"200"</span> } ],
+    <span class="prm">"action"</span>: { <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"cart:%{sha256:request_cookies.sid}:t"</span>, <span class="prm">"expire"</span>: <span class="num">900</span> } }
+  },
+  {
+    <span class="prm">"id"</span>: <span class="str">"checkout-needs-cart"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+    <span class="prm">"conditions"</span>: [
+      { <span class="prm">"variables"</span>: [<span class="str">"request.path"</span>], <span class="prm">"op"</span>: <span class="str">"beginsWith"</span>, <span class="prm">"value"</span>: <span class="str">"/checkout"</span> },
+      { <span class="prm">"variables"</span>: [<span class="str">"redis.cart:%{sha256:request_cookies.sid}:t"</span>], <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span> }
+    ],
+    <span class="prm">"action"</span>: { <span class="prm">"fixed_response"</span>: { <span class="prm">"status_code"</span>: <span class="num">403</span> } }
+  }
+]</pre></div>
+      </div>
+      <p>A request to <code>/checkout</code> with no <code>sid</code> cookie at all does not match the second rule (unknown, not absent); add a separate condition on <code>request.cookie.value:sid</code> if such requests must be blocked too.</p>
+      <p>Two consequences to keep in mind. The client controls its cookies, so a <code>rate_limit</code> keyed only on a cookie is skipped by a client that drops the cookie, and reset by one that changes it; pair it with a limit on <code>%{remote_addr}</code> when the limit is a defence rather than a fairness rule. And <code>sha256:</code> is unsalted: it keeps a random session id out of Redis, but a low-entropy value (an IP address, a short user id) can be recovered from its hash by trying every candidate.</p>
       <p><strong>Every other rule variable</strong> (<code>%{request.header.value:host}</code>, <code>%{request.body.urlencode.value:username}</code>, <code>%{response.status}</code>, &hellip;) comes from the request&rsquo;s inspection table, which Karna builds in <code>header_filter</code>. Used by a rule in the <code>access</code> phase, such a macro stays <em>literal</em> &mdash; the value does not exist yet.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Field</th><th>Request context</th><th>Inspection table</th></tr></thead>
         <tbody>
-          <tr><td class="name"><code>rate_limit.key</code></td><td>yes</td><td>no &mdash; stays literal</td></tr>
+          <tr><td class="name"><code>rate_limit.key</code> / <code>rate_limit.ban.key</code></td><td>yes, except <code>%{request_headers.X}</code></td><td>no &mdash; stays literal</td></tr>
           <tr><td class="name"><code>redis_incr_key.key</code></td><td>yes</td><td>yes, from <code>header_filter</code> on</td></tr>
           <tr><td class="name"><code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code></td><td>yes</td><td>no &mdash; stays literal</td></tr>
           <tr><td class="name"><code>redis.&lt;key&gt;</code> variable (read side)</td><td>yes</td><td>no &mdash; stays literal</td></tr>
@@ -507,7 +537,7 @@ npx ajv-cli validate --spec=draft2020 \
           <tr><td class="name"><code>redis_hexists</code></td><td class="mono">HEXISTS</td><td>The hash has a field named <code>value</code>. Negatable.</td></tr>
         </tbody>
       </table>
-      <p>Keys accept the <a class="link" href="#a-macros">request-context macros</a>; the <code>value</code> needle accepts the same set minus <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
+      <p>Keys accept the <a class="link" href="#a-macros">request-context macros</a> and the <a class="link" href="#a-client-macros">per-client key macros</a> (one cookie, one <code>Set-Cookie</code> value, <code>sha256:</code>); the <code>value</code> needle accepts the same set minus <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
       <div class="code-card">
         <div class="code-head"><span>block IPs present in a banlist key</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{

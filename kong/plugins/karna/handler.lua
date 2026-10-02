@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.6.0",
+  VERSION = "1.7.0",
 }
 
 local ngx                 = ngx
@@ -298,15 +298,19 @@ end
 --   %{request.path}    — raw path (no querystring)
 --   %{connection.id}   — pseudonymous connection id (ka_tls), for a
 --                        per-connection rather than per-IP counter
--- Anything else stays literal.
+--   %{request_cookies.<name>} and %{sha256:<macro>} — through the engine's
+--                        per-client pass, so a rate_limit key and a
+--                        redis_* action key agree on the same string
+-- Anything else stays literal. Second return value: true when a per-client
+-- macro had no value (cookie missing); the caller must not use the key.
 local resolve_request_macros = function(str)
-  if type(str) ~= "string" then return str end
+  if type(str) ~= "string" then return str, false end
   -- Cheap early-out for the common case of no macros at all. The
   -- 2-character `%{` substring is what gsub's pattern matches; we
   -- pass plain=true so the search is a literal byte-match (a
   -- previous version used `%%{` which is actually the 3-character
   -- sequence `%`,`%`,`{` and silently skipped every callsite).
-  if not str:find("%{", 1, true) then return str end
+  if not str:find("%{", 1, true) then return str, false end
 
   local resolvers = {
     ["remote_addr"]    = function() return tostring(ngx.var.remote_addr or "") end,
@@ -323,14 +327,15 @@ local resolve_request_macros = function(str)
       return cid and tostring(cid) or nil
     end,
   }
-  return (str:gsub("%%{([^}]+)}", function(name)
+  local resolved = str:gsub("%%{([^}]+)}", function(name)
     local fn = resolvers[name]
     if fn then
       local v = fn()
       if v then return v end
     end
     return "%{" .. name .. "}"  -- leave literal
-  end))
+  end)
+  return engine:__resolve_client_key_macros(resolved)
 end
 
 -- Selector grammar for `rule_action_overrides` / `rule_response_overrides`.
@@ -604,8 +609,11 @@ end
 local function service_ban_key(plugin_conf, service_id, rule)
   local rl = rule.action and rule.action.rate_limit
   if not service_id or not rule.id or not valid_ban_policy(rl) then return nil end
+  local ban_key, absent = resolve_request_macros(rl.ban.key)
+  -- No cookie, no ban key: a shared key would ban every cookieless client.
+  if absent then return nil, true end
   return "karna:ban:" .. rate_limit_scope(plugin_conf) .. ":" .. service_id
-      .. ":" .. tostring(rule.id) .. ":" .. resolve_request_macros(rl.ban.key)
+      .. ":" .. tostring(rule.id) .. ":" .. ban_key
 end
 
 -- Rate-limit matches are noisy by nature: every request admitted by the rule
@@ -751,7 +759,15 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       if type(key_macro) ~= "string" or key_macro == "" then
         key_macro = "%{remote_addr}"
       end
-      local resolved_key = resolve_request_macros(key_macro)
+      local resolved_key, key_absent = resolve_request_macros(key_macro)
+      if key_absent then
+        -- A per-client macro (cookie) has no value: counting it would put every
+        -- such client into one shared bucket. Not limited, nothing counted.
+        kong.log.debug("Karna: rate_limit skipped (rule ", tostring(rule_matched_obj.id),
+                       "), a key macro has no value: ", key_macro)
+        set_rate_limit_audit_eligibility(match_entry, rl)
+        return
+      end
       local scope = rate_limit_scope(plugin_conf)
       local full_key = "karna:rl:" .. scope .. ":" .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
       local rconf = engine:get_redis_conf(plugin_conf)
@@ -762,10 +778,13 @@ local evaluate_rules = function(plugin_conf, rules, phase)
       local ban_blocking = plugin_conf.engine_blocking_mode and not detection_only_active()
       -- A ban requires a routed service. Without one, keep ordinary limiting
       -- rather than creating state that could affect another service.
+      local ban_key, ban_key_absent
       if ban_blocking and seconds and service_id and rule_matched_obj.id then
+        ban_key, ban_key_absent = service_ban_key(plugin_conf, service_id, rule_matched_obj)
+      end
+      if ban_key then
         full_key = "karna:rl:" .. scope .. ":" .. service_id .. ":"
             .. tostring(rule_matched_obj.id) .. ":" .. tostring(resolved_key)
-        local ban_key = service_ban_key(plugin_conf, service_id, rule_matched_obj)
         local created, ttl, active
         count, created, ttl, active = utils:redis_incr_key_with_ban(
             rconf, full_key, window, ban_key, limit, seconds, excess)
@@ -787,7 +806,7 @@ local evaluate_rules = function(plugin_conf, rules, phase)
           return response_exit(tonumber(resp.status_code) or 403, body, headers)
         end
       else
-        if rl.ban and ban_blocking then
+        if rl.ban and ban_blocking and not ban_key_absent then
           kong.log.err("Karna: invalid rate_limit.ban configuration for rule ", tostring(rule_matched_obj.id))
         end
         count = utils:redis_incr_key(rconf, full_key, window)

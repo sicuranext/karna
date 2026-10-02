@@ -74,6 +74,16 @@ end
 
 local counts, bans, last_counter_key, last_ban_key = {}, {}, nil, nil
 engine.get_redis_conf = function() return {} end
+-- The engine's per-client key pass (cookie macros). Stand-in: a missing
+-- `sid` cookie is absent, everything else passes through.
+local sid_cookie = nil
+engine.__resolve_client_key_macros = function(_, s)
+    if s:find('%{request_cookies.sid}', 1, true) then
+        if not sid_cookie then return s, true end
+        return (s:gsub('%%{request_cookies%.sid}', sid_cookie)), false
+    end
+    return s, false
+end
 utils.redis_first_active_ban = function(_, _, keys)
     for i, key in ipairs(keys) do if bans[key] then return i, bans[key] end end
 end
@@ -139,6 +149,28 @@ active_rule.action.rate_limit.log_all_matches = true
 assert(run() == nil and last_match.audit_loggable == true)
 active_rule.action.rate_limit.log_all_matches = nil
 print('integrated ban enforcement and service isolation: passed')
+
+-- A cookie-keyed limit: with the cookie, the key carries its value; without
+-- it, nothing is counted and nothing is banned (no shared bucket).
+service_id = 'service-e'
+active_rule.action.rate_limit.key = 'sid:%{request_cookies.sid}'
+active_rule.action.rate_limit.ban.key = 'sid:%{request_cookies.sid}'
+sid_cookie = 'synthetic-session-1'
+assert(run() == nil)
+assert(last_counter_key == 'karna:rl:plugin-a:service-e:login:sid:synthetic-session-1')
+assert(last_ban_key == 'karna:ban:plugin-a:service-e:login:sid:synthetic-session-1')
+sid_cookie = nil
+last_counter_key, last_ban_key = nil, nil
+local before = 0
+for _ in pairs(counts) do before = before + 1 end
+for _ = 1, 6 do assert(run() == nil) end
+local after = 0
+for _ in pairs(counts) do after = after + 1 end
+assert(last_counter_key == nil and last_ban_key == nil and after == before)
+assert(last_match.rate_limited ~= true and last_match.audit_loggable == false)
+active_rule.action.rate_limit.key = '%{remote_addr}'
+active_rule.action.rate_limit.ban.key = '%{remote_addr}'
+print('cookie-keyed limit, cookie absent → not counted: passed')
 
 -- Execute the real Redis scripts against a clocked in-memory Redis fixture.
 package.preload['inspect'] = function() return function() return '' end end
