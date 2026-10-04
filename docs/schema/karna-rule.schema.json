@@ -196,7 +196,7 @@
     "variable": {
       "type": "string",
       "minLength": 1,
-      "description": "A Karna CONDITION variable. The pattern checks the namespace only, not the full name, so a valid-looking name can still resolve to nothing. ModSecurity names (ARGS, REQUEST_COOKIES, ...) are NOT accepted: use the Karna equivalents. Macro-only names are rejected on purpose — `geoip.*`, `asn.*`, `var:*`, `request.header.name:*`, `request.header_no_fp.value:*`, `request.header.referer.*` and `request.forwarded_scheme|host|port|path|prefix` live in the inspection table and resolve only as `%{...}` macros in an action or a log field; in a condition they resolve to nothing and the rule never fires. See https://karna.sicuranext.com/docs/rules.html#macro-only-vars",
+      "description": "A Karna CONDITION variable. The pattern lists the names the engine resolves in a condition (the same list as `ka_compile.is_known_condition_variable`, which also warns at rule load). A name with no resolver always reads as absent: a negated `isSet` on it matches every request and every other operator never matches. Header and cookie names in a selector (`request.header.value:<n>`, `request.cookie.value:<n>`, `request.cookie.name:<n>`) are case-insensitive. ModSecurity names (ARGS, REQUEST_COOKIES, ...) are NOT accepted: use the Karna equivalents. Macro-only names are rejected on purpose — `geoip.*`, `asn.*`, `var:*`, `request.header.name:*`, `request.header_no_fp.value:*`, `request.header.referer.*` and `request.forwarded_scheme|host|port|path|prefix` live in the inspection table and resolve only as `%{...}` macros in an action or a log field; in a condition they resolve to nothing and the rule never fires. See https://karna.sicuranext.com/docs/rules.html#macro-only-vars",
       "examples": [
         "request.arg.value",
         "request.arg.value:id",
@@ -208,9 +208,10 @@
         "request.body.multipart.filename",
         "request.header.value",
         "request.header.value:host",
-        "request.header_no_fp.value",
         "request.cookie.value",
         "request.cookie.name",
+        "request.cookie.value:sid",
+        "request.cookie.name:sid",
         "request.raw_path",
         "request.path",
         "request.path_with_query",
@@ -218,7 +219,6 @@
         "request.method",
         "request.remote_addr",
         "request.forwarded_addr",
-        "request.header.referer.path",
         "response.status",
         "response.header.value:content-type",
         "response.set_cookie.value",
@@ -243,8 +243,8 @@
       ],
       "allOf": [
         {
-          "pattern": "^(count:)?(request\\.|response\\.|mcp\\.|tls\\.|redis\\.|tx:|group:|group_rx:|matched\\.value$|connection\\.id$)",
-          "$comment": "Known condition-variable namespace."
+          "pattern": "^(count:request\\.(arg\\.(value|name)|header\\.value(:.+)?|cookie\\.(value|name)(:.+)?|body|body\\.multipart.*)$|request\\.(arg\\.(value|name)|query\\.(value|name)|raw_path|path|path_with_query|method|http_version|line|basename|raw_query|remote_addr|forwarded_addr|header\\.value|cookie\\.(value|name)|body|body\\.(length|processor)|body\\.multipart\\.(name|filename)|file)$|request\\.(arg\\.value|query\\.value|header\\.value|cookie\\.(value|name)):.+|request\\.body\\.(multipart|xml|json|urlencode)\\..+|(response\\.|tx:|group_rx:|mcp\\.|tls\\.|redis\\.).+|group:[0-9]+$|matched\\.value$|connection\\.id$)",
+          "$comment": "The condition variables the engine resolves. Keep in step with ka_compile.is_known_condition_variable."
         },
         {
           "not": {

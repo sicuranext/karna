@@ -454,6 +454,14 @@ function _M.compile_variable_resolver(variable)
             return engine.__get_values_request_cookie(false)
         end
     end
+    -- request.cookie.value:<name> / request.cookie.name:<name> / request.cookie.name
+    if variable == "request.cookie.name"
+       or string.find(variable, "^request%.cookie%.value:")
+       or string.find(variable, "^request%.cookie%.name:") then
+        return function(engine, rule)
+            return engine.__get_values_request_cookie_selector(variable)
+        end
+    end
 
     -- Scalar body variables — request.body, request.body.length, request.body.processor.
     if variable == "request.body"
@@ -723,6 +731,109 @@ local function refuses_negated_isset_control(rule)
     return false
 end
 
+-- The condition variables the engine can resolve: every name with a branch
+-- in compile_variable_resolver or in the dispatcher of
+-- ka_engine.__match_rule_conditions_impl. Keep the three in step when a
+-- branch is added.
+--
+-- The engine reads "resolved to nothing" as absent, so a name with no branch
+-- (a typo, an unsupported selector, a macro-only name such as `geoip.*` or
+-- `var:*`) makes a negated `isSet` fire on every request and every other
+-- operator never fire. Nothing at request time can tell that apart from a
+-- variable the request does not carry, so compile_rules warns at load.
+local _KNOWN_VAR_EXACT = {
+    ["request.arg.value"]               = true,
+    ["request.arg.name"]                = true,
+    ["request.query.value"]             = true,
+    ["request.query.name"]              = true,
+    ["request.raw_path"]                = true,
+    ["request.path"]                    = true,
+    ["request.path_with_query"]         = true,
+    ["request.method"]                  = true,
+    ["request.http_version"]            = true,
+    ["request.line"]                    = true,
+    ["request.basename"]                = true,
+    ["request.raw_query"]               = true,
+    ["request.remote_addr"]             = true,
+    ["request.forwarded_addr"]          = true,
+    ["request.header.value"]            = true,
+    ["request.cookie.value"]            = true,
+    ["request.cookie.name"]             = true,
+    ["request.body"]                    = true,
+    ["request.body.length"]             = true,
+    ["request.body.processor"]          = true,
+    ["request.body.multipart.name"]     = true,
+    ["request.body.multipart.filename"] = true,
+    ["request.file"]                    = true,
+    ["matched.value"]                   = true,
+    ["connection.id"]                   = true,
+}
+local _KNOWN_VAR_PREFIX = {
+    "request.arg.value:", "request.query.value:", "request.header.value:",
+    "request.cookie.value:", "request.cookie.name:",
+    "request.body.multipart.", "request.body.xml.", "request.body.json.",
+    "request.body.urlencode.",
+    "response.", "tx:", "group_rx:", "mcp.", "tls.", "redis.",
+}
+-- `count:<var>` resolves the inner variable through its own, shorter probe
+-- list; anything else counts as 0 whatever the request carries.
+local _KNOWN_COUNT_EXACT = {
+    ["request.arg.value"]    = true,
+    ["request.arg.name"]     = true,
+    ["request.header.value"] = true,
+    ["request.cookie.value"] = true,
+    ["request.cookie.name"]  = true,
+    ["request.body"]         = true,
+}
+local _KNOWN_COUNT_PREFIX = {
+    "request.header.value:", "request.cookie.value:", "request.cookie.name:",
+    "request.body.multipart",
+}
+
+local function has_prefix(v, prefixes)
+    for _, p in ipairs(prefixes) do
+        if string.sub(v, 1, #p) == p then return true end
+    end
+    return false
+end
+
+function _M.is_known_condition_variable(v)
+    if type(v) ~= "string" or v == "" then return false end
+    if string.sub(v, 1, 6) == "count:" then
+        local inner = string.sub(v, 7)
+        return _KNOWN_COUNT_EXACT[inner] == true or has_prefix(inner, _KNOWN_COUNT_PREFIX)
+    end
+    if _KNOWN_VAR_EXACT[v] then return true end
+    if string.find(v, "^group:[0-9]+$") then return true end
+    return has_prefix(v, _KNOWN_VAR_PREFIX)
+end
+
+-- One warning per unknown name per worker: a pack reloads (global rules hot
+-- swap, plugin config change) would otherwise repeat it on every load.
+local _warned_unknown_vars = {}
+
+local function warn_unknown_variables(rule)
+    if type(rule.conditions) ~= "table" then return end
+    for _, condition in ipairs(rule.conditions) do
+        if type(condition) == "table" and type(condition.variables) == "table" then
+            for _, v in pairs(condition.variables) do
+                if not _M.is_known_condition_variable(v)
+                   and not _warned_unknown_vars[tostring(v)] then
+                    _warned_unknown_vars[tostring(v)] = true
+                    if kong and kong.log and kong.log.warn then
+                        kong.log.warn("karna: rule ", tostring(rule.id),
+                                      " uses condition variable '", tostring(v),
+                                      "', which the engine does not resolve. It",
+                                      " always reads as absent: a negated isSet on",
+                                      " it matches every request, any other",
+                                      " operator never matches.")
+                    end
+                end
+            end
+        end
+    end
+end
+
 function _M.compile_rules(rules, plugin_conf)
     local compiled = 0
     local total = 0
@@ -739,6 +850,7 @@ function _M.compile_rules(rules, plugin_conf)
                              " would disable detection for every request. Key the",
                              " exclusion on something the request carries instead.")
             end
+            warn_unknown_variables(rule)
             compile_rule_conditions(rule)
             local closure = _M.compile_rule(rule, plugin_conf)
             if closure then
