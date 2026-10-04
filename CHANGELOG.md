@@ -7,6 +7,40 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`request.cookie.value:<name>` now resolves in a condition.** The selector
+  (ModSec `REQUEST_COOKIES:<name>`) was documented, but neither the compiled
+  resolver nor the engine dispatcher had a branch for it: only the bare
+  `request.cookie.value` collection resolved. A named-cookie condition read as
+  "absent" on every request, so `isSet` with `negated: true` on a cookie
+  matched even when the request carried it (a "block unless the consent cookie
+  is set" rule blocked real browsers), and `isSet` / `eq` / `rx` on a cookie
+  never matched. Same gap for `request.cookie.name` and
+  `request.cookie.name:<name>` (ModSec `REQUEST_COOKIES_NAMES`). All three now
+  resolve in every phase, through one getter
+  (`__get_values_request_cookie_selector`) shared by the compiled resolver,
+  the dispatcher and the `count:` probe. Names compare case-insensitively; a
+  JSON cookie resolves to its `request.cookie.json.<name>.*` keys, so it counts
+  as present; a `ctl:ruleRemoveTargetById` on the cookie is still an exclusion,
+  not absence. The bundled CRS is unaffected: its only positive
+  `REQUEST_COOKIES:` selector is a regex, which still does not resolve. CRS
+  regression 2875/2875 before and after.
+
+### Added
+
+- **Warning at rule load for a condition variable the engine cannot
+  resolve.** `ka_compile.is_known_condition_variable` lists every name with a
+  resolver; `compile_rules` logs a WARN once per unknown name per worker. A typo
+  or an unsupported selector otherwise turns a negated `isSet` into "always
+  true" with no signal. The published rule schema
+  (`docs/schema/karna-rule.schema.json`) now checks the full name against the
+  same list instead of the namespace only, so `scripts/validate-rules.py`
+  rejects these rules before they are deployed. On the shipped packs the
+  warning reports `count:request.arg.value:<n>` (WordPress exclusion plugin,
+  always counts 0), `request.file:<n>` and `request.header.name` (CRS 921140),
+  none of which resolves today.
+
 ## [1.7.0] - 2026-10-02
 
 ### Added

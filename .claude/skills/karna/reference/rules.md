@@ -66,16 +66,18 @@ banned" check placed first short-circuits the rest.
 Two surfaces, and they are NOT the same set. Everything below resolves in a
 CONDITION. The names under "Macro-only" further down do not: they live in the
 inspection table (built in `header_filter`) and work only as `%{...}` macros.
-Karna validates no variable name anywhere, so a name with no resolver quietly
-resolves to nothing — the rule never fires, and with `isSet` + `negated:true` it
-fires on every request instead.
+A name with no resolver resolves to nothing: the rule never fires, and with
+`isSet` + `negated:true` it fires on every request instead. Karna logs a WARN at
+rule load for each such name (`uses condition variable '…', which the engine
+does not resolve`) and `scripts/validate-rules.py` rejects it: run it on every
+rule you write.
 
 - `request.arg.value` / `.name` — query + parsed body args (canonical "any arg"). Target one: `request.arg.value:<name>`.
 - `request.query.value` / `.name` — query string only; `request.query.value:<name>` targets one.
 - `request.body.urlencode.value:<name>`, `request.body.json.value:<path>`, `request.body.xml.<path>`, `request.body`.
 - `request.body.length` (bytes, numeric ops), `request.body.processor` (`JSON`|`XML`|`URLENCODED`|`MULTIPART`, from Content-Type; resolves even with no body — ModSec `REQBODY_PROCESSOR`).
 - `request.header.value` (`request.header.value:host`). There is no `request.header.name` condition variable — see Macro-only.
-- `request.cookie.value` — values AND names in one map (the resolved map also carries `request.cookie.name:<n>`, so an operator scans both; ModSec `REQUEST_COOKIES` + `REQUEST_COOKIES_NAMES`). No separate name-only variable.
+- `request.cookie.value` — values AND names in one map (the resolved map also carries `request.cookie.name:<n>`, so an operator scans both; ModSec `REQUEST_COOKIES` + `REQUEST_COOKIES_NAMES`). One cookie: `request.cookie.value:<name>` (case-insensitive; a JSON cookie resolves to its `request.cookie.json.<name>.*` keys, so it is present). Names only: `request.cookie.name`, one name: `request.cookie.name:<name>`. These three need Karna >= 1.7.1; on older versions they resolve to nothing in a condition (negated `isSet` always true).
 - `request.raw_path` (verbatim path — percent-encoding intact, dot segments intact; match this for traversal/encoding evasion), `request.path` (nginx-normalized: dot segments resolved, percent-decoded except `%2F` — the view the upstream routes on), `request.path_with_query` (verbatim + query string), `request.raw_query` (query string alone, verbatim), `request.basename`, `request.method`.
 - `request.line` (`<method> <path?query> HTTP/<ver>`, ModSec `REQUEST_LINE`), `request.http_version` (`HTTP/1.1`, `HTTP/2`).
 - `request.file`, `request.body.multipart.filename` (ModSec FILES), `request.body.multipart.name` (FILES_NAMES), `request.body.multipart.part.<name>` (everything under one part), `request.body.multipart.header.value`.
@@ -83,7 +85,7 @@ fires on every request instead.
 - `request.remote_addr` — client IP as seen on the transport (ModSec `REMOTE_ADDR`; same value as the `%{remote_addr}` macro). `request.forwarded_addr` — Kong's forwarded client (`X-Forwarded-For` walked back through Kong's `trusted_ips`, falling back to the peer when the header is absent or the peer is untrusted). Behind a CDN/LB use the second. Pair either with `ipMatch`.
 - `matched.value`, `group:<n>` (chain refs).
 - `tx:<name>` — one TX variable set earlier by a `setvar` action. `group_rx:<regex>` — every TX variable whose NAME matches the regex (CRS `TX:/pattern/`).
-- `count:<variable>` — how many values the variable resolves to, as a number (ModSec `&VAR`). Numeric ops: `count:request.arg.value` + `gt`, `count:request.header.value:x-api-key` + `eq 0` = "header missing".
+- `count:<variable>` — how many values the variable resolves to, as a number (ModSec `&VAR`). Numeric ops: `count:request.arg.value` + `gt`, `count:request.header.value:x-api-key` + `eq 0` = "header missing". Counts only `request.arg.value|name`, `request.header.value[:<n>]`, `request.cookie.value|name[:<n>]`, `request.body`, `request.body.multipart*`; anything else is always 0 (e.g. `count:request.arg.value:<n>`).
 - `redis.<key>` — inspect a Redis key (read-only). Everything after `redis.` is the key name (macros allowed: `%{remote_addr}`, `%{request.method|host|scheme|path}`, `%{request_headers.X}`, `%{connection.id}`, plus the per-client key macros below). The **operator picks the command**: `isSet`→EXISTS (ban/existence check; `negated:true`→absent), `eq`/`rx`/`contains`/`beginsWith`→GET+compare, `gt`/`lt`/`ge`/`le`→GET+numeric, `redis_sismember`→SISMEMBER, `redis_hexists`→HEXISTS. Needs `redis_inspect_enabled`. (Legacy `redis.key:<macro>` GET form is dead — use `redis.<key>`.)
 - `mcp.*` (when mcp_enabled).
 - `connection.id` — pseudonymous per-TCP-connection id (`kc1_<32 hex>`, HMAC of the nginx connection serial + per-worker nonce; same for all keep-alive requests and h2 streams of a connection). Also a macro `%{connection.id}` (e.g. rate_limit key).

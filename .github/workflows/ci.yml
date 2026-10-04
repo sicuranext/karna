@@ -111,6 +111,8 @@ jobs:
         run: lua ka-unittest/macro_resolution_phases.lua
       - name: Cookie / Set-Cookie / sha256 key macros (write == read, absent cookie never keys)
         run: lua ka-unittest/cookie_key_macros.lua
+      - name: Named cookie selectors resolve in a condition (present / absent / ctl exclusion, unknown-variable warning)
+        run: lua ka-unittest/cookie_named_selector.lua
       - name: Redis counter keeps its TTL (atomic INCR+EXPIRE, stuck-key repair)
         run: lua ka-unittest/redis_counter_ttl.lua
       - name: Rate-limit temporary ban (integrated enforcement, service scope)

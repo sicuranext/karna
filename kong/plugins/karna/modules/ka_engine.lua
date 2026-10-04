@@ -1461,6 +1461,58 @@ _M.__get_values_request_cookie = function(try_b64)
     return values, nil
 end
 
+-- One cookie, or the cookie NAMES, out of the map the resolver above builds:
+--   request.cookie.value:<n>  the plain value key, plus the derived
+--                             `request.cookie.json.<n>.*` keys (a JSON cookie
+--                             gets only those, never the plain key)
+--   request.cookie.name:<n>   the name key (holds the name as sent)
+--   request.cookie.name       every name key (REQUEST_COOKIES_NAMES)
+-- Names compare lowercase on both sides, as the resolver stores them. A
+-- cookie the request does not carry yields an empty table, which the engine
+-- reads as absent.
+--
+-- Before this getter existed only the bare `request.cookie.value` collection
+-- had a branch, so every named selector resolved to nothing on every request:
+-- a negated `isSet` on a cookie always fired and a positive condition never
+-- did. Self-less, call it with a DOT, like the other request getters.
+_M.__get_values_request_cookie_selector = function(variable)
+    local all = _M.__get_values_request_cookie(false)
+    local values = {}
+    if type(all) ~= "table" then
+        return values, nil
+    end
+
+    if variable == "request.cookie.name" then
+        for k, v in pairs(all) do
+            if string_sub(k, 1, 20) == "request.cookie.name:" then
+                values[k] = v
+            end
+        end
+        return values, nil
+    end
+
+    local kind, name = string_match(variable, "^request%.cookie%.(%a+):(.+)$")
+    if not name or (kind ~= "value" and kind ~= "name") then
+        return values, nil
+    end
+    name = string_lower(name)
+
+    local key = "request.cookie." .. kind .. ":" .. name
+    if all[key] ~= nil then
+        values[key] = all[key]
+    end
+    if kind == "value" then
+        local json_prefix = "request.cookie.json." .. name .. "."
+        local plen = #json_prefix
+        for k, v in pairs(all) do
+            if string_sub(k, 1, plen) == json_prefix then
+                values[k] = v
+            end
+        end
+    end
+    return values, nil
+end
+
 
 
 -- Apply the side-effects of a matched rule's `rule_control` list onto the
@@ -3143,6 +3195,10 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                         probe = self.__get_values_request_header(inner)
                     elseif inner == "request.cookie.value" then
                         probe = self.__get_values_request_cookie(false)
+                    elseif inner == "request.cookie.name"
+                           or string_find(inner, "^request%.cookie%.value:")
+                           or string_find(inner, "^request%.cookie%.name:") then
+                        probe = self.__get_values_request_cookie_selector(inner)
                     elseif inner == "request.body" then
                         local rb = self.__get_values_request_body_scalars()
                         probe = rb and rb["request.body"] and rb or nil
@@ -3328,6 +3384,10 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
 
                 if variable == "request.cookie.value" then
                     values, err = self.__get_values_request_cookie(false)
+                elseif variable == "request.cookie.name"
+                       or string_find(variable, "^request%.cookie%.value:")
+                       or string_find(variable, "^request%.cookie%.name:") then
+                    values, err = self.__get_values_request_cookie_selector(variable)
                 end
 
                 -- response.* — resolve response signals in conditions
@@ -3729,8 +3789,9 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
             -- absence must fire it, an exclusion must keep skipping the condition
             -- exactly as it does for every other operator. Everything reaching
             -- here with no values — an unrecognised variable name, a response.*
-            -- variable read in the access phase — counts as absence; Karna does
-            -- not validate variable names anywhere and does not start here.
+            -- variable read in the access phase — counts as absence. Unknown
+            -- names are reported at rule load instead (ka_compile
+            -- .is_known_condition_variable), not here.
             --
             -- Redis is the exception, and it sets this flag itself: an unreachable
             -- Redis (or `redis_inspect_enabled = false`) is "unknown", not
