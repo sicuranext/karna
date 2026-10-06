@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-06
+
 ### Fixed
 
 - **`request.cookie.value:<name>` now resolves in a condition.** The selector
@@ -1710,7 +1712,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/sicuranext/karna/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/sicuranext/karna/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/sicuranext/karna/compare/v1.5.10...v1.6.0
 [1.5.8]: https://github.com/sicuranext/karna/compare/v1.5.7...v1.5.8
