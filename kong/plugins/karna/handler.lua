@@ -19,6 +19,7 @@ local ka_re2_gate       = require "kong.plugins.karna.ka_re2_gate"
 local ka_header_names   = require "kong.plugins.karna.ka_header_names"
 local ka_tls            = require "kong.plugins.karna.ka_tls"
 local ka_redact         = require "kong.plugins.karna.ka_redact"
+local ka_arg_limits     = require "kong.plugins.karna.ka_arg_limits"
 local ka_version        = require "kong.plugins.karna.version"
 local lrucache          = require "resty.lrucache"
 local cjson             = require "cjson"
@@ -429,6 +430,30 @@ local get_overrides_cached = function(plugin_conf)
 
   if key then ka_rules:set(key, out) end
   return out
+end
+
+-- Compiled `limit_arg_num_overrides`, cached per (plugin instance,
+-- configuration) like the override arrays above, then resolved against the
+-- request method and normalized path. Returns the matching entry or nil. No
+-- overrides configured = one table length check per request, nothing else.
+-- An entry this node cannot compile is logged and dropped, so its path keeps
+-- the service limit.
+local resolve_arg_limit_override = function(plugin_conf)
+  local entries = plugin_conf.limit_arg_num_overrides
+  if type(entries) ~= "table" or #entries == 0 then return nil end
+
+  local key = conf_cache_key("arg_limits", plugin_conf)
+  local compiled = key and ka_rules:get(key)
+  if not compiled then
+    local errs
+    compiled, errs = ka_arg_limits.compile(entries)
+    for _, e in ipairs(errs) do
+      kong.log.err("[karna] limit_arg_num_overrides: " .. e)
+    end
+    if key then ka_rules:set(key, compiled) end
+  end
+
+  return ka_arg_limits.resolve(compiled, kong.request.get_method(), kong.request.get_path())
 end
 
 -- Compiled audit-log redaction spec, cached per (plugin instance,
@@ -1319,7 +1344,9 @@ function plugin:access(plugin_conf)
   -- In blocking mode this already returned 403; the flag only matters in
   -- detection mode, where we still skip the scan so a pathological request
   -- can't pin the worker. Under body_access_off only the query is counted.
-  local ka_arg_limit_exceeded = engine:check_request_arg_count(plugin_conf)
+  -- A matching limit_arg_num_overrides entry replaces the limit for this path.
+  local ka_arg_limit_exceeded = engine:check_request_arg_count(plugin_conf,
+    resolve_arg_limit_override(plugin_conf))
 
   -- Over the argument-count limit (detection mode): the body parsed clean
   -- but carries more args than limit_arg_num. Skip all rule evaluation —
@@ -1670,6 +1697,7 @@ plugin._internals = {
   get_local_request_rules  = get_local_request_rules,
   get_overrides_cached     = get_overrides_cached,
   get_redact_spec_cached   = get_redact_spec_cached,
+  resolve_arg_limit_override = resolve_arg_limit_override,
 }
 
 return plugin

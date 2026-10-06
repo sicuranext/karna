@@ -125,6 +125,7 @@ end
 package.preload["kong.plugins.karna.ka_redact"] = function()
     return dofile("./kong/plugins/karna/modules/ka_redact.lua")
 end
+package.preload["kong.plugins.karna.ka_arg_limits"] = function() return dofile("./kong/plugins/karna/modules/ka_arg_limits.lua") end
 package.preload["kong.plugins.karna.version"] = function()
     return { version = "0.0.0-test", commit = "deadbee", commit_short = "deadbee", built_at = "test" }
 end

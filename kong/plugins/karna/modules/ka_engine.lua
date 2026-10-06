@@ -4515,9 +4515,8 @@ end
 -- By this point the body is already parsed + cached (by
 -- check_request_body_parser for multipart, or here on first call for
 -- urlencoded/json), so counting is cheap; rejecting here skips the
--- expensive scan entirely. It reuses limit_arg_num — the same limit the
--- late, header_filter-phase check_arg_len applies — so the cap is
--- configurable on the fly and there is no new schema knob.
+-- expensive scan entirely. The cap is limit_arg_num, configurable on the
+-- fly, or the per-path limit from limit_arg_num_overrides.
 --
 -- Under ctl:requestBodyAccess=Off from the pre-body controls pass
 -- (handler.lua:access) the body getter resolves empty without parsing, so
@@ -4532,8 +4531,21 @@ end
 -- Returns true when over the limit so the access handler skips rule
 -- evaluation even in detection (non-blocking) mode — evaluating rules on
 -- a pathological request is the DoS, regardless of posture.
-_M.check_request_arg_count = function(self, plugin_conf)
+--
+-- Per-path limit: `override` is the `limit_arg_num_overrides` entry that
+-- matched this request (handler.lua resolves it through ka_arg_limits), or
+-- nil. Its `limit` replaces limit_arg_num for this request and the block
+-- message names its `path_rx`.
+--
+-- The count stops as soon as it passes the effective limit, and the query
+-- string is counted first: a request whose query alone is over the limit
+-- never has its urlencoded body parsed. The logged count is then limit + 1,
+-- not the request's full argument total.
+_M.check_request_arg_count = function(self, plugin_conf, override)
     local limit = plugin_conf.limit_arg_num
+    if override then
+        limit = override.limit
+    end
     if not limit or limit <= 0 then
         return false
     end
@@ -4541,21 +4553,27 @@ _M.check_request_arg_count = function(self, plugin_conf)
     local try_b64 = plugin_conf.try_bas64decode_if_possible
     local arg_num = 0
 
+    -- true once the count passes the limit
     local function count_names(values)
-        if not values then return end
+        if not values then return false end
         for k in pairs(values) do
             if string_find(k, ".name:", 1, true)
                and not string_find(k, ".header.name:", 1, true) then
                 arg_num = arg_num + 1
+                if arg_num > limit then return true end
             end
         end
+        return false
     end
 
-    count_names(self.__get_values_request_query_value(try_b64))
-    count_names(self.__get_values_request_body(try_b64))
-
-    if arg_num <= limit then
+    if not count_names(self.__get_values_request_query_value(try_b64))
+       and not count_names(self.__get_values_request_body(try_b64)) then
         return false
+    end
+
+    local detail = tostring(arg_num) .. " > " .. tostring(limit)
+    if override then
+        detail = detail .. ", override " .. override.path_rx
     end
 
     table_insert(kong.ctx.plugin.ka_matched_rules, {
@@ -4563,8 +4581,7 @@ _M.check_request_arg_count = function(self, plugin_conf)
             id = "limit_arg_num",
             log = true,
             logdata = "",
-            message = "Request argument count limit reached (" .. tostring(arg_num)
-                .. " > " .. tostring(limit) .. ")",
+            message = "Request argument count limit reached (" .. detail .. ")",
             phase = "access",
             tags = { "karna", "access", "paranoia-level/1", "dos/arg-count" },
             response_status_override = 403

@@ -719,6 +719,7 @@ curl -X POST http://localhost:8001/services/<service_id>/plugins \
 | `limit_arg_name_length` | number | `100` | Max length of a single arg name. |
 | `limit_arg_value_length` | number | `400` | Max length of a single arg value. |
 | `limit_arg_num` | number | `255` | Max number of args. |
+| `limit_arg_num_overrides` | array | `[]` | Per-path `limit_arg_num`: entries `{path_rx, methods?, limit}`, first match on the normalized path (and method, if given) wins, max 32. `path_rx` is validated when the config is saved (RE2, else PCRE). Unanchored: use `^` / `$`. |
 | `try_bas64decode_if_possible` | bool | `false` | Attempt base64 decoding of arg values before inspection. |
 | `crs_plugins_path` | string | `/opt/coreruleset-plugins/` | Directory holding the CRS plugins you downloaded. See [CRS plugins](#crs-plugins-wordpress-drupal-etc). |
 | `crs_plugins_enabled` | array | `[]` | Plugin directory names to load, e.g. `["wordpress-rule-exclusions-plugin"]`. |

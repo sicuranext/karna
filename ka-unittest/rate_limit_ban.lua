@@ -11,7 +11,7 @@ local active_rule = {
 
 local engine, utils = {}, {}
 for _, name in ipairs({'ka_body_parser','ka_seclang','ka_mcp','ka_re2_gate',
-    'ka_header_names','ka_tls','ka_redact'}) do
+    'ka_header_names','ka_tls','ka_redact','ka_arg_limits'}) do
     package.preload['kong.plugins.karna.' .. name] = function() return {} end
 end
 package.preload['kong.plugins.karna.ka_engine'] = function() return engine end

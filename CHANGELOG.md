@@ -29,6 +29,27 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`limit_arg_num_overrides`: a per-path `limit_arg_num`.** `limit_arg_num`
+  is an always-on gate that runs before the rule loop, so no rule control can
+  raise it, and it applies to the whole service. When one endpoint
+  legitimately sends thousands of arguments, the only option was to raise the
+  limit for every endpoint, which lets a huge request reach the parse and the
+  rule scan anywhere on the service. The new option is an array of
+  `{ path_rx, methods?, limit }`: entries are checked in order, and the first
+  whose `path_rx` matches the normalized request path (and whose `methods`, if
+  given, include the request method) sets the limit for that request. No match
+  means `limit_arg_num`. `path_rx` is compiled when the configuration is saved
+  (RE2 when `libka_re2.so` is present, else PCRE), so a bad pattern is a schema
+  error; `limit` must be an integer > 0; at most 32 entries. A block on an
+  overridden path names it in the audit message,
+  `Request argument count limit reached (N > L, override <path_rx>)`, with no
+  new audit-log field. With no overrides configured the gate behaves as before.
+  Compiled once per configuration (cached like the rule overrides).
+- The argument count now stops as soon as it passes the effective limit, and
+  the query string is counted before the body: a request whose query alone is
+  over the limit no longer has its urlencoded body parsed. The count in the
+  block message is therefore `limit + 1`, not the request's full total.
+
 - **Warning at rule load for a condition variable the engine cannot
   resolve.** `ka_compile.is_known_condition_variable` lists every name with a
   resolver; `compile_rules` logs a WARN once per unknown name per worker. A typo

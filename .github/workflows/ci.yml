@@ -87,6 +87,8 @@ jobs:
         run: lua ka-unittest/global_rules.lua
       - name: Pre-body rule controls (ctl:requestBodyAccess=Off reaches the body gates, body never parsed)
         run: lua ka-unittest/prebody_controls.lua
+      - name: Per-path limit_arg_num overrides (first match, methods, early stop, block message)
+        run: lua ka-unittest/arg_limit_overrides.lua
       - name: URI + client-IP variable resolvers (path family, remote_addr vs forwarded_addr)
         run: lua ka-unittest/variable_resolution.lua
       - name: WordPress ctl target exclusion (ARGS:name body-param removal + namespace gate)

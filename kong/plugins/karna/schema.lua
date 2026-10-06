@@ -1,4 +1,5 @@
 local typedefs = require "kong.db.schema.typedefs"
+local ka_arg_limits = require "kong.plugins.karna.ka_arg_limits"
 
 local plugin_name = ({...})[1]:match("^kong%.plugins%.([^%.]+)")
 
@@ -154,6 +155,25 @@ local schema = {
           -- limit_arg_num
           -- default 255
           { limit_arg_num = { type = "number", default = 255 } },
+
+          -- limit_arg_num_overrides
+          -- Per-path replacement for limit_arg_num, for the one endpoint that
+          -- legitimately sends far more arguments than the rest of the
+          -- service. Checked in order; the first entry whose path_rx matches
+          -- the normalized request path (and whose methods, when given,
+          -- include the request method) sets the limit for that request. No
+          -- match = limit_arg_num. path_rx is compiled here (RE2 when
+          -- libka_re2.so is available, else PCRE), so a bad pattern is
+          -- rejected by the Admin API. The search is unanchored: use ^ and $.
+          { limit_arg_num_overrides = {
+              type = "array", default = {}, len_max = ka_arg_limits.MAX_OVERRIDES,
+              elements = { type = "record", fields = {
+                { path_rx = { type = "string", required = true,
+                    custom_validator = ka_arg_limits.validate_path_rx } },
+                { methods = { type = "array", elements = { type = "string" } } },
+                { limit = { type = "integer", required = true, gt = 0 } },
+              } },
+          } },
 
           { inspection_table_convert = { type = "array", elements = { type = "string" } } },
           { paranoia_level = { type = "number", default = 1 } },
