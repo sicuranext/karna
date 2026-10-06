@@ -151,7 +151,7 @@ package.preload["kong.plugins.karna.ka_utils"] = function()
 end
 
 for _, name in ipairs({ "ka_body_parser", "ka_mcp", "ka_global_rules", "ka_re2_gate",
-                        "ka_header_names", "ka_redact" }) do
+                        "ka_header_names", "ka_redact", "ka_arg_limits" }) do
     package.preload["kong.plugins.karna." .. name] = function() return { get = function() end } end
 end
 package.preload["kong.plugins.karna.version"] = function()
