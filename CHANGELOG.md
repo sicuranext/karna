@@ -7,6 +7,29 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-07
+
+### Fixed
+
+- **Malformed pattern on arguments with special characters in the name or
+  value (500 in production).** An argument whose value is JSON and whose name
+  carries a Lua pattern character, such as `facets[]={"field":"x"}` in a query
+  string, made the request fail with
+  `ka_body_parser.lua:247: malformed pattern (missing ']')`: Kong answered 500
+  and the request never reached the upstream. It happened while parsing,
+  before any rule or exclusion ran, so no `rule_control` could work around it.
+  The nested-JSON flattener built a `gsub` pattern from its key prefix, and
+  that prefix carries the client's argument name
+  (`request.query.json:facets[]`) with only the dots escaped. The same path
+  served JSON cookies, JSON values in a urlencoded body, the Referer query and
+  `Set-Cookie`. Names with `-`, `+`, `*` or `?` did not crash but silently
+  missed, so their nested keys came out as `<prefix>.value:.<field>` with no
+  `.name:` entry. The flattener now cuts the prefix by length, with no pattern.
+  A Lua error inside the flattener can no longer escape to the request either:
+  the parse fails, a nested JSON argument stays inspectable as its raw string,
+  and a warning is logged once per worker. No new audit-log fields. CRS
+  regression 2875/2875 before and after.
+
 ## [1.7.1] - 2026-10-06
 
 ### Fixed
@@ -1712,7 +1735,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.1...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.2...HEAD
+[1.7.2]: https://github.com/sicuranext/karna/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/sicuranext/karna/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/sicuranext/karna/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/sicuranext/karna/compare/v1.5.10...v1.6.0
