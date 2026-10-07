@@ -10,6 +10,9 @@ local string_gsub           = string.gsub
 local string_match          = string.match
 local string_gmatch         = string.gmatch
 local string_find           = string.find
+local string_sub            = string.sub
+
+local json_flatten_warned   = false
 
 local cjson                 = require "cjson"
 local b64                   = require("ngx.base64")
@@ -227,6 +230,10 @@ _M.json = function(self, prefix, raw_json, try_base64decode_if_possible)
         return true, ""
     end
 
+    local value_prefix = prefix .. ".value:"
+    local name_prefix = prefix .. ".name:"
+    local head_len = #value_prefix + 1  -- value_prefix .. "."
+
     local function flattenTable(t, parentKey, flatTable)
         flatTable = flatTable or {}
         parentKey = parentKey or prefix .. ".value:"
@@ -234,7 +241,14 @@ _M.json = function(self, prefix, raw_json, try_base64decode_if_possible)
         if type(t) == "table" then
             for k, v in pairs(t) do
                 local newKey = parentKey == "" and k or (parentKey .. "." .. k)
-                local pattern_keyname_gsub = "^" .. string.gsub(prefix,"%.","%%.") .. "%.value%:%."
+                -- JSON path relative to the root ("a.b.0"). Every newKey
+                -- starts with `value_prefix .. "."`, so a plain substring is enough. This
+                -- used to be a gsub with `prefix` spliced into the pattern,
+                -- and the prefix carries the client's arg / cookie name
+                -- (`request.query.json:facets[]`): a `[` raised "malformed
+                -- pattern" and 500'd the request, a `-` or `+` silently
+                -- missed and left the key unstripped.
+                local rel_key = string_sub(newKey, head_len + 1)
 
                 if type(v) == "table" then
                     local ok, err = flattenTable(v, newKey, flatTable)
@@ -244,7 +258,7 @@ _M.json = function(self, prefix, raw_json, try_base64decode_if_possible)
                     end
                 else
                     flatTable[newKey] = v
-                    local keyname = string_gsub(newKey, pattern_keyname_gsub, prefix .. ".value:")
+                    local keyname = value_prefix .. rel_key
 
                     local ok, err = insert_new_value(keyname:lower(), tostring(v))
                     if not ok then
@@ -266,8 +280,8 @@ _M.json = function(self, prefix, raw_json, try_base64decode_if_possible)
                     end
 
                     -- replace request.body.json: with request.body.json_key:
-                    local keyname = string_gsub(newKey, pattern_keyname_gsub, prefix .. ".name:")
-                    local keyvalue = string_gsub(newKey, pattern_keyname_gsub, "")
+                    local keyname = name_prefix .. rel_key
+                    local keyvalue = rel_key
 
                     local ok, err = insert_new_value(keyname:lower(), tostring(keyvalue))
                     if not ok then
@@ -292,7 +306,18 @@ _M.json = function(self, prefix, raw_json, try_base64decode_if_possible)
         return true, nil
     end
 
-    local ok, err = flattenTable(body_json)
+    -- A Lua error while flattening must never escape to the caller (it
+    -- would 500 the request). Fail the parse instead: a nested JSON arg
+    -- then stays inspectable as its raw string, a JSON body goes to the
+    -- body-parser gate. Warn once per worker, not per request.
+    local pok, ok, err = pcall(flattenTable, body_json)
+    if not pok then
+        if not json_flatten_warned then
+            json_flatten_warned = true
+            kong.log.warn("[karna] JSON flatten error, value kept as an opaque string (logged once per worker): ", tostring(ok))
+        end
+        return nil, "json flattening failed"
+    end
     if not ok then
         kong.log.debug("Error flattening JSON: " .. err)
         return nil, err

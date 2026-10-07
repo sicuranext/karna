@@ -115,6 +115,8 @@ jobs:
         run: lua ka-unittest/cookie_key_macros.lua
       - name: Named cookie selectors resolve in a condition (present / absent / ctl exclusion, unknown-variable warning)
         run: lua ka-unittest/cookie_named_selector.lua
+      - name: Arg / cookie names with Lua pattern characters (facets[]={...}) parse without a Lua error
+        run: lua ka-unittest/arg_name_pattern_chars.lua
       - name: Redis counter keeps its TTL (atomic INCR+EXPIRE, stuck-key repair)
         run: lua ka-unittest/redis_counter_ttl.lua
       - name: Rate-limit temporary ban (integrated enforcement, service scope)
