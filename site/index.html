@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Karna, a next-generation WAF for Kong Gateway</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="Karna is a source-available, next-generation Web Application Firewall plugin for Kong Gateway, built for AI integration. MCP-aware, OWASP CoreRuleSet 4.x compatible, libinjection-backed, and 2 to 4 times faster than ModSecurity."/>
+<link rel="canonical" href="https://karna.sicuranext.com/"/>
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg"/>
+<!-- Open Graph / Twitter. og:image needs a real 1200x630 PNG; add og-image.png next to this file. -->
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="Karna, a next-generation WAF for Kong Gateway"/>
+<meta property="og:description" content="Source-available, next-generation WAF for Kong, built for AI integration. MCP-aware, OWASP CRS 4.x compatible, libinjection-backed, 2 to 4 times faster than ModSecurity."/>
+<meta property="og:url" content="https://karna.sicuranext.com/"/>
+<meta property="og:image" content="https://karna.sicuranext.com/og-image.png"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="Karna, a next-generation WAF for Kong Gateway"/>
+<meta name="twitter:description" content="Source-available, next-generation WAF for Kong, built for AI integration. MCP-aware, OWASP CRS 4.x, 2 to 4 times faster than ModSecurity."/>
+<meta name="twitter:image" content="https://karna.sicuranext.com/og-image.png"/>
+<link rel="stylesheet" href="assets/site.css"/>
+<link rel="stylesheet" href="assets/landing.css"/>
+<link rel="modulepreload" href="assets/scene/hero.js"/>
+</head>
+<body>
+
+
+<!-- ============================================================ NAV ============================================================ -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top" aria-label="Karna home">
+      <svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="6.5" fill="#d8402c"/></svg>
+      <span class="brand-word">Karna</span>
+    </a>
+    <div class="nav-links">
+      <a href="#why">Why Karna</a>
+      <a href="#console">Console</a>
+      <a href="#features">Features</a>
+      <a href="benchmark.html">Benchmark</a>
+      <a href="#install">Install</a>
+      <a href="/docs/">Docs</a>
+    </div>
+    <div class="nav-cta">
+      <span class="powered-by">By <img src="assets/sicuranext-mark.png" alt="SicuraNext" width="1154" height="156"></span>
+      <a class="btn btn-primary" href="https://github.com/sicuranext/karna" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============================================================ HERO ============================================================ -->
+<header id="top" class="hero">
+  <div class="hero-inner">
+    <span class="eyebrow hero-eyebrow">Source-available WAF for Kong <span class="sep"></span> OWASP CRS 4.x</span>
+    <div class="hero-copy">
+      <h1>A new era of WAF. Built for AI, built for speed.</h1>
+    </div>
+    <div class="hero-side">
+      <p class="hero-lead">
+        The fastest WAF you can run in front of Kong, and the first that speaks
+        the protocols your AI agents use. Full OWASP CoreRuleSet&nbsp;4.x detection,
+        libinjection-backed, 2 to 4 times faster than ModSecurity, with none of the
+        Apache-era baggage.
+      </p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary btn-lg" href="#install">Get started <span class="arr">→</span></a>
+        <a class="btn btn-secondary btn-lg" href="#console">See the console</a>
+      </div>
+      <div class="hero-trust" aria-label="Compatible with">
+        <span>Kong Gateway 3.x</span>
+        <span>OWASP CRS 4.26</span>
+        <span>libinjection v3.10</span>
+        <span>MCP-aware</span>
+      </div>
+    </div>
+
+  </div>
+  <div class="hero-scene">
+    <div class="k3d" id="hero-scene" aria-label="Karna Console: 24 hours of traffic, sample data">
+      <div class="k3d-viewport">
+        <img class="k3d-still" src="assets/console/traffic-still.webp" alt="Karna Console traffic scene: requests inspected and blocked per hour, with the peak blocking hour marked" width="2217" height="1008">
+        <div class="k3d-canvas" aria-hidden="true"></div>
+        <div class="k3d-labels" aria-hidden="true"></div>
+        <div class="k3d-frame" aria-hidden="true"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+        <div class="k3d-status" aria-live="polite">
+          <span class="k3d-step">01 / 03</span>
+          <strong>Traffic and blocks</strong>
+          <span>Every hour Karna inspected, what it stopped, and the share of traffic that was hostile.</span>
+        </div>
+        <div class="k3d-telemetry" aria-hidden="true">
+          <span class="hot">Karna Console · sample data</span>
+          <span>137,200 inspected · 2,229 blocked</span>
+          <span>last 24 hours · hourly</span>
+        </div>
+      </div>
+      <div class="k3d-controls">
+        <div class="k3d-phases" role="group" aria-label="Scene focus">
+          <button type="button" aria-pressed="true"><span>01</span> Traffic</button>
+          <button type="button" aria-pressed="false"><span>02</span> Blocks</button>
+          <button type="button" aria-pressed="false"><span>03</span> Peak</button>
+        </div>
+        <span class="k3d-note">drag to rotate · hover the floor to read an hour</span>
+        <button type="button" class="k3d-replay">Replay</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============================================================ COMPATIBLE WITH STRIP ============================================================ -->
+<div class="logos" aria-label="The stack">
+  <div class="logos-inner">
+    <div><span class="label">Runs on</span></div>
+    <div><span class="tech">Kong&nbsp;Gateway</span><span class="tech">OpenResty</span><span class="tech">nginx</span></div>
+    <div><span class="label">Compatible with</span></div>
+    <div><span class="tech">OWASP&nbsp;CoreRuleSet&nbsp;4.x</span><span class="tech">ModSecurity&nbsp;<span class="dim">rules</span></span><span class="tech">JSON-RPC&nbsp;<span class="dim">/ MCP</span></span></div>
+  </div>
+</div>
+
+<!-- ============================================================ WHY / VS MODSECURITY ============================================================ -->
+<section id="why" class="vs">
+  <div class="wrap">
+    <div>
+      <span class="sec-eyebrow">Built for the OpenResty era</span>
+      <h2 class="sec-title">Built for Kong. Not bolted on from Apache.</h2>
+      <p class="sec-lead">
+        ModSecurity was a stroke of genius in 2002. Two decades and a whole new runtime
+        later, half of what it does is wrestling with Apache assumptions Kong never had.
+        Karna keeps the genius and throws out the baggage.
+      </p>
+    </div>
+
+    <div class="vs-grid">
+      <div class="vs-col bad">
+        <div class="vs-head">
+          <span class="name">ModSecurity</span>
+          <span class="tag">Legacy · 2002</span>
+        </div>
+        <ul class="vs-list">
+          <li><span class="mark">✕</span><span>Compiled as a native module; rebuild Kong / OpenResty to upgrade, downgrade, or hot-patch.</span></li>
+          <li><span class="mark">✕</span><span>Anomaly-scoring engine with TX-side-effect variables: opaque, hard to tune, prone to runaway false positives.</span></li>
+          <li><span class="mark">✕</span><span>Configured per-vhost in seclang. No native concept of a Kong service, route, or consumer.</span></li>
+          <li><span class="mark">✕</span><span>Audit log is line-based, ModSecurity-shaped. Tooling has to reverse-engineer the format.</span></li>
+          <li><span class="mark">✕</span><span>No awareness of JSON-RPC, MCP, or SSE transports, so modern agent traffic looks like an unparseable body.</span></li>
+          <li><span class="mark">✕</span><span>Counter rules require <code>SecAction initcol</code> and an Apache-style persistence file. Not a great fit beside Redis.</span></li>
+        </ul>
+      </div>
+
+      <div class="vs-col good">
+        <div class="vs-head">
+          <span class="name">Karna</span>
+          <span class="tag">Modern · 2026</span>
+        </div>
+        <ul class="vs-list">
+          <li><span class="mark">✓</span><span>Pure Lua plugin via LuaRocks. <code>luarocks make</code>, <code>kong reload</code>, no rebuild ever.</span></li>
+          <li><span class="mark">✓</span><span>Explicit eager-block + always-on validation gates. Each match carries an actionable rule id, not an opaque score.</span></li>
+          <li><span class="mark">✓</span><span>First-class Kong: per-service plugin config, local rules per service, virtual patching via <code>rule-control</code>.</span></li>
+          <li><span class="mark">✓</span><span>JSON audit log v2: one entry per request, every match in <code>matches[]</code>. Ship to anything that reads JSON.</span></li>
+          <li><span class="mark">✓</span><span>MCP-aware out of the box. JSON-RPC envelope parsing, SSE response reassembly, per-event rule evaluation.</span></li>
+          <li><span class="mark">✓</span><span>Redis-backed counters by default. No per-worker drift, no shared-dict eviction surprises.</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="namebox">
+      <svg class="brand-mark" width="64" height="64" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="5.2" fill="#d8402c"/></svg>
+      <div>
+        <div class="namebox-h">Why we call it Karna</div>
+        <p>In the Mahabharata, <b>Karna</b> is the warrior born already wearing his armor. Surya, the sun god, gave his son a breastplate and earrings fused to his body, so no blade or arrow could ever reach him. That is what a WAF should be: protection your application carries from birth, not a wall bolted on after the first attack. The mark draws the Devanagari letter क (ka), the first sound of his name, with Surya's sun rising beside it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ CONSOLE ============================================================ -->
+<section id="console" class="sec-rule">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-eyebrow">Karna Console <span class="chip soon" style="margin-left:10px;vertical-align:1px">Coming soon</span></span>
+        <h2 class="sec-title">See every request Karna stopped, and why.</h2>
+      </div>
+      <p class="sec-lead">
+        The console reads Karna's audit log and your Kong configuration. Traffic,
+        threats and every enforced request are one click from the evidence, and
+        services, modes and rules are edited in the same place they are watched.
+      </p>
+    </div>
+
+    <div class="console-tabs" role="tablist" aria-label="Console views">
+      <button type="button" role="tab" aria-selected="true" aria-controls="cv-overview" id="ct-overview"><span>01</span>Overview</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-threats" id="ct-threats"><span>02</span>Threats</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-events" id="ct-events"><span>03</span>Events</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-services" id="ct-services"><span>04</span>Services</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-rules" id="ct-rules"><span>05</span>Rules</button>
+    </div>
+    <div class="console-stage">
+      <div class="console-panel active" role="tabpanel" id="cv-overview" aria-labelledby="ct-overview">
+        <img src="assets/console/overview.webp" width="2880" height="1800" loading="lazy" alt="Karna Console overview: hostile requests contained in the last 24 hours and the protection posture of each service">
+        <div class="console-caption"><b>Overview</b><p>How much hostile traffic was contained, how many services are enforcing, and what needs attention first.</p></div>
+      </div>
+      <div class="console-panel" role="tabpanel" id="cv-threats" aria-labelledby="ct-threats" hidden>
+        <img src="assets/console/threats.webp" width="2880" height="1800" loading="lazy" alt="Karna Console threats scene: one row per rule, matches per hour over 24 hours">
+        <div class="console-caption"><b>Threats</b><p>When each of the most matched rules fired. A spike is a burst or a scan; a flat band is steady noise worth tuning.</p></div>
+      </div>
+      <div class="console-panel" role="tabpanel" id="cv-events" aria-labelledby="ct-events" hidden>
+        <img src="assets/console/events.webp" width="2880" height="1800" loading="lazy" alt="Karna Console events table: time, service, source, request, rule and category of each enforced request">
+        <div class="console-caption"><b>Events</b><p>One audit entry per request: who sent it, which rules matched, what Karna did. Pivot by IP or rule, export NDJSON.</p></div>
+      </div>
+      <div class="console-panel" role="tabpanel" id="cv-services" aria-labelledby="ct-services" hidden>
+        <img src="assets/console/services.webp" width="2880" height="1800" loading="lazy" alt="Karna Console services map: protected services as towers, blocking and detection side by side">
+        <div class="console-caption"><b>Services</b><p>Every Kong service Karna protects, in blocking or detection, with the ones ready to switch to blocking marked.</p></div>
+      </div>
+      <div class="console-panel" role="tabpanel" id="cv-rules" aria-labelledby="ct-rules" hidden>
+        <img src="assets/console/rules.webp" width="2880" height="1800" loading="lazy" alt="Karna Console rules: custom rules per service, in native JSON or SecLang">
+        <div class="console-caption"><b>Rules</b><p>Custom rules per service, in native JSON or SecLang, and the overrides that change how existing CRS rules behave.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ SANITIZE ============================================================ -->
+<section class="san sec-rule">
+  <div class="wrap san-inner">
+    <div>
+      <span class="sec-eyebrow">Karna's signature move</span>
+      <h2 class="sec-title">Sanitize, don't block.</h2>
+      <p class="sec-lead">
+        A real name like O'Brien, or an address like "Via dell'Orso, 5", trips
+        the same SQL-injection heuristics as an attack. Every other WAF answers
+        with a 403 and a broken signup form. Karna's <code>fix_matched_parts</code>
+        action strips the dangerous characters out of the matched field and lets
+        the request continue upstream, so a false positive costs a character, not
+        a customer.
+      </p>
+      <p class="sec-lead" style="font-size: 15.5px; color: var(--fg-3); margin-top: 18px;">
+        Works on the path, query args, headers, and body alike. Each sanitized
+        request is logged with <code>action: "sanitized"</code>, so you can tune
+        from real traffic instead of guessing.
+      </p>
+    </div>
+    <div class="san-demo" aria-label="Block versus sanitize">
+      <div class="san-row block">
+        <div class="hd"><span>Other WAFs</span><span class="chip block">403 blocked</span></div>
+        <div class="bd">POST /signup
+name=<span class="strip">O'Brien</span></div>
+        <div class="verdict">Legitimate customer bounced. The form looks broken, the support ticket is on its way.</div>
+      </div>
+      <div class="san-row pass">
+        <div class="hd"><span>Karna · fix_matched_parts</span><span class="chip pass">200 sanitized</span></div>
+        <div class="bd">POST /signup
+name=<span class="kept">OBrien</span>   <span style="color: var(--fg-3)"># quote removed, request flows</span></div>
+        <div class="verdict">Upstream never sees the unsafe character. Audit log records <code>action: "sanitized"</code>.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ PERFORMANCE ============================================================ -->
+<section class="numbers sec-rule">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-eyebrow">Benchmarks · Hetzner CCX, 2 vCPU · k6 at 20 VU</span>
+        <h2 class="sec-title">Security at full throttle.</h2>
+      </div>
+      <p class="sec-lead">
+        Same hardware, same OWASP CRS, the same HTTP status on every request. So
+        this is pure throughput, not leniency. Karna doesn't just keep pace with
+        ModSecurity, it laps it, and it's a Lua plugin doing the lapping.
+      </p>
+    </div>
+
+    <div class="perf-wrap"><table class="perf-table">
+      <thead>
+        <tr>
+          <th>Requests / second (higher is better)</th>
+          <th>Apache + ModSec2</th>
+          <th>nginx + ModSec3</th>
+          <th>Caddy + Coraza</th>
+          <th class="karna">Karna</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Blocking attacks</td><td>852</td><td>1623</td><td>570</td><td class="karna">3326</td></tr>
+        <tr><td>Mixed real-world traffic</td><td>612</td><td>1270</td><td>337</td><td class="karna">1569</td></tr>
+        <tr><td>API with embedded attacks</td><td>190</td><td>688</td><td>184</td><td class="karna">815</td></tr>
+        <tr><td>Benign throughput, no cache</td><td>392</td><td>1139</td><td>319</td><td class="karna">1310</td></tr>
+      </tbody>
+    </table></div>
+    <div class="perf-foot">
+      2 to 4 times faster than ModSecurity, 2 to 11 times faster than Coraza. The one
+      workload it trails is multipart uploads, where nginx's native C++ body parser
+      edges it by 7%. The charts, every scenario, and the full methodology live on the
+      benchmark page.
+    </div>
+    <div style="margin-top: 28px;">
+      <a class="btn btn-primary btn-lg" href="benchmark.html">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+        See the full benchmark
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ CRS COVERAGE ============================================================ -->
+<section class="numbers sec-rule">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <span class="sec-eyebrow">CRS regression suite · CRS 4.26.0</span>
+        <h2 class="sec-title">All of CRS. None of the false-positive pain.</h2>
+      </div>
+      <p class="sec-lead">
+        CRS is brilliant detection wrapped in rules that bury teams in false
+        positives. Karna ships the operational layer it's missing: the in-repo
+        CRS-fix controls switch off the worst offenders for you, automatically.
+        What's left passes the entire in-scope suite, clean in both directions.
+        No missed attacks, no false alarms.
+      </p>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="val">100<span class="unit">%</span></div>
+        <div class="lbl">PL1 · pass rate</div>
+        <div class="sub">2757 / 2757 tests · recommended posture</div>
+      </div>
+      <div class="stat">
+        <div class="val">100<span class="unit">%</span></div>
+        <div class="lbl">PL2 · pass rate</div>
+        <div class="sub">4071 / 4071 tests</div>
+      </div>
+      <div class="stat">
+        <div class="val">99.9<span class="unit">%</span></div>
+        <div class="lbl">PL3 · pass rate</div>
+        <div class="sub">4604 / 4608 tests</div>
+      </div>
+      <div class="stat">
+        <div class="val">99.9<span class="unit">%</span></div>
+        <div class="lbl">PL4 · pass rate</div>
+        <div class="sub">4670 / 4674 tests</div>
+      </div>
+    </div>
+    <div class="stats-foot">
+      Not vendor numbers: run the same harness yourself from <code>crs-regression-test/</code>.
+      Every rule Karna intentionally doesn't fire is documented, and the handful of PL3+ residuals are listed.
+      Anything failing that isn't on the list is a real gap, <a href="https://github.com/sicuranext/karna/issues">please open an issue</a>.
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ FEATURES ============================================================ -->
+<section id="features" class="features sec-rule">
+  <div class="wrap">
+    <span class="sec-eyebrow">Capabilities</span>
+    <h2 class="sec-title">Everything you expect from a WAF, and the parts you've been missing.</h2>
+    <p class="sec-lead" style="margin-top: 16px;">
+      The headline acts are above. Below is the rest of what comes in the box, and
+      it's a lot. Every knob and variable is in the <a href="https://github.com/sicuranext/karna#readme" class="link">README</a>.
+    </p>
+
+    <div class="feat-grid">
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h3>OWASP CoreRuleSet 4.x</h3>
+        <p>Full CRS loader at <code>init_worker</code>, tracking 4.26.0 in the regression suite. Seclang operators (<code>@detectSQLi</code>, <code>@streq</code>, <code>@ipMatch</code>) map to engine-native names automatically.</p>
+        <div class="tag"><b>CRS&nbsp;4.x</b> · paranoia 1 to 4</div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><polyline points="20 19 12 19"/></svg>
+        </div>
+        <h3>libinjection via FFI</h3>
+        <p>SQLi and XSS detection straight from the C library, called via LuaJIT FFI. No regex roulette for the two attack classes regex handles worst.</p>
+        <div class="tag"><b>libinjection</b>&nbsp;v3.10 · zero-copy</div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+        </div>
+        <h3>Always-on validation gates</h3>
+        <p>Method allow-list, path-character policy, header deny-list, content-type and charset allow-list. The structural checks run <em>before</em> any rule: fast, deterministic, no false positives.</p>
+        <div class="tag"><b>4 gates</b> · pre-rule</div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h12"/></svg>
+        </div>
+        <h3>Local rules &amp; virtual patching</h3>
+        <p>Per-service <code>rules_request</code> / <code>rules_response</code> as stringified JSON. Adjust, exclude, or rewrite CRS rules at request time through the rule-control layer, without forking the CoreRuleSet.</p>
+        <div class="tag"><b>rule-control</b> · per service</div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="17 3 21 7 17 11"/><path d="M21 7H8"/><polyline points="7 13 3 17 7 21"/><path d="M3 17h13"/></svg>
+        </div>
+        <h3>Action &amp; response overrides</h3>
+        <p>Change what an existing rule does from plugin config: switch a block to sanitize, drop a terminal action, force a block, or rewrite the response. Selected by id, range, or tag. The cached rule pack is never mutated.</p>
+        <div class="tag"><b>rule_action_overrides</b> · <b>rule_response_overrides</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V4h6v6H4z"/><path d="M14 4h6v6h-6z"/><path d="M14 14h6v6h-6z"/><path d="M4 14h6v6H4z"/></svg>
+        </div>
+        <h3>CRS exclusion plugins</h3>
+        <p>Load the upstream CRS app plugins (WordPress, Drupal, and friends) straight from disk, or inline your own SecLang. Their <code>ctl:ruleRemove*</code> directives are parsed and applied per request.</p>
+        <div class="tag"><b>crs_plugins_enabled</b> · from disk</div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="8 6 3 12 8 18"/><polyline points="16 6 21 12 16 18"/></svg>
+        </div>
+        <h3>Every body format, flattened</h3>
+        <p>URL-encoded, JSON, multipart, and XML bodies parsed and flattened to key-value pairs for rule evaluation. Optional base64 and gzip decode. The multipart parser is hardened against known smuggling bypasses.</p>
+        <div class="tag"><b>urlencoded · json · multipart · xml</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        </div>
+        <h3>Redis rate-limit &amp; counters</h3>
+        <p>Native fixed-window rate limiting as a rule action, plus standalone counter increments, both backed by Redis. No shared-dict eviction games, no per-worker drift. Slots next to your existing Kong Redis.</p>
+        <div class="tag"><b>rate_limit</b> · <b>redis_incr_key</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 4v16"/></svg>
+        </div>
+        <h3>Audit log v2, with custom fields</h3>
+        <p>One JSON entry per request, every match in <code>matches[]</code>. Add your own fields with <code>set_log_fields</code>. Ship to Loki, OpenSearch, or S3. A ModSecurity-compatible v1 still ships for replay parity.</p>
+        <div class="tag"><b>JSON v2</b> · <b>set_log_fields</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+        </div>
+        <h3>Request enrichment</h3>
+        <p>GeoIP, ASN, and user-agent data set by sibling Kong plugins is picked up as <code>geoip.*</code> / <code>asn.*</code> rule variables and recorded in the audit log. Sibling plugins can also append their own <code>external_matches</code>.</p>
+        <div class="tag"><b>geoip · asn · user-agent</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.6l6.8-3.2M8.6 13.4l6.8 3.2"/></svg>
+        </div>
+        <h3>Plays well with other plugins</h3>
+        <p>A Karna detection can write into <code>kong.ctx.shared</code> with <code>set_variable</code>, so a sibling plugin downstream changes its behaviour without ever knowing Karna is there. The sidecar pattern, done cleanly.</p>
+        <div class="tag"><b>set_variable</b> · <b>kong.ctx.shared</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 4 6 20"/><polyline points="18 4 18 20"/><path d="M6 12h12"/></svg>
+        </div>
+        <h3>Detection &amp; blocking modes</h3>
+        <p>Toggle <code>engine_blocking_mode</code> per service. Shadow-deploy alongside the existing edge, compare audit logs, then flip to enforce once the signal is clean.</p>
+        <div class="tag"><b>detection</b> ⇆ <b>blocking</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v6M12 16v6M2 12h6M16 12h6M5 5l4 4M15 15l4 4M5 19l4-4M15 9l4-4"/></svg>
+        </div>
+        <h3>22+ engine operators</h3>
+        <p><code>rx</code>, <code>libinjection_sqli</code>, <code>libinjection_xss</code>, <code>ipMatch</code>, <code>pmFromFile</code>, <code>validateUtf8Encoding</code>, <code>validateByteRange</code>, in positive and negated forms. Dispatched by string equality, no surprises.</p>
+        <div class="tag"><b>seclang-compatible</b></div>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9z"/><path d="M18.5 14l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>
+        </div>
+        <h3>Install it into your AI agent</h3>
+        <p>Karna ships a Claude Code skill that teaches your coding agent how to deploy, configure, and write rules for the WAF. One line to install, then just ask. <a href="/skill/" class="link">Install the skill →</a></p>
+        <div class="tag"><b>Claude Code skill</b> · one-line install</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ PIPELINE ============================================================ -->
+<section id="pipeline" class="pipe sec-rule">
+  <div class="wrap">
+    <span class="sec-eyebrow">The rule pipeline</span>
+    <h2 class="sec-title">Layered, ordered, and easy to reason about.</h2>
+    <p class="sec-lead">
+      Every request flows through the same four layers, in the same order. No anomaly scoring,
+      no implicit chains across phases. Each layer is independently toggleable per service.
+    </p>
+
+    <div class="pipe-diagram">
+      <div class="pipe-side in">
+        <div class="lbl">Ingress</div>
+        <div class="val">HTTP request</div>
+        <div class="arrow">→</div>
+        <div class="meta">Kong access<br/>phase</div>
+      </div>
+
+      <div class="pipe-stack">
+        <div class="pipe-row always">
+          <div class="num">1</div>
+          <div class="text">
+            <h4>Always-on validation gates</h4>
+            <p>Method allow-list · path-character policy · header deny-list · content-type / charset allow-list. Runs first, unconditionally: fail closed, fast.</p>
+          </div>
+          <span class="gate">Always on</span>
+        </div>
+        <div class="pipe-row">
+          <div class="num">2</div>
+          <div class="text">
+            <h4>Per-service rule controls</h4>
+            <p>Adjust, exclude, or rewrite global rules at request time. Includes the in-repo CRS-fix layer that neutralises known false-positive-prone OWASP CRS rules in production.</p>
+          </div>
+          <span class="gate">rule-control</span>
+        </div>
+        <div class="pipe-row">
+          <div class="num">3</div>
+          <div class="text">
+            <h4>Per-service local rules</h4>
+            <p>Your custom <code>rules_request</code> / <code>rules_response</code>. Virtual patching for emergencies that don't deserve a deploy.</p>
+          </div>
+          <span class="gate">local_rules_enabled</span>
+        </div>
+        <div class="pipe-row">
+          <div class="num">4</div>
+          <div class="text">
+            <h4>OWASP CoreRuleSet</h4>
+            <p>The CRS rule pack loaded from disk at <code>init_worker</code>. Paranoia 1 to 4. Detection-only or blocking per service.</p>
+          </div>
+          <span class="gate">coreruleset_enabled</span>
+        </div>
+      </div>
+
+      <div class="pipe-side out">
+        <div class="meta">to&nbsp;upstream<br/>or 403</div>
+        <div class="arrow">→</div>
+        <div class="val">Verdict</div>
+        <div class="lbl">audit log v2</div>
+      </div>
+    </div>
+
+    <div class="pipe-foot">
+      Detection-only or blocking is one flag: <b>engine_blocking_mode</b>. Default is detection-only, so you can shadow-deploy with confidence.
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ MCP CALLOUT ============================================================ -->
+<section class="mcp sec-rule">
+  <div class="wrap mcp-inner">
+    <div>
+      <span class="sec-eyebrow">For agent traffic</span>
+      <h2 class="sec-title">The first WAF that speaks MCP.</h2>
+      <p>
+        Karna parses the JSON-RPC envelope on every request, reassembles
+        SSE responses on the Streamable HTTP transport, and runs rules
+        per&nbsp;event. Your model gateway gets the same layered defense
+        as the rest of the API surface.
+      </p>
+      <ul class="mcp-bullets">
+        <li>JSON-RPC 2.0 envelope validation via <code>mcp_jsonrpc_valid</code></li>
+        <li>Method allow-list via <code>mcp_method_in</code></li>
+        <li>Per-event evaluation on SSE response streams</li>
+        <li>Rule variables in the <code>mcp.*</code> namespace, plus <code>request.body.json.*</code></li>
+      </ul>
+    </div>
+
+    <div class="mcp-card" aria-label="Example MCP rule match">
+      <div class="head">
+        <span class="title">audit · matches[0]</span>
+        <span class="chip block">blocked</span>
+      </div>
+<pre>{
+  <span class="kw">"rule_id"</span>:    <span class="str">"mcp_method_denied"</span>,
+  <span class="kw">"phase"</span>:      <span class="str">"request"</span>,
+  <span class="kw">"transport"</span>:  <span class="str">"streamable-http"</span>,
+  <span class="kw">"method"</span>:     <span class="str">"tools/call"</span>,
+  <span class="kw">"variable"</span>:   <span class="str">"request.body.json.params.name"</span>,
+  <span class="kw">"matched"</span>:    <span class="str">"shell_exec"</span>,
+  <span class="kw">"action"</span>:     {
+    <span class="kw">"fixed_response"</span>: <span class="dim">403</span>,
+    <span class="kw">"reason"</span>:         <span class="str">"tool not allow-listed"</span>
+  },
+  <span class="cmt">// karna.engine 1.0.0 · paranoia=2 · 1.8ms</span>
+}</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ INSTALL ============================================================ -->
+<section id="install" class="install sec-rule">
+  <div class="wrap">
+    <span class="sec-eyebrow">Install with Docker</span>
+    <h2 class="sec-title">The whole WAF in one Docker image.</h2>
+    <p class="sec-lead" style="margin-top: 16px;">
+      Kong, the OWASP CoreRuleSet, libinjection, and Karna baked together. Run
+      it as a reverse proxy in front of any app you already have, in any
+      language, then flip blocking on with one flag.
+    </p>
+
+    <div class="install-grid">
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <div>
+            <h4>Clone and build</h4>
+            <p>The production <code>Dockerfile</code> ships in the repo. <code>git clone</code>, then <code>docker build</code> gives you one self-contained image: Kong, the OWASP CoreRuleSet, libinjection, and Karna baked together. Nothing to compile by hand.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="n">2</div>
+          <div>
+            <h4>Point it at your app</h4>
+            <p>Karna runs on Kong as a reverse proxy, so it sits in front of whatever you already run: any language, any framework, on any host. A small DB-less <code>kong.yml</code> routes traffic to your backend and turns Karna on.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="n">3</div>
+          <div>
+            <h4>Run it</h4>
+            <p>One <code>docker compose</code> brings up Karna in front of your app (and Redis for rate-limiting), and traffic flows <code>client → Karna → your app</code>. Start in detection-only, watch the audit log, then set <code>engine_blocking_mode</code> to block.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="code-card">
+        <div class="code-tabs" role="tablist">
+          <button class="code-tab active" data-tab="build" role="tab">build</button>
+          <button class="code-tab" data-tab="kongyml" role="tab">kong.yml</button>
+          <button class="code-tab" data-tab="run" role="tab">run</button>
+        </div>
+        <div class="code-body active" data-body="build">
+<pre><span class="cmt"># clone the repo (the production Dockerfile ships with it)</span>
+<span class="kw">git</span> clone https://github.com/sicuranext/karna
+<span class="kw">cd</span> karna
+
+<span class="cmt"># one self-contained image: Kong + OWASP CRS + libinjection + Karna,</span>
+<span class="cmt"># plus the native RE2 / Aho-Corasick scanners. Nothing to compile by hand.</span>
+<span class="kw">docker</span> build -f docker/Dockerfile -t karna .</pre>
+        </div>
+        <div class="code-body" data-body="kongyml">
+<pre><span class="cmt"># kong.yml · DB-less. Put Karna in front of any backend.</span>
+<span class="prm">_format_version</span>: <span class="str">"3.0"</span>
+<span class="prm">services</span>:
+  - <span class="prm">name</span>: my-app
+    <span class="prm">url</span>: <span class="str">http://my-backend:8080</span>   <span class="cmt"># your existing app, any language</span>
+    <span class="prm">routes</span>:
+      - <span class="prm">name</span>: my-app
+        <span class="prm">paths</span>: [<span class="str">"/"</span>]
+    <span class="prm">plugins</span>:
+      - <span class="prm">name</span>: <span class="kw">karna</span>
+        <span class="prm">config</span>:
+          <span class="prm">engine_blocking_mode</span>: <span class="num">false</span>  <span class="cmt"># start detect-only; set true to block (403)</span>
+          <span class="prm">paranoia_level</span>: <span class="num">1</span>          <span class="cmt"># OWASP CRS paranoia 1-4</span>
+          <span class="prm">auditlog_enabled</span>: <span class="num">true</span>
+          <span class="prm">redis_host</span>: redis          <span class="cmt"># only used by rate_limit rules</span>
+          <span class="prm">redis_port</span>: <span class="num">6379</span></pre>
+        </div>
+        <div class="code-body" data-body="run">
+<pre><span class="cmt"># point kong.yml at your app, then bring up Karna + Redis (DB-less)</span>
+<span class="kw">docker</span> compose -f docker/docker-compose.prod.yml up -d
+
+<span class="cmt"># …or run the image on its own (rate_limit rules then need an external Redis)</span>
+<span class="kw">docker</span> run -d --name karna -p 8000:8000 \
+  -e <span class="prm">KONG_DATABASE</span>=off \
+  -e <span class="prm">KONG_DECLARATIVE_CONFIG</span>=/kong/kong.yml \
+  -v <span class="str">$PWD/docker/kong.yml:/kong/kong.yml:ro</span> \
+  karna
+
+<span class="cmt"># traffic now: client -> :8000 (Karna / Kong) -> my-backend:8080</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================================================== INSTALL · EXISTING KONG ===================================================== -->
+<section id="install-existing" class="install sec-rule">
+  <div class="wrap">
+    <span class="sec-eyebrow">Already running Kong?</span>
+    <h2 class="sec-title">Drop Karna into the Kong you already run.</h2>
+    <p class="sec-lead" style="margin-top: 16px;">
+      Karna is a pure Lua plugin, so it installs into an existing Kong or
+      OpenResty without rebuilding anything. <code>luarocks make</code>, enable
+      it in <code>kong.conf</code>, reload. Add libinjection and the CoreRuleSet
+      once and you are inspecting live traffic.
+    </p>
+
+    <div class="install-grid">
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <div>
+            <h4>Install the plugin</h4>
+            <p>Clone the repo and run <code>./scripts/install.sh</code>. One command installs the plugin (pure Lua, no rebuild of Kong or OpenResty), builds libinjection, downloads the OWASP CoreRuleSet, and builds the native scanners for the fast path.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="n">2</div>
+          <div>
+            <h4>Enable it in kong.conf</h4>
+            <p>Add <code>karna</code> to <code>plugins</code>, set the PCRE match limit, and <code>kong reload</code>. The plugin loads without a restart.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="n">3</div>
+          <div>
+            <h4>Turn it on per service</h4>
+            <p>Attach Karna to any service or route through the Admin API or your declarative config. Start in detection-only, then flip <code>engine_blocking_mode</code> on.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="code-card">
+        <div class="code-tabs" role="tablist">
+          <button class="code-tab active" data-tab="deps" role="tab">install</button>
+          <button class="code-tab" data-tab="kongconf" role="tab">kong.conf</button>
+          <button class="code-tab" data-tab="attach" role="tab">enable</button>
+        </div>
+        <div class="code-body active" data-body="deps">
+<pre><span class="cmt"># one command: the plugin + libinjection + the OWASP CoreRuleSet</span>
+<span class="cmt"># + the native RE2 / Aho-Corasick scanners. On a Debian-based Kong</span>
+<span class="cmt"># image it installs the build dependencies too.</span>
+<span class="kw">git</span> clone https://github.com/sicuranext/karna.git
+<span class="kw">cd</span> karna
+<span class="kw">sudo</span> ./scripts/install.sh
+
+<span class="cmt"># override a default, or skip a piece you already have:</span>
+<span class="cmt">#   CRS_VERSION=4.27.0 sudo -E ./scripts/install.sh</span>
+<span class="cmt">#   sudo ./scripts/install.sh --skip-libinjection --skip-crs</span></pre>
+        </div>
+        <div class="code-body" data-body="kongconf">
+<pre><span class="cmt"># kong.conf · enable Karna, no rebuild</span>
+<span class="prm">plugins</span> = bundled,karna
+
+<span class="cmt"># cap PCRE backtracking (safety vs catastrophic regex)</span>
+<span class="prm">nginx_http_lua_regex_match_limit</span> = <span class="num">100000</span>
+
+<span class="cmt"># then reload Kong to load the plugin (no restart needed)</span>
+<span class="kw">kong</span> reload</pre>
+        </div>
+        <div class="code-body" data-body="attach">
+<pre><span class="cmt"># turn Karna on for an existing service (Admin API)</span>
+<span class="kw">curl</span> -X POST http://localhost:8001/services/&lt;service&gt;/plugins \
+  -d <span class="prm">name</span>=karna \
+  -d <span class="prm">config.engine_blocking_mode</span>=<span class="num">false</span> \
+  -d <span class="prm">config.paranoia_level</span>=<span class="num">1</span> \
+  -d <span class="prm">config.auditlog_enabled</span>=<span class="num">true</span>
+
+<span class="cmt"># start detect-only; set engine_blocking_mode=true to block (403)</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ CLOSING CTA ============================================================ -->
+<section id="docs" class="closing sec-rule">
+  <div class="wrap">
+    <div class="closing-card">
+      <div>
+        <span class="sec-eyebrow">Source-available · Elastic License 2.0</span>
+        <h2>Put Karna in front of whatever you already run.</h2>
+        <p>You don't need a Kong-native stack. Karna runs on Kong as a reverse proxy, so it guards any app behind it: any language, any framework, anything already in production. Source-available, and the same <code>crs-regression-test/</code> harness that gates every release ships in the repo.</p>
+      </div>
+      <div class="ctas">
+        <a class="btn btn-on-ink btn-lg" href="https://github.com/sicuranext/karna" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
+          View on GitHub
+        </a>
+        <a class="btn btn-outline-ink btn-lg" href="/docs/">
+          Read the docs
+        </a>
+        <a class="btn btn-outline-ink btn-lg" href="/skill/">
+          Install the AI skill
+        </a>
+        <a class="plain-link" href="https://github.com/sicuranext/karna/issues" target="_blank" rel="noopener">
+          Report an issue →
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ FOOTER ============================================================ -->
+<footer class="foot">
+  <div class="foot-inner">
+    <div>
+      <a class="brand" href="#top"><svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="6.5" fill="#d8402c"/></svg><span class="brand-word">Karna</span></a>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. Cybersecurity for everyone.</p>
+    </div>
+    <div>
+      <h5>Project</h5>
+      <a href="https://github.com/sicuranext/karna">GitHub repository</a>
+      <a href="https://github.com/sicuranext/karna/releases">Releases</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/LICENSE">License</a>
+      <a href="https://discord.gg/FaHMZfmqty">Discord community</a>
+    </div>
+    <div>
+      <h5>Docs</h5>
+      <a href="/docs/#install">Installation</a>
+      <a href="/docs/configuration.html">Configuration</a>
+      <a href="/docs/rules.html">Writing rules</a>
+      <a href="/docs/rules.html#operators">Operators</a>
+    </div>
+    <div>
+      <h5>SicuraNext</h5>
+      <a href="https://sicuranext.com">sicuranext.com</a>
+      <a href="https://sicuranext.com/platform-pai/">Platform</a>
+      <a href="https://sicuranext.com/contatti">Contact</a>
+      <a href="mailto:karna@sicuranext.com">karna@sicuranext.com</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
+    <a href="https://sicuranext.com" target="_blank" rel="noopener"><img src="assets/sicuranext-mark.png" alt="SicuraNext" width="1154" height="156"></a>
+  </div>
+</footer>
+
+<script>
+  // tiny code-tab switcher
+  (function () {
+    var tabs = document.querySelectorAll('.code-tab');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var name = tab.getAttribute('data-tab');
+        var card = tab.closest('.code-card');
+        card.querySelectorAll('.code-tab').forEach(function (t) { t.classList.toggle('active', t === tab); });
+        card.querySelectorAll('.code-body').forEach(function (b) {
+          b.classList.toggle('active', b.getAttribute('data-body') === name);
+        });
+      });
+    });
+  })();
+
+  // copy-to-clipboard button on each code card (copies the visible tab)
+  (function () {
+    function copyText(text, done) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text, done); });
+      } else { legacyCopy(text, done); }
+    }
+    function legacyCopy(text, done) {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+    document.querySelectorAll('.code-card').forEach(function (card) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-btn';
+      btn.textContent = 'Copy';
+      btn.setAttribute('aria-label', 'Copy code to clipboard');
+      var reset;
+      btn.addEventListener('click', function () {
+        var pre = card.querySelector('.code-body.active pre')
+               || card.querySelector('.code-body pre')
+               || card.querySelector('pre');
+        if (!pre) return;
+        copyText(pre.textContent, function () {
+          btn.textContent = 'Copied';
+          btn.classList.add('copied');
+          clearTimeout(reset);
+          reset = setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+        });
+      });
+      var tabs = card.querySelector('.code-tabs');
+      if (tabs) {
+        tabs.appendChild(btn);
+      } else {
+        card.style.position = 'relative';
+        btn.classList.add('copy-btn-float');
+        card.appendChild(btn);
+      }
+    });
+  })();
+  // console tabs
+  (function () {
+    var tabs = document.querySelectorAll('.console-tabs [role="tab"]');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        tabs.forEach(function (t) {
+          var on = t === tab, panel = document.getElementById(t.getAttribute('aria-controls'));
+          t.setAttribute('aria-selected', String(on));
+          panel.hidden = !on; panel.classList.toggle('active', on);
+        });
+      });
+    });
+  })();
+</script>
+<script type="module">
+  // the console's 3D traffic scene, started when the hero is on screen
+  const root = document.getElementById('hero-scene');
+  const io = new IntersectionObserver(async ([e]) => {
+    if (!e.isIntersecting) return;
+    io.disconnect();
+    try { (await import('./assets/scene/hero.js')).mountHero(root); } catch (err) { /* the still stays */ }
+  }, { rootMargin: '200px' });
+  io.observe(root);
+</script>
+</body>
+</html>

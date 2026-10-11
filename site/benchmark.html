@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Karna vs the open-source WAFs (ModSecurity, Coraza): Performance Benchmark</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="description" content="WAF throughput benchmark: Karna vs Apache+ModSecurity 2, Nginx+ModSecurity 3, and OWASP Coraza on identical hardware, OWASP CRS PL1, k6 20 VUs."/>
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg"/>
+<link rel="stylesheet" href="assets/site.css"/>
+<link rel="stylesheet" href="assets/benchmark.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+
+<!-- NAV (shared style with index.html) -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html" aria-label="Karna home">
+      <svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="6.5" fill="#d8402c"/></svg>
+      <span class="brand-word">Karna</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html#why">Why Karna</a>
+      <a href="index.html#console">Console</a>
+      <a href="index.html#features">Features</a>
+      <a class="active" href="benchmark.html">Benchmark</a>
+      <a href="index.html#install">Install</a>
+      <a href="/docs/">Docs</a>
+    </div>
+    <div class="nav-cta">
+      <span class="powered-by">By <img src="assets/sicuranext-mark.png" alt="SicuraNext" width="1154" height="156"></span>
+      <a class="btn btn-primary" href="https://github.com/sicuranext/karna" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<header class="bhero">
+ <div class="bhero-inner">
+  <span class="eyebrow">WAF throughput <span class="sep"></span> OWASP CRS PL1</span>
+  <h1>Karna <em>vs</em> the open-source WAFs</h1>
+  <div class="hero-spec">
+   <span>OWASP CRS PL1</span>
+   <span>k6 · 20 VUs</span>
+   <span>Hetzner CCX dedicated</span>
+   <span>2 vCPU each</span>
+   <span>best-of-5</span>
+  </div>
+ </div>
+</header>
+<!-- STACK STRIP -->
+<div class="stack">
+ <div class="stack-inner">
+  <span class="label">Under test</span>
+  <span class="wchip">Apache + ModSecurity 2</span>
+  <span class="wchip">Nginx + ModSecurity 3</span>
+  <span class="wchip">Caddy + OWASP Coraza</span>
+  <span class="wchip k">Karna · native in Kong Gateway</span>
+ </div>
+</div>
+<div class="wrap">
+
+ <!-- INTRO -->
+ <p class="intro">
+  <span class="k">Karna</span> is an OWASP Core Rule Set-compatible WAF engine that runs natively inside
+  <strong>Kong Gateway</strong>, no Apache, no separate ModSecurity daemon, no extra hop. This benchmark measures it
+  against the two reference ModSecurity stacks (<strong>Apache&nbsp;+&nbsp;ModSecurity&nbsp;2</strong> and
+  <strong>Nginx&nbsp;+&nbsp;ModSecurity&nbsp;3</strong>) and <strong>OWASP&nbsp;Coraza</strong> (the Go WAF, on Caddy), on identical hardware (Hetzner&nbsp;CCX dedicated, 2&nbsp;vCPU each),
+  the same <strong>OWASP&nbsp;CRS Paranoia&nbsp;Level&nbsp;1</strong> ruleset, and identical traffic generated with
+  <strong>k6 at 20 virtual users</strong>. Every figure is the best of five warm runs. On every request all four WAFs
+  returned the same HTTP status, full detection parity, so the numbers compare throughput, not leniency. Each scenario
+  reports sustained requests&nbsp;per&nbsp;second; higher is better.
+ </p>
+
+ <!-- HEADLINE STATS -->
+ <div class="sec">
+  <div class="sec-label">Headline results</div>
+  <div class="hstats">
+   <div class="hstat">
+    <div class="hstat-lbl">Real-world traffic</div>
+    <div class="hstat-val">1569<span class="u">rps</span></div>
+    <div class="hstat-vs">
+     <div class="row"><span class="who">vs Nginx + ModSec3</span><span class="up">+24%</span></div>
+     <div class="row"><span class="who">vs Apache + ModSec2</span><span class="up">+156%</span></div>
+     <div class="row"><span class="who">vs Caddy + Coraza</span><span class="up">+365%</span></div>
+    </div>
+   </div>
+   <div class="hstat">
+    <div class="hstat-lbl">Blocking attacks</div>
+    <div class="hstat-val">3326<span class="u">rps</span></div>
+    <div class="hstat-vs">
+     <div class="row"><span class="who">vs Nginx + ModSec3</span><span class="up">+105%</span></div>
+     <div class="row"><span class="who">vs Apache + ModSec2</span><span class="up">+290%</span></div>
+     <div class="row"><span class="who">vs Caddy + Coraza</span><span class="up">+483%</span></div>
+    </div>
+   </div>
+   <div class="hstat">
+    <div class="hstat-lbl">API with attacks</div>
+    <div class="hstat-val">815<span class="u">rps</span></div>
+    <div class="hstat-vs">
+     <div class="row"><span class="who">vs Nginx + ModSec3</span><span class="up">+19%</span></div>
+     <div class="row"><span class="who">vs Apache + ModSec2</span><span class="up">+329%</span></div>
+     <div class="row"><span class="who">vs Caddy + Coraza</span><span class="up">+344%</span></div>
+    </div>
+   </div>
+  </div>
+ </div>
+
+ <!-- OVERVIEW -->
+ <div class="sec">
+  <div class="sec-label">Overview</div>
+  <div class="chart-card">
+   <div class="ct">Requests per second, all scenarios</div>
+   <div class="cd">All four WAFs on identical hardware, OWASP CRS PL1. Scenario 06 reflects Karna's early-exit block path. Higher is better.</div>
+   <div class="leg">
+    <span><span class="ld" style="background:#171a1e"></span>Karna</span>
+    <span><span class="ld" style="background:#626974"></span>Nginx + ModSec3</span>
+    <span><span class="ld" style="background:#9aa3ad"></span>Apache + ModSec2</span>
+    <span><span class="ld" style="background:#cfd4da"></span>Caddy + Coraza</span>
+   </div>
+   <div style="position:relative;width:100%;height:360px">
+    <canvas id="mainChart" role="img" aria-label="Grouped bar chart of requests per second across all scenarios"></canvas>
+   </div>
+  </div>
+  <div class="two-col">
+   <div class="chart-card" style="margin-bottom:0">
+    <div class="ct">Karna vs Nginx + ModSec3</div>
+    <div class="cd">Ratio per scenario. 1.0 = parity, above 1 = Karna faster.</div>
+    <div style="position:relative;width:100%;height:300px">
+     <canvas id="vsNginx" role="img" aria-label="Karna versus Nginx ratio per scenario"></canvas>
+    </div>
+   </div>
+   <div class="chart-card" style="margin-bottom:0">
+    <div class="ct">Karna vs Apache + ModSec2</div>
+    <div class="cd">Ratio per scenario. 1.0 = parity, above 1 = Karna faster.</div>
+    <div style="position:relative;width:100%;height:300px">
+     <canvas id="vsApache" role="img" aria-label="Karna versus Apache ratio per scenario"></canvas>
+    </div>
+   </div>
+   <div class="chart-card" style="margin-bottom:0">
+    <div class="ct">Karna vs Caddy + Coraza</div>
+    <div class="cd">Ratio per scenario. 1.0 = parity, above 1 = Karna faster.</div>
+    <div style="position:relative;width:100%;height:300px">
+     <canvas id="vsCoraza" role="img" aria-label="Karna versus Coraza ratio per scenario"></canvas>
+    </div>
+   </div>
+  </div>
+ </div>
+
+ <!-- SCENARIO DETAIL -->
+ <div class="sec">
+  <div class="sec-label">Scenario detail</div>
+
+  <!-- 01 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 01</div><div class="scn-title">Same request</div></div>
+    <span class="scn-badge bw">+22% vs Nginx · +140% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">1542 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">1263 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">643 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">377 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c01"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">GET with 3 query args; only the <code>page</code> param varies per VU. ~90&nbsp;B request, no body, the minimal benign request.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">Hot-path efficiency. Karna's per-request value caches (RE2::Set gate, transform memo, resolve-once arg cache) stay warm when args repeat. This is the engine's overhead floor on the most common pattern: cacheable benign GET traffic.</div></div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 02 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 02</div><div class="scn-title">Random fields</div></div>
+    <span class="scn-badge bw">+15% vs Nginx · +234% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">1310 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">1139 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">392 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">319 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c02"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">GET with 5 fully random query args on every request. No body, no two requests sharing a value.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">Worst case for caching: every value is unseen, forcing full CRS evaluation from scratch each time. The honest no-cache number, realistic for high-cardinality APIs. The gap from Scenario 01 isolates the caching contribution.</div></div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 03 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 03</div><div class="scn-title">Big URL-encoded body</div></div>
+    <span class="scn-badge bw">+40% vs Nginx · +958% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">20.1 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">14.4 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">1.9 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">1.8 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c03"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">POST with 950 form fields, 100&nbsp;B each. ~103&nbsp;KB body, at the edge of ModSec's <code>SecArgsLimit</code>.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">The rules&nbsp;×&nbsp;args scaling cost: body parse, flatten into a 950-entry arg table, per-arg evaluation. Apache+ModSec2's interpreted PCRE collapses to ~2&nbsp;rps. Karna's compiled RE2 + Aho-Corasick engine sustains 11× the throughput, and leads Nginx+ModSec3 by 40%.</div></div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 04 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 04</div><div class="scn-title">Deep JSON</div></div>
+    <span class="scn-badge bt">Three-way tie · parse-depth bound</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">228 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">220 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">201 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">107 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c04"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">POST with a single JSON object nested 400 levels deep. ~2.4&nbsp;KB body, depth is the stress, not size.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">JSON parser nesting-depth handling and recursive flatten. All three converge near 200-228&nbsp;rps: the ceiling is parse depth, not engine speed. A genuine tie, any WAF here handles deeply-nested JSON at roughly the same rate.</div></div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 05 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 05</div><div class="scn-title">Multipart upload</div></div>
+    <span class="scn-badge bn">−7% vs Nginx · +11% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">541 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">580 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">486 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">277 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c05"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">POST multipart/form-data: 2 text fields + 3 file parts (10&nbsp;KB each). ~30&nbsp;KB body, a realistic file upload.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">Multipart parsing: boundary scan, per-part header parsing, file-content extraction and scanning. Karna's hardened parser closes ~12 known multipart bypass classes; the −7% vs Nginx is the cost of that added inspection. Still 11% ahead of Apache.</div></div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 06 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 06</div><div class="scn-title">Attack payloads</div></div>
+    <span class="scn-badge bw">+105% vs Nginx · +290% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">3326 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">1623 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">852 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">570 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c06"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">GET rotating 4 attack classes round-robin: XSS (941), SQLi (942), LFI (930), RCE (932) in the querystring. Every request expects a 403.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">Block-path throughput. Karna blocks on the first terminal rule hit and returns immediately; CRS anomaly scoring keeps evaluating the full ruleset to accumulate a score, even on obviously malicious requests. Karna absorbs roughly 2× the attack volume of Nginx before saturating.</div></div>
+     <div class="opnote">
+      <div class="nlbl">Operational note</div>
+      <div class="ntxt">A WAF that clears only 852-1623 attack rps becomes the DoS target itself. A sustained XSS flood at 2000&nbsp;rps overwhelms Apache+ModSec2 entirely; <strong>Karna carries that volume with headroom to spare.</strong></div>
+     </div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 07 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 07</div><div class="scn-title">Mixed traffic</div></div>
+    <span class="scn-badge bw">+24% vs Nginx · +156% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">1569 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">1270 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">612 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">337 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c07"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">70% benign GET, 20% benign urlencoded POST, 10% attack GET (XSS/SQLi/LFI). ~10% of requests blocked with 403.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">Pass-path and block-path interleaved in one run, the single figure closest to production traffic. Karna holds +24% vs Nginx and +156% vs Apache, consistent with the per-path results above.</div></div>
+    </div>
+   </div>
+  </div>
+
+  <!-- 09 -->
+  <div class="scn">
+   <div class="scn-header">
+    <div><div class="scn-num">Scenario 09</div><div class="scn-title">API with attacks</div></div>
+    <span class="scn-badge bw">+19% vs Nginx · +329% vs Apache</span>
+   </div>
+   <div class="scn-pills">
+    <div class="pill kp"><span class="lbl">Karna</span><span class="val">815 rps</span></div>
+    <div class="pill"><span class="lbl">Nginx + ModSec3</span><span class="val">688 rps</span></div>
+    <div class="pill"><span class="lbl">Apache + ModSec2</span><span class="val">190 rps</span></div>
+    <div class="pill"><span class="lbl">Caddy + Coraza</span><span class="val">184 rps</span></div>
+   </div>
+   <div class="scn-body">
+    <div class="scn-chart-wrap"><div style="position:relative;width:100%;height:210px"><canvas id="c09"></canvas></div></div>
+    <div class="scn-desc-wrap">
+     <div class="desc-row"><div class="desc-lbl">Payload</div><div class="desc-txt">POST to <code>/api</code>: JSON body + querystring + Cookie + Authorization header on every request. 70% fully benign; 30% poison exactly one vector with SQLi/XSS/traversal/RCE.</div></div>
+     <div class="desc-row"><div class="desc-lbl">What it tests</div><div class="desc-txt">Full multi-vector inspection, body, query string, cookie and auth header scanned on every request, not just one parser. The most realistic modern-API scenario. Karna inspects all four surfaces and still leads Nginx by 19%; Apache's interpreted per-vector PCRE drops to 190&nbsp;rps, 4.3× slower.</div></div>
+    </div>
+   </div>
+  </div>
+
+ </div>
+</div>
+
+<!-- FOOTER -->
+<div class="bench-end"></div>
+<footer class="foot">
+  <div class="foot-inner">
+    <div>
+      <a class="brand" href="index.html"><svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="6.5" fill="#d8402c"/></svg><span class="brand-word">Karna</span></a>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. Cybersecurity for everyone.</p>
+    </div>
+    <div>
+      <h5>Project</h5>
+      <a href="https://github.com/sicuranext/karna">GitHub repository</a>
+      <a href="https://github.com/sicuranext/karna/releases">Releases</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/sicuranext/karna/blob/main/LICENSE">License</a>
+      <a href="https://discord.gg/FaHMZfmqty">Discord community</a>
+    </div>
+    <div>
+      <h5>Docs</h5>
+      <a href="/docs/#install">Installation</a>
+      <a href="/docs/configuration.html">Configuration</a>
+      <a href="/docs/rules.html">Writing rules</a>
+      <a href="/docs/rules.html#operators">Operators</a>
+    </div>
+    <div>
+      <h5>SicuraNext</h5>
+      <a href="https://sicuranext.com">sicuranext.com</a>
+      <a href="https://sicuranext.com/platform-pai/">Platform</a>
+      <a href="https://sicuranext.com/contatti">Contact</a>
+      <a href="mailto:karna@sicuranext.com">karna@sicuranext.com</a>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
+    <a href="https://sicuranext.com" target="_blank" rel="noopener"><img src="assets/sicuranext-mark.png" alt="SicuraNext" width="1154" height="156"></a>
+  </div>
+</footer>
+
+<script>
+const CK='#171a1e', CN='#626974', CA='#9aa3ad';
+const CK_soft='#171a1e';
+const CC='#cfd4da';
+const grid='#eceff2', tick='#626974', axisTitle='#8a929a';
+const OLIVE='#171a1e', RED='#d8402c';
+const tooltipBase={backgroundColor:'#171a1e',titleColor:'#ffffff',bodyColor:'rgba(255,255,255,0.86)',borderColor:'rgba(255,255,255,0.14)',borderWidth:1,padding:10,cornerRadius:0,titleFont:{family:"'IBM Plex Mono',monospace",size:11},bodyFont:{family:"Manrope,sans-serif",size:12}};
+
+Chart.defaults.font.family="Manrope, sans-serif";
+Chart.defaults.font.size=11;
+Chart.defaults.color=tick;
+
+const labels=['same req','random fields','big form','deep JSON','multipart','attack','mixed','API+attacks'];
+const karna =[1541.6,1309.5,20.1,227.8,540.7,3325.5,1568.5,815.3];
+const nginx =[1262.8,1138.6,14.4,219.8,580,1622.5,1269.6,687.7];
+const apache=[642.8,391.9,1.9,200.7,485.6,852.2,611.9,190.0];
+const coraza=[376.8,319.2,1.8,107.4,276.8,570.0,337.3,183.5];
+
+const baseOpts=(yLabel)=>({
+ responsive:true,maintainAspectRatio:false,
+ plugins:{legend:{display:false},tooltip:{...tooltipBase,callbacks:{label:ctx=>` ${ctx.dataset.label}: ${ctx.raw} rps`}}},
+ scales:{
+  x:{ticks:{color:tick,autoSkip:false,maxRotation:30,font:{size:10}},grid:{color:grid,drawTicks:false},border:{color:grid}},
+  y:{ticks:{color:tick},grid:{color:grid,drawTicks:false},border:{color:grid},title:{display:!!yLabel,text:yLabel||'',color:axisTitle,font:{family:"'IBM Plex Mono',monospace",size:10}}}}
+});
+
+new Chart(document.getElementById('mainChart'),{type:'bar',
+ data:{labels,datasets:[
+  {label:'Karna',data:karna,backgroundColor:CK,borderColor:CK,borderWidth:0,borderRadius:0},
+  {label:'Nginx+ModSec3',data:nginx,backgroundColor:CN,borderWidth:0,borderRadius:0},
+  {label:'Apache+ModSec2',data:apache,backgroundColor:CA,borderWidth:0,borderRadius:0},
+  {label:'Caddy+Coraza',data:coraza,backgroundColor:CC,borderWidth:0,borderRadius:0},
+ ]},options:baseOpts('rps')
+});
+
+const vsN=karna.map((k,i)=>parseFloat((k/nginx[i]).toFixed(2)));
+new Chart(document.getElementById('vsNginx'),{type:'bar',
+ data:{labels,datasets:[{label:'× vs Nginx',data:vsN,
+  backgroundColor:vsN.map(v=>v>=1?CK:RED),borderWidth:0,borderRadius:0}]},
+ options:{...baseOpts(),responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{display:false},tooltip:{...tooltipBase,callbacks:{label:ctx=>` ${ctx.raw}× vs Nginx`}}},
+  scales:{x:{ticks:{color:tick,font:{size:9},maxRotation:35},grid:{color:grid,drawTicks:false},border:{color:grid}},
+   y:{ticks:{color:tick,callback:v=>v+'×'},grid:{color:grid,drawTicks:false},border:{color:grid},title:{display:true,text:'ratio',color:axisTitle,font:{family:"'IBM Plex Mono',monospace",size:10}}}}}
+});
+
+const vsA=karna.map((k,i)=>parseFloat((k/apache[i]).toFixed(2)));
+new Chart(document.getElementById('vsApache'),{type:'bar',
+ data:{labels,datasets:[{label:'× vs Apache',data:vsA,
+  backgroundColor:OLIVE,borderWidth:0,borderRadius:0}]},
+ options:{...baseOpts(),responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{display:false},tooltip:{...tooltipBase,callbacks:{label:ctx=>` ${ctx.raw}× vs Apache`}}},
+  scales:{x:{ticks:{color:tick,font:{size:9},maxRotation:35},grid:{color:grid,drawTicks:false},border:{color:grid}},
+   y:{ticks:{color:tick,callback:v=>v+'×'},grid:{color:grid,drawTicks:false},border:{color:grid},title:{display:true,text:'ratio',color:axisTitle,font:{family:"'IBM Plex Mono',monospace",size:10}}}}}
+});
+
+const vsC=karna.map((k,i)=>parseFloat((k/coraza[i]).toFixed(2)));
+new Chart(document.getElementById('vsCoraza'),{type:'bar',
+ data:{labels,datasets:[{label:'× vs Coraza',data:vsC,
+  backgroundColor:CK,borderWidth:0,borderRadius:0}]},
+ options:{...baseOpts(),responsive:true,maintainAspectRatio:false,
+  plugins:{legend:{display:false},tooltip:{...tooltipBase,callbacks:{label:ctx=>` ${ctx.raw}× vs Coraza`}}},
+  scales:{x:{ticks:{color:tick,font:{size:9},maxRotation:35},grid:{color:grid,drawTicks:false},border:{color:grid}},
+   y:{ticks:{color:tick,callback:v=>v+'×'},grid:{color:grid,drawTicks:false},border:{color:grid},title:{display:true,text:'ratio',color:axisTitle,font:{family:"'IBM Plex Mono',monospace",size:10}}}}}
+});
+
+function scnChart(id,k,n,a,c){
+ const vals=[k,n,a,c];
+ const maxVal=Math.max(...vals);
+ new Chart(document.getElementById(id),{type:'bar',
+  data:{labels:['Karna','Nginx+ModSec3','Apache+ModSec2','Caddy+Coraza'],
+   datasets:[{label:'rps',data:vals,
+    backgroundColor:[CK,CN,CA,CC],borderWidth:0,borderRadius:0,barThickness:34}]},
+  options:{responsive:true,maintainAspectRatio:false,
+   plugins:{legend:{display:false},tooltip:{...tooltipBase,callbacks:{label:ctx=>` ${ctx.raw} rps`}}},
+   scales:{
+    x:{ticks:{color:tick,font:{size:10}},grid:{color:'transparent',drawTicks:false},border:{color:grid}},
+    y:{max:maxVal*1.2,ticks:{color:tick},grid:{color:grid,drawTicks:false},border:{color:grid},
+     title:{display:true,text:'rps',color:axisTitle,font:{family:"'IBM Plex Mono',monospace",size:10}}}}}
+ });
+}
+
+scnChart('c01',1541.6,1262.8,642.8,376.8);
+scnChart('c02',1309.5,1138.6,391.9,319.2);
+scnChart('c03',20.1,14.4,1.9,1.8);
+scnChart('c04',227.8,219.8,200.7,107.4);
+scnChart('c05',540.7,580,485.6,276.8);
+scnChart('c06',3325.5,1622.5,852.2,570.0);
+scnChart('c07',1568.5,1269.6,611.9,337.3);
+scnChart('c09',815.3,687.7,190.0,183.5);
+</script>
+</body>
+</html>
