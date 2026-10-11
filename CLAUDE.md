@@ -183,6 +183,14 @@ all guarded — when no sibling plugin sets them, Karna works fine in isolation.
 - `kong.ctx.shared.karna.log_entries` (array) — sibling plugins can append `{source, rule_id, message, tags?, metadata?}` records here and Karna will emit them as `external_matches[]` in the audit log v2. Malformed entries are silently dropped; oversize strings are clipped (`source`/`rule_id` at 100B, `message` at 1000B). The presence of valid entries forces an audit log write even when no Karna rule matched (overrides `auditlog_only_on_match`). Under `auditlog_format = "v1"` the same entries become extra `transaction.messages[]` elements (`message` + `details.ruleId` / `details.data` = `"Source: <source>"` / `details.tags`) — no new keys in the v1 document, and `metadata` is deliberately dropped there (no structured slot; free-text flattening is a secret-leak path). Normalisation lives in `ka_utils.lua:build_external_matches`, the v1 mapping in `ka_utils.lua:build_v1_external_messages` (unit-tested in `ka-unittest/external_log_entries.lua` and `ka-unittest/external_log_entries_v1.lua`).
 - **Karna rules writing into `kong.ctx.shared`** — the rule action `set_variable` with `type: "shared"` writes a value (literal or `%{...}`-resolved template string) into `kong.ctx.shared[<name>]`, where sibling Kong plugins downstream can read it. This is how a Karna detection (e.g. "this looks like a trusted internal request") can switch off another plugin's behaviour without that plugin knowing about Karna. The mirror action `type: "plugin"` writes into `kong.ctx.plugin[<name>]` (Karna-private). Implementation: `ka_engine.lua:apply_set_variable` (unit-tested in `ka-unittest/set_variable_action.lua`).
 
+## Public site
+- `site/` — the public landing (`index.html`) and benchmark page served at
+  karna.sicuranext.com (S3 bucket root; `/docs/` comes from `docs/`). Plain
+  HTML/CSS in the Karna Console look (white, ink, 1px rules, Manrope + IBM Plex
+  Mono, self-hosted). The hero runs the console's 3D traffic scene
+  (`site/assets/scene/`, vendored three.js). Logo = `site/assets/karna-mark*.svg`.
+  Preview and deploy commands in `site/README.md`.
+
 ## Tests
 - `tests/` — ad-hoc Lua scripts (run from repo root: `lua tests/<name>.lua`)
 - `ka-unittest/` — unit test snippets
