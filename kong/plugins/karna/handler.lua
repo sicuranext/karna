@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.7.2",
+  VERSION = "1.7.3",
 }
 
 local ngx                 = ngx
@@ -299,11 +299,13 @@ end
 --   %{request.path}    — raw path (no querystring)
 --   %{connection.id}   — pseudonymous connection id (ka_tls), for a
 --                        per-connection rather than per-IP counter
---   %{request_cookies.<name>} and %{sha256:<macro>} — through the engine's
---                        per-client pass, so a rate_limit key and a
---                        redis_* action key agree on the same string
+--   %{request_cookies.<name>}, %{request.query.value:<name>},
+--   %{request.body.urlencode.value:<name>} and %{sha256:<macro>} — through
+--                        the engine's per-client pass, so a rate_limit key
+--                        and a redis_* action key agree on the same string
 -- Anything else stays literal. Second return value: true when a per-client
--- macro had no value (cookie missing); the caller must not use the key.
+-- macro had no value (cookie or argument missing); the caller must not use
+-- the key.
 local resolve_request_macros = function(str)
   if type(str) ~= "string" then return str, false end
   -- Cheap early-out for the common case of no macros at all. The

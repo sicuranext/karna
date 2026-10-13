@@ -113,6 +113,8 @@ jobs:
         run: lua ka-unittest/macro_resolution_phases.lua
       - name: Cookie / Set-Cookie / sha256 key macros (write == read, absent cookie never keys)
         run: lua ka-unittest/cookie_key_macros.lua
+      - name: Query / urlencoded-body argument key macros + redis_set nx
+        run: lua ka-unittest/arg_key_macros.lua
       - name: Named cookie selectors resolve in a condition (present / absent / ctl exclusion, unknown-variable warning)
         run: lua ka-unittest/cookie_named_selector.lua
       - name: Arg / cookie names with Lua pattern characters (facets[]={...}) parse without a Lua error

@@ -7,6 +7,46 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-10-13
+
+### Added
+
+- **Request-argument key macros.** `%{request.query.value:<name>}` (one
+  query-string argument) and `%{request.body.urlencode.value:<name>}` (one
+  urlencoded body argument), also under the hash modifier
+  (`%{sha256:request.body.urlencode.value:<name>}`). They work wherever the
+  cookie key macros do: `redis_set` / `redis_sadd` / `redis_del`, the
+  `redis.<key>` read, `redis_incr_key`, `set_variable`, `rate_limit.key` and
+  `ban.key`, in `access` too. Each macro reads one source only, the same key
+  the rule variable of that name reads; there is deliberately no macro that
+  takes the argument from "the query or the body", since the client would then
+  choose the key. Names are case-insensitive, the first occurrence of a
+  repeated argument wins, the decoded value is cut to 256 bytes (hashed values
+  are hashed whole). The body is not read again: the value comes from the map
+  Karna already parsed for the rules. A missing or empty argument, a body that
+  is not urlencoded, no body, or a body switched off by
+  `ctl:requestBodyAccess=Off` is absent, with the same rules as a missing
+  cookie: the write is skipped, `rate_limit` counts nothing, and the
+  `redis.<key>` read matches neither `isSet` nor its negation.
+- **`redis_set.nx`.** With `nx: true` the action issues `SET key value [EX
+  expire] NX`: only the write that creates the key lands, later ones leave the
+  value and the TTL untouched. Default `false`, so existing rules are
+  unchanged. Accepted by the JSON Schema and `scripts/validate-rules.py`.
+
+### Changed
+
+- The two macro names above already resolved, from `header_filter` on, as
+  inspection-table macros in `set_variable` and `redis_incr_key`. They now
+  resolve in every phase, and when the argument is missing `redis_incr_key`
+  skips the increment instead of counting on a key holding the literal
+  `%{...}` text.
+
+### Documentation
+
+- `redis_incr_key` uses a fixed window: the TTL is set by the increment that
+  creates the key and is not refreshed by later ones. Read back with `gt` /
+  `ge` on `redis.<same key>`, the comparison is numeric.
+
 ## [1.7.2] - 2026-10-07
 
 ### Fixed
@@ -1735,7 +1775,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.2...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.3...HEAD
+[1.7.3]: https://github.com/sicuranext/karna/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/sicuranext/karna/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/sicuranext/karna/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/sicuranext/karna/compare/v1.6.0...v1.7.0

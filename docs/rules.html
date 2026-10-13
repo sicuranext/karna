@@ -378,7 +378,7 @@ npx ajv-cli validate --spec=draft2020 \
           <tr><td class="name"><code>fixed_response</code></td><td>Terminate with a fixed status / headers / body (the standard block).</td></tr>
           <tr><td class="name"><code>fix_matched_parts</code></td><td>Sanitize the matched targets in place and let the request through. Takes precedence over <code>fixed_response</code> if both are present.</td></tr>
           <tr><td class="name"><code>rate_limit</code></td><td>Redis fixed-window counter; returns 429 when the limit is exceeded.</td></tr>
-          <tr><td class="name"><code>redis_incr_key</code></td><td>Increment a Redis key with a TTL (no terminal effect).</td></tr>
+          <tr><td class="name"><code>redis_incr_key</code></td><td>Increment a Redis key with a TTL (no terminal effect). The TTL is set by the increment that creates the key and never refreshed, so the window is fixed: it starts at the first hit. Read the counter back with a value operator (<code>gt</code>, <code>ge</code>, &hellip;) on <code>redis.&lt;same key&gt;</code>; the comparison is numeric.</td></tr>
           <tr><td class="name"><code>redis_set</code> / <code>redis_sadd</code> / <code>redis_del</code></td><td>Write cluster-wide state on a match: set a key (with optional TTL), add a member to a set, or delete a key. The auto-ban primitive.</td></tr>
           <tr><td class="name"><code>set_variable</code></td><td>Write a value into <code>kong.ctx.shared</code> or <code>kong.ctx.plugin</code> for sibling plugins / later phases.</td></tr>
           <tr><td class="name"><code>set_log_fields</code></td><td>Add custom fields to the audit log entry.</td></tr>
@@ -425,7 +425,7 @@ npx ajv-cli validate --spec=draft2020 \
       <table class="doc-table">
         <thead><tr><th class="mono">Action</th><th class="mono">Fields</th><th>Redis command</th></tr></thead>
         <tbody>
-          <tr><td class="name"><code>redis_set</code></td><td class="mono">key, value (default "1"), expire</td><td><code>SET key value</code>, plus <code>EX expire</code> when <code>expire</code> is set.</td></tr>
+          <tr><td class="name"><code>redis_set</code></td><td class="mono">key, value (default "1"), expire, nx (default false)</td><td><code>SET key value</code>, plus <code>EX expire</code> when <code>expire</code> is set. With <code>nx: true</code> it is <code>SET &hellip; NX</code>: only the write that creates the key lands, later ones leave the value and the TTL alone, so the key records the first time it was set.</td></tr>
           <tr><td class="name"><code>redis_sadd</code></td><td class="mono">key, member, expire</td><td><code>SADD key member</code>, plus <code>EXPIRE key expire</code> when <code>expire</code> is set.</td></tr>
           <tr><td class="name"><code>redis_del</code></td><td class="mono">key</td><td><code>DEL key</code> (manual unban / clear).</td></tr>
         </tbody>
@@ -467,16 +467,19 @@ npx ajv-cli validate --spec=draft2020 \
       <h3 id="a-macros">Macros in actions</h3>
       <p>Action fields that accept <code>%{...}</code> templates do not all draw on the same pool of names, and one group depends on the phase the rule runs in.</p>
       <p><strong>Request-context macros resolve in every phase</strong> &mdash; they are read straight off the request: <code>%{remote_addr}</code>, <code>%{request.method}</code>, <code>%{request.host}</code>, <code>%{request.scheme}</code>, <code>%{request.path}</code>, <code>%{request_headers.&lt;name&gt;}</code> and <code>%{connection.id}</code>.</p>
-      <p id="a-client-macros"><strong>Per-client key macros</strong> pick one cookie out of the request or the response, and can hash any key macro. They are meant for Redis keys that mark a client in one request and check it in a later one.</p>
+      <p id="a-client-macros"><strong>Per-client key macros</strong> pick one cookie out of the request or the response, or one request argument, and can hash any key macro. They are meant for Redis keys that mark a client (or an object the client works on) in one request and check it in a later one.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Macro</th><th>Value</th></tr></thead>
         <tbody>
           <tr><td class="name"><code>%{request_cookies.&lt;name&gt;}</code></td><td>The value of one request cookie, read off the <code>Cookie</code> header, so it resolves in <code>access</code> too. The name is matched case-insensitively; with a duplicate cookie the first one wins. The value is used raw (no <code>%HH</code> decoding), trimmed, and cut to 256 bytes.</td></tr>
           <tr><td class="name"><code>%{response_set_cookie.&lt;name&gt;}</code></td><td>The value of the response <code>Set-Cookie</code> for that cookie name: the text after <code>=</code> up to the first <code>;</code>, attributes dropped. With several <code>Set-Cookie</code> headers for the same name the last one wins, which is the one the browser keeps. It has a value only from <code>header_filter</code> on; in <code>access</code> it is absent. Cut to 256 bytes.</td></tr>
+          <tr><td class="name"><code>%{request.query.value:&lt;name&gt;}</code></td><td>The value of one query-string argument, and only the query string. The name is matched case-insensitively; with a repeated argument the first one wins. The value is the decoded one the rule variable of the same name sees, cut to 256 bytes.</td></tr>
+          <tr><td class="name"><code>%{request.body.urlencode.value:&lt;name&gt;}</code></td><td>The value of one <code>application/x-www-form-urlencoded</code> body argument, and only the body. Same name, duplicate and length rules as the query macro. It reads the body Karna already parsed for the rules, in <code>access</code>; a body of another type (JSON, multipart, XML), a request without a body, or a body switched off by <code>ctl:requestBodyAccess=Off</code> makes it absent.</td></tr>
           <tr><td class="name"><code>%{sha256:&lt;macro&gt;}</code></td><td>The lowercase hex SHA-256 of another key macro, for example <code>%{sha256:request_cookies.sid}</code> or <code>%{sha256:request_headers.authorization}</code>. The whole value is hashed (no 256-byte cut). Use it so a session id never sits in Redis in clear. SHA-256 comes from <code>resty.sha256</code>, which ships with OpenResty and calls OpenSSL, so it adds no dependency and costs about a microsecond per key.</td></tr>
         </tbody>
       </table>
-      <p><strong>An absent value never builds a key.</strong> When the cookie is missing, has an empty value (<code>sid=</code>, or a deletion <code>Set-Cookie</code>), or a hashed macro has nothing to hash, the key would be the same for every such client. So the write actions (<code>redis_set</code>, <code>redis_sadd</code>, <code>redis_del</code>, <code>redis_incr_key</code>) skip the write, a <code>rate_limit</code> keyed on it counts nothing and bans nothing, and the <code>redis.&lt;key&gt;</code> read is <em>unknown</em>: neither <code>isSet</code> nor its negated form matches, and Redis is not queried, whatever <code>redis_on_error</code> says. Skips are logged at debug level. <code>%{request_headers.&lt;name&gt;}</code> keeps its older behaviour, a missing header resolves to an empty string, for compatibility with existing rules; use <code>%{sha256:request_headers.&lt;name&gt;}</code> when a missing header must not share a key.</p>
+      <p>Each argument macro names one source on purpose. There is no macro that takes the argument from &ldquo;the query or the body&rdquo;: the client would choose where to send it and so which key it lands on. If the same argument may arrive either way, write one rule per source.</p>
+      <p><strong>An absent value never builds a key.</strong> When the cookie or the argument is missing, has an empty value (<code>sid=</code>, <code>line_id=</code>, or a deletion <code>Set-Cookie</code>), or a hashed macro has nothing to hash, the key would be the same for every such client. So the write actions (<code>redis_set</code>, <code>redis_sadd</code>, <code>redis_del</code>, <code>redis_incr_key</code>) skip the write, a <code>rate_limit</code> keyed on it counts nothing and bans nothing, and the <code>redis.&lt;key&gt;</code> read is <em>unknown</em>: neither <code>isSet</code> nor its negated form matches, and Redis is not queried, whatever <code>redis_on_error</code> says. Skips are logged at debug level. <code>%{request_headers.&lt;name&gt;}</code> keeps its older behaviour, a missing header resolves to an empty string, for compatibility with existing rules; use <code>%{sha256:request_headers.&lt;name&gt;}</code> when a missing header must not share a key.</p>
       <div class="code-card">
         <div class="code-head"><span>mark a session on a good response, check it on a later request</span><span class="lang">json</span></div>
         <div class="code-body"><pre>[
@@ -496,8 +499,31 @@ npx ajv-cli validate --spec=draft2020 \
 ]</pre></div>
       </div>
       <p>A request to <code>/checkout</code> with no <code>sid</code> cookie at all does not match the second rule (unknown, not absent); add a separate condition on <code>request.cookie.value:sid</code> if such requests must be blocked too.</p>
-      <p>Two consequences to keep in mind. The client controls its cookies, so a <code>rate_limit</code> keyed only on a cookie is skipped by a client that drops the cookie, and reset by one that changes it; pair it with a limit on <code>%{remote_addr}</code> when the limit is a defence rather than a fairness rule. And <code>sha256:</code> is unsalted: it keeps a random session id out of Redis, but a low-entropy value (an IP address, a short user id) can be recovered from its hash by trying every candidate.</p>
-      <p><strong>Every other rule variable</strong> (<code>%{request.header.value:host}</code>, <code>%{request.body.urlencode.value:username}</code>, <code>%{response.status}</code>, &hellip;) comes from the request&rsquo;s inspection table, which Karna builds in <code>header_filter</code>. Used by a rule in the <code>access</code> phase, such a macro stays <em>literal</em> &mdash; the value does not exist yet.</p>
+      <div class="code-card">
+        <div class="code-head"><span>count the edits of one cart line, keyed on a body argument</span><span class="lang">json</span></div>
+        <div class="code-body"><pre>[
+  {
+    <span class="prm">"id"</span>: <span class="str">"line-edit-count"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+    <span class="prm">"conditions"</span>: [ { <span class="prm">"variables"</span>: [<span class="str">"request.path"</span>], <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"/cart/edit"</span> } ],
+    <span class="prm">"action"</span>: {
+      <span class="prm">"redis_incr_key"</span>: { <span class="prm">"key"</span>: <span class="str">"line:n:%{sha256:request.body.urlencode.value:line_id}"</span>, <span class="prm">"expire"</span>: <span class="num">1800</span> },
+      <span class="prm">"redis_set"</span>: { <span class="prm">"key"</span>: <span class="str">"line:young:%{sha256:request.body.urlencode.value:line_id}"</span>, <span class="prm">"expire"</span>: <span class="num">60</span>, <span class="prm">"nx"</span>: <span class="kw">true</span> }
+    }
+  },
+  {
+    <span class="prm">"id"</span>: <span class="str">"line-edited-too-often"</span>, <span class="prm">"phase"</span>: <span class="str">"access"</span>,
+    <span class="prm">"conditions"</span>: [
+      { <span class="prm">"variables"</span>: [<span class="str">"request.path"</span>], <span class="prm">"op"</span>: <span class="str">"eq"</span>, <span class="prm">"value"</span>: <span class="str">"/cart/edit"</span> },
+      { <span class="prm">"variables"</span>: [<span class="str">"redis.line:n:%{sha256:request.body.urlencode.value:line_id}"</span>], <span class="prm">"op"</span>: <span class="str">"gt"</span>, <span class="prm">"value"</span>: <span class="str">"10"</span> },
+      { <span class="prm">"variables"</span>: [<span class="str">"redis.line:young:%{sha256:request.body.urlencode.value:line_id}"</span>], <span class="prm">"op"</span>: <span class="str">"isSet"</span>, <span class="prm">"negated"</span>: <span class="kw">true</span> }
+    ],
+    <span class="prm">"action"</span>: { <span class="prm">"log_only"</span>: <span class="kw">true</span> }
+  }
+]</pre></div>
+      </div>
+      <p>The first rule counts the edits of each line over a fixed 30-minute window and marks the line &ldquo;young&rdquo; for 60 seconds after its first edit (<code>nx</code>: later edits do not push the mark forward). The second one logs a line edited more than ten times and still edited after its first minute. A request without <code>line_id</code> is not counted and matches neither rule.</p>
+      <p>Two consequences to keep in mind. The client controls its cookies and its arguments, so a <code>rate_limit</code> keyed only on a cookie is skipped by a client that drops the cookie, and reset by one that changes it; pair it with a limit on <code>%{remote_addr}</code> when the limit is a defence rather than a fairness rule. And <code>sha256:</code> is unsalted: it keeps a random session id out of Redis, but a low-entropy value (an IP address, a short user id) can be recovered from its hash by trying every candidate.</p>
+      <p><strong>Every other rule variable</strong> (<code>%{request.header.value:host}</code>, <code>%{request.body.json.value:username}</code>, <code>%{response.status}</code>, &hellip;) comes from the request&rsquo;s inspection table, which Karna builds in <code>header_filter</code>. Used by a rule in the <code>access</code> phase, such a macro stays <em>literal</em> &mdash; the value does not exist yet.</p>
       <table class="doc-table">
         <thead><tr><th class="mono">Field</th><th>Request context</th><th>Inspection table</th></tr></thead>
         <tbody>
@@ -540,7 +566,7 @@ npx ajv-cli validate --spec=draft2020 \
           <tr><td class="name"><code>redis_hexists</code></td><td class="mono">HEXISTS</td><td>The hash has a field named <code>value</code>. Negatable.</td></tr>
         </tbody>
       </table>
-      <p>Keys accept the <a class="link" href="#a-macros">request-context macros</a> and the <a class="link" href="#a-client-macros">per-client key macros</a> (one cookie, one <code>Set-Cookie</code> value, <code>sha256:</code>); the <code>value</code> needle accepts the same set minus <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
+      <p>Keys accept the <a class="link" href="#a-macros">request-context macros</a> and the <a class="link" href="#a-client-macros">per-client key macros</a> (one cookie, one <code>Set-Cookie</code> value, one query or urlencoded body argument, <code>sha256:</code>); the <code>value</code> needle accepts the same set minus <code>%{request_headers.X}</code>. The <code>value</code> needle resolves <code>%{remote_addr}</code> and <code>%{request.*}</code>. When Redis is unreachable, <code>redis_on_error</code> decides the outcome (default <code>skip</code> — the condition does not match and traffic flows).</p>
       <div class="code-card">
         <div class="code-head"><span>block IPs present in a banlist key</span><span class="lang">json</span></div>
         <div class="code-body"><pre>{
