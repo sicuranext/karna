@@ -176,6 +176,24 @@ utils:redis_write(CONF, "set", "k", "v")
 local s2 = logged("set")
 check("set without ttl issues plain SET", s2 and s2[2] == "k" and s2[3] == "v" and s2[4] == nil)
 
+-- SET NX with TTL → SET key value EX ttl NX
+reset({ result = "OK" })
+utils:redis_write(CONF, "set", "seen:k", "1", 1800, true)
+local sn = logged("set")
+check("set nx with ttl issues SET key value EX ttl NX",
+      sn and sn[2] == "seen:k" and sn[3] == "1" and sn[4] == "EX" and sn[5] == 1800 and sn[6] == "NX")
+
+-- SET NX without TTL → SET key value NX
+reset({ result = "OK" })
+utils:redis_write(CONF, "set", "seen:k", "1", nil, true)
+local sn2 = logged("set")
+check("set nx without ttl issues SET key value NX", sn2 and sn2[4] == "NX" and sn2[5] == nil)
+
+-- SET NX on an existing key: Redis answers nil (ngx.null), not an error
+reset({ result = ngx.null })
+check("set nx on an existing key is not an error", utils:redis_write(CONF, "set", "seen:k", "1", 60, true) == ngx.null)
+check("set nx on an existing key pools the connection", logged("set_keepalive") ~= nil)
+
 -- SADD with TTL → SADD then EXPIRE on the set key
 reset({ result = 1 })
 utils:redis_write(CONF, "sadd", "revoked", "tok", 300)

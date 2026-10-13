@@ -1647,12 +1647,14 @@ local REDIS_WRITE_CMDS = { set = true, sadd = true, srem = true, del = true, exp
 -- Run a single write command, fire-and-forget. `conf` carries the per-request
 -- connection settings. Usage:
 --   redis_write(conf, "set",  key, value, ttl) -> SET key value [EX ttl]
+--   redis_write(conf, "set",  key, value, ttl, true)
+--                                              -> SET key value [EX ttl] NX
 --   redis_write(conf, "sadd", key, member, ttl)-> SADD key member; EXPIRE key ttl (if ttl)
 --   redis_write(conf, "srem", key, member)     -> SREM key member
 --   redis_write(conf, "del",  key)             -> DEL key
 -- Fail-soft: a disallowed command / connection / Redis error is logged and
 -- returns nil; it never propagates to block the request.
-_M.redis_write = function(self, conf, op, key, arg, ttl)
+_M.redis_write = function(self, conf, op, key, arg, ttl, nx)
     if not REDIS_WRITE_CMDS[op] then
         kong.log.err("Karna: redis write command not allowed: ", tostring(op))
         return nil
@@ -1682,7 +1684,13 @@ _M.redis_write = function(self, conf, op, key, arg, ttl)
     ttl = tonumber(ttl)
     local res, cerr
     if op == "set" then
-        if ttl and ttl > 0 then res, cerr = red:set(key, arg, "EX", ttl)
+        -- NX: only the write that creates the key lands; a later one leaves
+        -- the value and the TTL alone (Redis answers nil, which is not an
+        -- error here).
+        if nx == true then
+            if ttl and ttl > 0 then res, cerr = red:set(key, arg, "EX", ttl, "NX")
+            else res, cerr = red:set(key, arg, "NX") end
+        elseif ttl and ttl > 0 then res, cerr = red:set(key, arg, "EX", ttl)
         else res, cerr = red:set(key, arg) end
     elseif op == "sadd" then
         res, cerr = red:sadd(key, arg)
@@ -1708,9 +1716,9 @@ _M.redis_write = function(self, conf, op, key, arg, ttl)
 end
 
 -- Async wrapper for ngx.timer.at in non-access phases (cosocket unavailable inline).
-_M.redis_write_async = function(premature, self, conf, op, key, arg, ttl)
+_M.redis_write_async = function(premature, self, conf, op, key, arg, ttl, nx)
     if premature then return end
-    self:redis_write(conf, op, key, arg, ttl)
+    self:redis_write(conf, op, key, arg, ttl, nx)
 end
 
 return _M

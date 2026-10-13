@@ -2739,7 +2739,8 @@ end
 -- headers, and the per-client macros below, so a key can be derived from the
 -- client IP, a header like x-consumer-id or one cookie (e.g.
 -- `ban:%{remote_addr}`, `acl:%{request_headers.x-consumer-id}`,
--- `cart:%{sha256:request_cookies.sid}:t`).
+-- `cart:%{sha256:request_cookies.sid}:t`) or one request argument
+-- (`line:%{sha256:request.body.urlencode.value:line_id}`).
 --
 -- Returns the resolved string and an `absent` flag. The flag is set when one
 -- of the macros resolved by `__resolve_client_key_macros` had no value for
@@ -2820,6 +2821,52 @@ _M.__response_set_cookie_value = function(name)
     return found
 end
 
+-- The two request-argument key macros. Each one names ONE source, the same
+-- key the rule variable of that name reads, so there is never a choice
+-- between a query and a body value:
+--   %{request.query.value:<name>}           the query string only
+--   %{request.body.urlencode.value:<name>}  the urlencoded body only
+-- No ARGS-style macro on purpose: a key built from "whichever source has it"
+-- lets a client move the argument and land on another key.
+local KEY_MACRO_ARG_SOURCES = {
+    { prefix = "request.query.value:",           query = true },
+    { prefix = "request.body.urlencode.value:",  query = false },
+}
+
+-- Value of one request argument for a key macro, nil when it has none. Read
+-- from the getters' per-request maps (the body is never read a second time),
+-- with `try_b64 = false` like the rule-matching path. Exact key lookup: the
+-- parsers store names lowercase, so the name is lowercased here too; a
+-- repeated argument is stored as `<name>`, `<name>:2`, ... so the first
+-- occurrence wins. A body that is not urlencoded, unreadable in this phase or
+-- switched off by `ctl:requestBodyAccess=Off` has no such key: absent.
+_M.__request_arg_value = function(name)
+    for _, src in ipairs(KEY_MACRO_ARG_SOURCES) do
+        if string_sub(name, 1, #src.prefix) == src.prefix then
+            local arg_name = string_sub(name, #src.prefix + 1)
+            if arg_name == "" then return nil end
+            local values
+            if src.query then
+                values = _M.__get_values_request_query_value(false)
+            else
+                values = _M.__get_values_request_body(false)
+            end
+            if type(values) ~= "table" then return nil end
+            local v = values[src.prefix .. string_lower(arg_name)]
+            if v == nil then return nil end
+            return tostring(v)
+        end
+    end
+    return nil
+end
+
+local function is_arg_key_macro(name)
+    for _, src in ipairs(KEY_MACRO_ARG_SOURCES) do
+        if string_sub(name, 1, #src.prefix) == src.prefix then return true end
+    end
+    return false
+end
+
 -- SHA-256, lowercase hex. resty.sha256 + resty.string ship with OpenResty
 -- (FFI over OpenSSL, no extra dependency); loaded on first use so the module
 -- stays requirable from plain-Lua unit tests. Returns nil when unavailable:
@@ -2866,7 +2913,11 @@ _M.__key_macro_value = function(self, name)
                 v = _M.__request_cookie_value(string_lower(c))
             else
                 c = string_match(name, "^response_set_cookie%.(.+)$")
-                if c then v = _M.__response_set_cookie_value(string_lower(c)) end
+                if c then
+                    v = _M.__response_set_cookie_value(string_lower(c))
+                elseif is_arg_key_macro(name) then
+                    v = _M.__request_arg_value(name)
+                end
             end
         end
     end
@@ -2877,16 +2928,21 @@ _M.__key_macro_value = function(self, name)
 end
 
 -- The per-client key macros: `%{request_cookies.<name>}`,
--- `%{response_set_cookie.<name>}` and the hash modifier `%{sha256:<macro>}`
+-- `%{response_set_cookie.<name>}`, `%{request.query.value:<name>}`,
+-- `%{request.body.urlencode.value:<name>}` and the hash modifier
+-- `%{sha256:<macro>}`
 -- (any key macro, the older ones included). Run LAST, after the request
 -- context and header passes, in one gsub, so a resolved cookie value is never
 -- scanned for macros again. A macro with no value stays literal and sets the
 -- returned `absent` flag: a key built around it would be shared by every
--- client that lacks the cookie, so the caller must not use it.
+-- client that lacks the cookie (or the argument), so the caller must not use
+-- it.
 _M.__resolve_client_key_macros = function(self, s)
     if type(s) ~= "string" or not string_find(s, "%{", 1, true) then return s, false end
     if not string_find(s, "%{request_cookies.", 1, true)
        and not string_find(s, "%{response_set_cookie.", 1, true)
+       and not string_find(s, "%{request.query.value:", 1, true)
+       and not string_find(s, "%{request.body.urlencode.value:", 1, true)
        and not string_find(s, "%{sha256:", 1, true) then
         return s, false
     end
@@ -2903,7 +2959,8 @@ _M.__resolve_client_key_macros = function(self, s)
             end
             return hx
         end
-        if string_find(name, "^request_cookies%.") or string_find(name, "^response_set_cookie%.") then
+        if string_find(name, "^request_cookies%.") or string_find(name, "^response_set_cookie%.")
+           or is_arg_key_macro(name) then
             local v = self:__key_macro_value(name)
             if not v then
                 absent = true
@@ -6555,11 +6612,11 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
        or (action.redis_sadd and action.redis_sadd.key and action.redis_sadd.member ~= nil)
        or (action.redis_del and action.redis_del.key) then
         local rconf = get_redis_conf(plugin_conf)
-        local function do_write(op, key, arg, ttl)
+        local function do_write(op, key, arg, ttl, nx)
             if phase == "access" then
-                utils:redis_write(rconf, op, key, arg, ttl)
+                utils:redis_write(rconf, op, key, arg, ttl, nx)
             else
-                local ok, err = ngx.timer.at(0, utils.redis_write_async, utils, rconf, op, key, arg, ttl)
+                local ok, err = ngx.timer.at(0, utils.redis_write_async, utils, rconf, op, key, arg, ttl, nx)
                 if not ok then
                     kong.log.err("Karna: error scheduling redis_" .. op .. " timer: ", err)
                 end
@@ -6578,7 +6635,7 @@ _M.apply_action_side_effects = function(self, rule, plugin_conf, phase)
             if absent_k or absent_v then
                 skipped("set", action.redis_set.key)
             else
-                do_write("set", key, val, action.redis_set.expire)
+                do_write("set", key, val, action.redis_set.expire, action.redis_set.nx == true)
             end
         end
         if action.redis_sadd and action.redis_sadd.key and action.redis_sadd.member ~= nil then
@@ -6612,7 +6669,8 @@ end
 --
 --   1. request context — `%{remote_addr}`, `%{request.method|host|scheme|path}`,
 --      `%{request_headers.X}`, `%{request_cookies.X}`,
---      `%{response_set_cookie.X}` and `%{sha256:...}`, read straight off the
+--      `%{response_set_cookie.X}`, `%{request.query.value:X}`,
+--      `%{request.body.urlencode.value:X}` and `%{sha256:...}`, read straight off the
 --      request / response through `__resolve_redis_key_macros`. These resolve
 --      in EVERY phase (`response_set_cookie` only has a value from
 --      `header_filter` on).
