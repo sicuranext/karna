@@ -21,64 +21,6 @@
 .hero-trust span { display: inline-flex; align-items: center; gap: 8px; }
 .hero-trust span::before { content: ""; width: 5px; height: 5px; background: var(--ink); transform: rotate(45deg); }
 
-/* ============================================================ 3D SCENE (console .k3d) */
-.k3d { border: 1px solid var(--rule); background: #fff; min-width: 0; }
-.k3d-viewport { position: relative; height: clamp(420px, 44vw, 530px); overflow: hidden; isolation: isolate; background: var(--scene); }
-.k3d-canvas { position: absolute; inset: 0; cursor: grab; }
-.k3d-canvas.is-dragging { cursor: grabbing; }
-.k3d-canvas.is-reading { cursor: crosshair; }
-.k3d-canvas canvas { display: block; width: 100%; height: 100%; }
-.k3d-still { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 60% 50%; }
-.k3d.is-live .k3d-still { display: none; }
-.k3d-labels { position: absolute; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; }
-.k3d-labels > * { position: absolute; left: 0; top: 0; opacity: 0; will-change: transform, opacity; }
-.k3d-frame { position: absolute; inset: 14px; z-index: 1; pointer-events: none; }
-.k3d-frame i { position: absolute; width: 22px; height: 22px; border: 0 solid #9fb0e8; }
-.k3d-frame .tl { left: 0; top: 0; border-left-width: 1px; border-top-width: 1px; }
-.k3d-frame .tr { right: 0; top: 0; border-right-width: 1px; border-top-width: 1px; }
-.k3d-frame .bl { left: 0; bottom: 0; border-left-width: 1px; border-bottom-width: 1px; }
-.k3d-frame .br { right: 0; bottom: 0; border-right-width: 1px; border-bottom-width: 1px; }
-.k3d-status {
-  position: absolute; left: 24px; top: 24px; z-index: 2; display: flex; flex-direction: column; gap: 4px;
-  max-width: 300px; padding: 12px 14px; border: 1px solid #d8e0e5; background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 5px 24px rgba(30, 50, 60, 0.05); pointer-events: none;
-}
-.k3d-step { color: #68737d; font: 11px var(--font-mono); }
-.k3d-status strong { font-size: 19px; font-weight: 650; letter-spacing: -0.035em; line-height: 1.2; }
-.k3d-status > span:last-child { color: #5b6570; font-size: 12.5px; line-height: 1.45; }
-.k3d-telemetry {
-  position: absolute; right: 26px; bottom: 22px; z-index: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
-  color: #56616b; font: 11px/1.4 var(--font-mono); pointer-events: none; text-shadow: 0 0 4px var(--scene);
-}
-.k3d-telemetry .hot { color: var(--hot); }
-.k3d-controls {
-  display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 7px 14px;
-  border-top: 1px solid var(--rule); color: var(--fg-3); font: 11px var(--font-mono);
-}
-.k3d-phases { display: flex; gap: 2px; flex-wrap: wrap; }
-.k3d-phases button, .k3d-replay { padding: 7px 10px; border: 0; background: transparent; color: #6f7a84; font: 11px var(--font-mono); cursor: pointer; }
-.k3d-phases button span { margin-right: 5px; color: #9ba5ad; }
-.k3d-phases button[aria-pressed="true"] { background: #eef1f4; color: var(--ink); }
-.k3d-phases button:hover, .k3d-replay:hover { color: var(--ink); }
-.k3d-note { margin-left: auto; color: #8a959f; }
-.k3d-replay { border: 1px solid var(--rule); }
-.k3d:not(.is-live) .k3d-phases, .k3d:not(.is-live) .k3d-replay, .k3d:not(.is-live) .k3d-note { visibility: hidden; }
-
-.k3d-labels .anno { --mk: #9aa5b0; display: flex; align-items: flex-start; gap: 7px; width: max-content; color: var(--ink); font: 400 11.5px/1.3 var(--font-mono); white-space: nowrap; text-shadow: 0 0 3px var(--scene), 0 0 6px var(--scene), 0 0 10px var(--scene); transition: opacity 0.4s; }
-.k3d-labels .anno i { flex: none; width: 6px; height: 6px; margin-top: 4px; border: 1px solid var(--mk); background: var(--scene); transform: rotate(45deg); }
-.k3d-labels .anno.is-hot { --mk: var(--hot); }
-.k3d-labels .anno.is-hot i { background: var(--mk); }
-.k3d-labels .anno b { font-weight: 500; }
-.k3d-labels .anno small { display: block; color: #7c8791; font-size: 0.88em; }
-.k3d-labels .anno.anno-row { color: #56616b; text-align: right; }
-.k3d-labels .k3d-axis { color: #8a959f; font: 10px var(--font-mono); white-space: nowrap; }
-.k3d-labels .k3d-tag, .k3d-labels .k3d-tip { width: max-content; max-width: 240px; padding: 7px 10px 8px; border: 1px solid #d3dae0; border-top: 2px solid var(--hit); background: rgba(255, 255, 255, 0.96); box-shadow: 0 6px 20px rgba(30, 50, 60, 0.07); font-size: 12px; line-height: 1.4; }
-.k3d-labels .k3d-tip { border-top-color: var(--hot); transition: none; }
-.k3d-tag-id { display: block; color: #7c8791; font: 10px var(--font-mono); }
-.k3d-labels .k3d-tag b { display: block; margin-top: 1px; font-size: 13px; font-weight: 650; letter-spacing: -0.01em; }
-.k3d-labels .k3d-tag small { display: block; margin-top: 3px; color: #5f6a74; font-size: 10.5px; }
-.k3d-labels .k3d-tip b { font-weight: 650; }
-
 /* ============================================================ STACK STRIP */
 .logos { border-bottom: 1px solid var(--rule); }
 .logos-inner {
@@ -118,18 +60,39 @@
 .namebox p b { color: var(--ink); font-weight: 600; }
 
 /* ============================================================ CONSOLE */
-.console-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 44px; border: 1px solid var(--rule); border-bottom: 0; padding: 7px 10px; }
-.console-tabs button { padding: 8px 12px; border: 0; background: transparent; color: #6f7a84; font: 12px var(--font-mono); cursor: pointer; }
+.console-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 44px; padding: 7px 10px; border: 1px solid var(--rule); }
+.console-tabs button { position: relative; padding: 8px 12px; border: 0; background: transparent; color: #6f7a84; font: 12px var(--font-mono); cursor: pointer; overflow: hidden; }
 .console-tabs button span { margin-right: 6px; color: #9ba5ad; }
 .console-tabs button[aria-selected="true"] { background: #eef1f4; color: var(--ink); }
 .console-tabs button:hover { color: var(--ink); }
-.console-stage { border: 1px solid var(--rule); background: var(--scene); }
+/* progress of the auto-advance, on the active tab */
+.tab-bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--ink); transform: scaleX(0); transform-origin: left; }
+.console-tabs.is-playing button[aria-selected="true"] .tab-bar { animation: tab-progress var(--advance, 6s) linear forwards; }
+.console-tabs.is-paused button[aria-selected="true"] .tab-bar { animation-play-state: paused; }
+@keyframes tab-progress { to { transform: scaleX(1); } }
+
+/* the console as a panel in perspective, tilting a little with the pointer */
+.console-3d { perspective: 2200px; padding: 34px 0 30px; }
+.console-tilt {
+  --rx: 9deg; --ry: -7deg;
+  position: relative; transform-style: preserve-3d; transform: rotateX(var(--rx)) rotateY(var(--ry));
+  transition: transform 0.5s var(--ease); will-change: transform;
+  border: 1px solid var(--rule-2); background: #fff;
+  box-shadow: 0 40px 80px -30px rgba(23, 26, 30, 0.35), 0 12px 24px -12px rgba(23, 26, 30, 0.18);
+}
+.console-tilt::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(115deg, rgba(255, 255, 255, 0.22), transparent 42%); }
 .console-panel { display: none; }
-.console-panel.active { display: block; }
-.console-panel img { display: block; width: 100%; height: auto; border-bottom: 1px solid var(--rule); }
-.console-caption { display: grid; grid-template-columns: 220px 1fr; gap: 28px; padding: 18px 22px; background: #fff; }
+.console-panel.active { display: block; animation: panel-in 0.45s var(--ease); }
+@keyframes panel-in { from { opacity: 0; } to { opacity: 1; } }
+.console-panel img { display: block; width: 100%; height: auto; }
+.console-caption { display: none; grid-template-columns: 220px 1fr; gap: 28px; padding: 16px 0 0; border-top: 1px solid var(--rule); }
+.console-caption.active { display: grid; }
 .console-caption b { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
 .console-caption p { margin: 0; font-size: 14.5px; color: var(--fg-2); line-height: 1.55; max-width: 760px; }
+@media (prefers-reduced-motion: reduce) {
+  .console-tilt { transition: none; }
+  .console-panel.active { animation: none; }
+}
 
 /* ============================================================ SANITIZE */
 .san-inner { display: grid; grid-template-columns: 1fr 1.05fr; gap: 56px; align-items: center; }

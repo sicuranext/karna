@@ -18,6 +18,7 @@
 <meta name="twitter:description" content="Source-available, next-generation WAF for Kong, built for AI integration. MCP-aware, OWASP CRS 4.x, 2 to 4 times faster than ModSecurity."/>
 <meta name="twitter:image" content="https://karna.sicuranext.com/og-image.png"/>
 <link rel="stylesheet" href="assets/site.css"/>
+<link rel="stylesheet" href="assets/k3d.css"/>
 <link rel="stylesheet" href="assets/landing.css"/>
 <link rel="modulepreload" href="assets/scene/hero.js"/>
 </head>
@@ -54,14 +55,14 @@
   <div class="hero-inner">
     <span class="eyebrow hero-eyebrow">Source-available WAF for Kong <span class="sep"></span> OWASP CRS 4.x</span>
     <div class="hero-copy">
-      <h1>A new era of WAF. Built for AI, built for speed.</h1>
+      <h1>Let Karna protect your website and APIs.</h1>
     </div>
     <div class="hero-side">
       <p class="hero-lead">
-        The fastest WAF you can run in front of Kong, and the first that speaks
-        the protocols your AI agents use. Full OWASP CoreRuleSet&nbsp;4.x detection,
-        libinjection-backed, 2 to 4 times faster than ModSecurity, with none of the
-        Apache-era baggage.
+        The fastest Web Application Firewall you can run, designed to be operated
+        by AI agents. Your agent deploys it, tunes it and writes its rules, so
+        protecting your apps and APIs is its job while you focus on your business.
+        Full OWASP CoreRuleSet&nbsp;4.x detection, 2 to 4 times faster than ModSecurity.
       </p>
       <div class="hero-ctas">
         <a class="btn btn-primary btn-lg" href="#install">Get started <span class="arr">→</span></a>
@@ -177,45 +178,40 @@
   <div class="wrap">
     <div class="sec-head">
       <div>
-        <span class="sec-eyebrow">Karna Console <span class="chip soon" style="margin-left:10px;vertical-align:1px">Coming soon</span></span>
+        <span class="sec-eyebrow">Karna Console</span>
         <h2 class="sec-title">See every request Karna stopped, and why.</h2>
       </div>
       <p class="sec-lead">
         The console reads Karna's audit log and your Kong configuration. Traffic,
         threats and every enforced request are one click from the evidence, and
         services, modes and rules are edited in the same place they are watched.
+        It ships in the <a href="https://github.com/sicuranext/karna">repo</a>:
+        clone it and run <code>./quickstart.sh</code> to get Kong, Karna and the
+        console on your machine.
       </p>
     </div>
 
     <div class="console-tabs" role="tablist" aria-label="Console views">
-      <button type="button" role="tab" aria-selected="true" aria-controls="cv-overview" id="ct-overview"><span>01</span>Overview</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="cv-threats" id="ct-threats"><span>02</span>Threats</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="cv-events" id="ct-events"><span>03</span>Events</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="cv-services" id="ct-services"><span>04</span>Services</button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="cv-rules" id="ct-rules"><span>05</span>Rules</button>
+      <button type="button" role="tab" aria-selected="true" aria-controls="cv-overview" id="ct-overview"><span>01</span>Overview<i class="tab-bar" aria-hidden="true"></i></button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-threats" id="ct-threats"><span>02</span>Threats<i class="tab-bar" aria-hidden="true"></i></button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-events" id="ct-events"><span>03</span>Events<i class="tab-bar" aria-hidden="true"></i></button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-services" id="ct-services"><span>04</span>Services<i class="tab-bar" aria-hidden="true"></i></button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="cv-rules" id="ct-rules"><span>05</span>Rules<i class="tab-bar" aria-hidden="true"></i></button>
     </div>
-    <div class="console-stage">
-      <div class="console-panel active" role="tabpanel" id="cv-overview" aria-labelledby="ct-overview">
-        <img src="assets/console/overview.webp" width="2880" height="1800" loading="lazy" alt="Karna Console overview: hostile requests contained in the last 24 hours and the protection posture of each service">
-        <div class="console-caption"><b>Overview</b><p>How much hostile traffic was contained, how many services are enforcing, and what needs attention first.</p></div>
-      </div>
-      <div class="console-panel" role="tabpanel" id="cv-threats" aria-labelledby="ct-threats" hidden>
-        <img src="assets/console/threats.webp" width="2880" height="1800" loading="lazy" alt="Karna Console threats scene: one row per rule, matches per hour over 24 hours">
-        <div class="console-caption"><b>Threats</b><p>When each of the most matched rules fired. A spike is a burst or a scan; a flat band is steady noise worth tuning.</p></div>
-      </div>
-      <div class="console-panel" role="tabpanel" id="cv-events" aria-labelledby="ct-events" hidden>
-        <img src="assets/console/events.webp" width="2880" height="1800" loading="lazy" alt="Karna Console events table: time, service, source, request, rule and category of each enforced request">
-        <div class="console-caption"><b>Events</b><p>One audit entry per request: who sent it, which rules matched, what Karna did. Pivot by IP or rule, export NDJSON.</p></div>
-      </div>
-      <div class="console-panel" role="tabpanel" id="cv-services" aria-labelledby="ct-services" hidden>
-        <img src="assets/console/services.webp" width="2880" height="1800" loading="lazy" alt="Karna Console services map: protected services as towers, blocking and detection side by side">
-        <div class="console-caption"><b>Services</b><p>Every Kong service Karna protects, in blocking or detection, with the ones ready to switch to blocking marked.</p></div>
-      </div>
-      <div class="console-panel" role="tabpanel" id="cv-rules" aria-labelledby="ct-rules" hidden>
-        <img src="assets/console/rules.webp" width="2880" height="1800" loading="lazy" alt="Karna Console rules: custom rules per service, in native JSON or SecLang">
-        <div class="console-caption"><b>Rules</b><p>Custom rules per service, in native JSON or SecLang, and the overrides that change how existing CRS rules behave.</p></div>
+    <div class="console-3d">
+      <div class="console-tilt">
+        <div class="console-panel active" role="tabpanel" id="cv-overview" aria-labelledby="ct-overview"><img src="assets/console/overview.webp" width="2880" height="1800" loading="lazy" alt="Karna Console overview: hostile requests contained in the last 24 hours and the protection posture of each service"></div>
+        <div class="console-panel" role="tabpanel" id="cv-threats" aria-labelledby="ct-threats" hidden><img src="assets/console/threats.webp" width="2880" height="1800" loading="lazy" alt="Karna Console threats scene: one row per rule, matches per hour over 24 hours"></div>
+        <div class="console-panel" role="tabpanel" id="cv-events" aria-labelledby="ct-events" hidden><img src="assets/console/events.webp" width="2880" height="1800" loading="lazy" alt="Karna Console events table: time, service, source, request, rule and category of each enforced request"></div>
+        <div class="console-panel" role="tabpanel" id="cv-services" aria-labelledby="ct-services" hidden><img src="assets/console/services.webp" width="2880" height="1800" loading="lazy" alt="Karna Console services map: protected services as towers, blocking and detection side by side"></div>
+        <div class="console-panel" role="tabpanel" id="cv-rules" aria-labelledby="ct-rules" hidden><img src="assets/console/rules.webp" width="2880" height="1800" loading="lazy" alt="Karna Console rules: custom rules per service, in native JSON or SecLang"></div>
       </div>
     </div>
+      <div class="console-caption active" data-for="cv-overview"><b>Overview</b><p>How much hostile traffic was contained, how many services are enforcing, and what needs attention first.</p></div>
+      <div class="console-caption" data-for="cv-threats" hidden><b>Threats</b><p>When each of the most matched rules fired. A spike is a burst or a scan; a flat band is steady noise worth tuning.</p></div>
+      <div class="console-caption" data-for="cv-events" hidden><b>Events</b><p>One audit entry per request: who sent it, which rules matched, what Karna did. Pivot by IP or rule, export NDJSON.</p></div>
+      <div class="console-caption" data-for="cv-services" hidden><b>Services</b><p>Every Kong service Karna protects, in blocking or detection, with the ones ready to switch to blocking marked.</p></div>
+      <div class="console-caption" data-for="cv-rules" hidden><b>Rules</b><p>Custom rules per service, in native JSON or SecLang, and the overrides that change how existing CRS rules behave.</p></div>
   </div>
 </section>
 
@@ -890,18 +886,60 @@ name=<span class="kept">OBrien</span>   <span style="color: var(--fg-3)"># quote
       }
     });
   })();
-  // console tabs
+  // console views: auto-advance every 6 s (paused on hover or off screen),
+  // a click selects a view and restarts the timer; the panel tilts with the pointer
   (function () {
-    var tabs = document.querySelectorAll('.console-tabs [role="tab"]');
-    tabs.forEach(function (tab) {
-      tab.addEventListener('click', function () {
-        tabs.forEach(function (t) {
-          var on = t === tab, panel = document.getElementById(t.getAttribute('aria-controls'));
-          t.setAttribute('aria-selected', String(on));
-          panel.hidden = !on; panel.classList.toggle('active', on);
-        });
+    var list = document.querySelector('.console-tabs');
+    var tabs = [].slice.call(list.querySelectorAll('[role="tab"]'));
+    var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var ADVANCE = 6000, timer = null, left = ADVANCE, started = 0, hovered = false, visible = false, current = 0;
+    function select(i) {
+      current = i;
+      tabs.forEach(function (t, k) {
+        var on = k === i, id = t.getAttribute('aria-controls');
+        t.setAttribute('aria-selected', String(on));
+        var panel = document.getElementById(id);
+        panel.hidden = !on; panel.classList.toggle('active', on);
+        var cap = document.querySelector('.console-caption[data-for="' + id + '"]');
+        cap.hidden = !on; cap.classList.toggle('active', on);
       });
+    }
+    function restartBar() {
+      var bar = tabs[current].querySelector('.tab-bar');
+      list.classList.remove('is-playing'); void bar.offsetWidth; list.classList.add('is-playing');
+    }
+    function stop() { clearTimeout(timer); timer = null; }
+    function run() {
+      stop();
+      if (reduced || hovered || !visible) { list.classList.add('is-paused'); return; }
+      list.classList.remove('is-paused');
+      started = Date.now();
+      timer = setTimeout(function () { select((current + 1) % tabs.length); left = ADVANCE; restartBar(); run(); }, left);
+    }
+    function pause() { if (timer) left = Math.max(0, left - (Date.now() - started)); stop(); list.classList.add('is-paused'); }
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { select(i); left = ADVANCE; restartBar(); run(); });
     });
+    var section = document.getElementById('console');
+    var stage = section.querySelector('.console-3d'), tilt = section.querySelector('.console-tilt');
+    [stage, list].forEach(function (el) {
+      el.addEventListener('mouseenter', function () { hovered = true; pause(); });
+      el.addEventListener('mouseleave', function () { hovered = false; run(); });
+    });
+    new IntersectionObserver(function (e) { visible = e[0].isIntersecting; visible ? run() : pause(); }, { threshold: 0.35 }).observe(stage);
+    if (!reduced) {
+      list.style.setProperty('--advance', ADVANCE / 1000 + 's');
+      restartBar();
+      stage.addEventListener('mousemove', function (e) {
+        var r = stage.getBoundingClientRect();
+        var x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+        tilt.style.setProperty('--ry', (-7 + x * 8).toFixed(2) + 'deg');
+        tilt.style.setProperty('--rx', (9 - y * 6).toFixed(2) + 'deg');
+      });
+      stage.addEventListener('mouseleave', function () { tilt.style.removeProperty('--ry'); tilt.style.removeProperty('--rx'); });
+    } else {
+      tilt.style.setProperty('--rx', '0deg'); tilt.style.setProperty('--ry', '0deg');
+    }
   })();
 </script>
 <script type="module">

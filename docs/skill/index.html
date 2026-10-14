@@ -6,30 +6,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta name="description" content="Install the Karna Claude Code skill into your own AI agent with one command. Teaches the agent to deploy, configure, and write rules for the Karna WAF plugin for Kong Gateway."/>
 <link rel="canonical" href="https://karna.sicuranext.com/skill/"/>
-<link rel="icon" type="image/png" href="/docs/assets/karna-mark-gold.png"/>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"/>
-<link rel="stylesheet" href="/docs/assets/karna.css?v=3"/>
+<link rel="icon" type="image/svg+xml" href="/docs/assets/favicon.svg"/>
+<link rel="stylesheet" href="/docs/assets/karna.css?v=4"/>
 </head>
 <body>
 
 <nav class="nav">
   <div class="nav-inner">
     <a class="brand" href="/" aria-label="Karna home">
-      <img src="/docs/assets/karna-mark-light.png" width="34" height="33" alt=""/>
+      <svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="6.5" fill="#d8402c"/></svg>
       <span class="brand-word">Karna</span>
-      <span class="brand-by">by <img class="brand-by-logo" src="/docs/assets/sicuranext-h-black.png" alt="SicuraNext"></span>
     </a>
     <div class="nav-links">
       <a href="/#why">Why Karna</a>
+      <a href="/#console">Console</a>
       <a href="/#features">Features</a>
+      <a href="/benchmark.html">Benchmark</a>
       <a href="/#install">Install</a>
-      <a href="/docs/">Docs</a>
+      <a href="/docs/" class="active">Docs</a>
     </div>
     <div class="nav-cta">
-      <a class="btn btn-secondary" href="/docs/">Docs home</a>
-      <a class="btn btn-gold" href="https://github.com/sicuranext/karna">GitHub</a>
+      <span class="powered-by">By <img src="/docs/assets/sicuranext-mark.png" alt="SicuraNext" width="1154" height="156"></span>
+      <a class="btn btn-primary" href="https://github.com/sicuranext/karna" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.1c-3.3.7-4-1.6-4-1.6-.5-1.4-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.7-5.5 6 .4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
+        GitHub
+      </a>
     </div>
   </div>
 </nav>
@@ -125,11 +126,8 @@ cd karna   <span class="cmt"># the karna skill is now available in this session<
 <footer class="foot">
   <div class="foot-inner">
     <div>
-      <div class="foot-brand-row">
-        <img src="/docs/assets/karna-mark-dark.png" width="40" height="39" alt=""/>
-        <span class="word">Karna</span>
-      </div>
-      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. <span style="color: var(--inchworm)">Cybersecurity for everyone.</span></p>
+      <a class="brand" href="/"><svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 28H80"/><path d="M48.5 28L49.5 85"/><path d="M42 47C34 41 23 46 23.5 57C24 68 36 74 48.5 67"/><path d="M49 59C52 47 66 43 74 50C81 57 77 70 66 70.5C63 70.7 61 69.5 60 68"/></g><circle cx="77.5" cy="20.5" r="6.5" fill="#d8402c"/></svg><span class="brand-word">Karna</span></a>
+      <p>A source-available Web Application Firewall plugin for Kong Gateway. Maintained by SicuraNext. Cybersecurity for everyone.</p>
     </div>
     <div>
       <h5>Project</h5>
@@ -156,7 +154,7 @@ cd karna   <span class="cmt"># the karna skill is now available in this session<
   </div>
   <div class="foot-bottom">
     <span>© 2026 SicuraNext SRL · Elastic License 2.0</span>
-    <a href="https://sicuranext.com" target="_blank" rel="noopener"><img class="foot-logo" src="/docs/assets/sicuranext-h-accent.png" alt="SicuraNext"></a>
+    <a href="https://sicuranext.com" target="_blank" rel="noopener"><img src="/docs/assets/sicuranext-mark.png" alt="SicuraNext" width="1154" height="156"></a>
   </div>
 </footer>
 

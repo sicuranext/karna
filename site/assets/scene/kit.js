@@ -11,6 +11,8 @@ export const PAL = {
 };
 
 export const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+// Labels are HTML: every value interpolated into one goes through esc().
+export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 export const ease = (v) => { const t = clamp(v); return t * t * (3 - 2 * t); };
 
 export function webglAvailable() {

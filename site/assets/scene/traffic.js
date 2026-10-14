@@ -1,7 +1,7 @@
 /* Overview traffic scene: the last 24 hours as stacked ribbons on a tilted
  * floor, one row per series (inspected, blocked, block rate). A beacon marks the peak blocking hour; hovering
  * the floor reads one hour across all rows. */
-import { THREE, PAL, clamp, ease } from "./kit.js";
+import { THREE, PAL, clamp, ease, esc } from "./kit.js";
 
 const X0 = -5.2, X1 = 5.2, HMAX = 1.45, GAP = 1.15;
 const fmt = (n) => Number(n).toLocaleString("en-US");
@@ -31,7 +31,7 @@ export const trafficScene = {
     traffic.forEach((d, i) => {
       if (i % 6 === 0 || i === N - 1) {
         grid.push(new THREE.Vector3(xOf(i), 0, zOf(0) - 0.45), new THREE.Vector3(xOf(i), 0, zOf(series.length - 1) + 0.45));
-        b.ticks.push({ i, tag: stage.label("k3d-axis", d.label) });
+        b.ticks.push({ i, tag: stage.label("k3d-axis", esc(d.label)) });
       }
     });
     stage.segments(grid, PAL.grid, 0.8);
@@ -69,7 +69,7 @@ export const trafficScene = {
       r.position.set(px, 0.002, pz); r.renderOrder = 5; r.frustumCulled = false; stage.root.add(r); return r;
     });
     b.peakTag = stage.label("k3d-tag",
-      `<span class="k3d-tag-id">peak · ${traffic[pi].label}</span><b>${fmt(blk.values[pi])} blocked</b><small>${fmt(traffic[pi].requests)} inspected that hour</small>`);
+      `<span class="k3d-tag-id">peak · ${esc(traffic[pi].label)}</span><b>${fmt(blk.values[pi])} blocked</b><small>${fmt(traffic[pi].requests)} inspected that hour</small>`);
 
     // hover: crosshair across the rows, one dot per row, a readout card
     b.cross = stage.segments([
@@ -131,7 +131,7 @@ export const trafficScene = {
     if (b.cross.visible) {
       b.cross.position.x = b.xOf(h);
       const d = b.traffic[h];
-      const html = `<span class="k3d-tag-id">${d.label}</span><b>${fmt(d.requests)}</b> inspected<br><b>${fmt(d.blocked)}</b> blocked · ${R[2].values[h].toFixed(2)}%`;
+      const html = `<span class="k3d-tag-id">${esc(d.label)}</span><b>${fmt(d.requests)}</b> inspected<br><b>${fmt(d.blocked)}</b> blocked · ${R[2].values[h].toFixed(2)}%`;
       if (b.tip._html !== html) { b.tip.innerHTML = html; b.tip._html = html; b.tip._w = undefined; }
       stage.place(b.tip, b.xOf(h), R[0].pts[h].y + 0.15, R[0].z, 1, 0, -8, -50, -100);
     } else stage.place(b.tip, 0, 0, 0, 0);
