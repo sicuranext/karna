@@ -14,3 +14,8 @@ crs-regression-test
 tests
 scripts
 *.md
+
+# Not part of the Kong image (own build contexts, or not shipped).
+dashboard
+site
+private

@@ -75,3 +75,19 @@
   .scn-chart-wrap { border-right: 0; border-bottom: 1px solid var(--rule); }
   .scn-header { flex-direction: column; align-items: flex-start; }
 }
+
+/* 3D charts (scene/bench.js) */
+.bench-scene { border: 1px solid var(--rule); }
+.bench-scene .k3d-viewport { height: clamp(320px, 36vw, 440px); }
+.bench-mini { border: 0; }
+.bench-mini .k3d-viewport { height: 250px; }
+.bench-mini .k3d-frame { display: none; }
+.bench-note { margin-top: 10px; font: 11px var(--font-mono); color: var(--fg-4); }
+.scn-chart-wrap { padding: 0; }
+.bench-lead .k3d-viewport { height: clamp(340px, 36vw, 440px); }
+.lead-table { display: none; border-top: 1px solid var(--rule); overflow-x: auto; }
+@media (max-width: 640px) {
+  .lead-table { display: block; }
+  .bench-lead .k3d-labels .k3d-group, .bench-lead .k3d-labels .k3d-axis { display: none; }
+  .bench-lead .k3d-viewport { height: 190px; }
+}

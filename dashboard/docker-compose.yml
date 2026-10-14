@@ -1,0 +1,84 @@
+# Karna Console: compose overlay for the Karna Docker stack.
+#
+# Run it on top of the stack that brings up Kong with Karna:
+#
+#   docker compose -f docker/docker-compose.dev.yml -f dashboard/docker-compose.yml up -d --build
+#
+# It (a) gives the `kong` service a named volume for its audit logs so the API
+# can read them, and (b) adds the two console containers on the same network.
+# The browser only talks to dashboard-web, published on 127.0.0.1 only; its
+# nginx proxies /api to dashboard-api, which is not published to the host.
+# To reach the console from another machine, see "Exposing the console" in
+# dashboard/README.md (TLS reverse proxy or SSH tunnel).
+
+services:
+  kong:
+    volumes:
+      - karna_audit_logs:/usr/local/openresty/nginx/logs
+
+  dashboard-api:
+    build:
+      # Relative to the project dir (the first -f file's dir = docker/).
+      context: ../dashboard/api
+      additional_contexts:
+        skills: ../.claude/skills/karna
+    image: karna-dashboard-api:dev
+    container_name: karna-dash-api
+    depends_on:
+      kong:
+        condition: service_healthy
+    environment:
+      KARNA_AUDITLOG_DIR: /var/log/karna
+      KONG_ADMIN_URL: http://kong:8001
+      KARNA_CRS_VERSION: "4.28.0"
+      KARNA_DASH_DATA: /data
+      # Optional Fernet key supplied by a secret manager; generated in /data when omitted.
+      KARNA_DASH_CREDENTIAL_KEY: ${KARNA_DASH_CREDENTIAL_KEY:-}
+      # First-run setup token. Leave empty to have one generated and printed in
+      # this container's log (docker compose logs dashboard-api).
+      KARNA_DASH_SETUP_TOKEN: ${KARNA_DASH_SETUP_TOKEN:-}
+      # Kong Admin API token (Kong Enterprise RBAC) and the one origin it may be
+      # sent to; defaults to KONG_ADMIN_URL.
+      KONG_ADMIN_TOKEN: ${KONG_ADMIN_TOKEN:-}
+      KONG_ADMIN_TOKEN_ORIGIN: ${KONG_ADMIN_TOKEN_ORIGIN:-}
+    extra_hosts:
+      # Lets the backend container reach Ollama / LM Studio on the user's host
+      # on Linux too (Docker Desktop already provides this name).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # rw: the ingester consumes (deletes) each audit file once it is stored in
+      # the SQLite event store. Rootfs stays read-only (below) — only this named
+      # volume and /data are writable.
+      - karna_audit_logs:/var/log/karna:rw
+      - karna_dash_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  dashboard-web:
+    build:
+      context: ../dashboard/web
+      args:
+        VITE_DATA_MODE: live
+    image: karna-dashboard-web:dev
+    container_name: karna-dash-web
+    depends_on:
+      - dashboard-api
+    ports:
+      # Loopback only: reach it from another machine through a TLS reverse
+      # proxy, never by publishing it on all interfaces (Docker bypasses ufw).
+      - "127.0.0.1:28080:8080"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  karna_audit_logs:
+  karna_dash_data:

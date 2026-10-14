@@ -1,0 +1,72 @@
+/* 3D scenes in the Karna Console look (console .k3d), shared by the landing
+   hero and the benchmark charts. The scene modules live in scene/. */
+.k3d { border: 1px solid var(--rule); background: #fff; min-width: 0; }
+.k3d-viewport { position: relative; height: clamp(420px, 44vw, 530px); overflow: hidden; isolation: isolate; background: var(--scene); }
+.k3d-canvas { position: absolute; inset: 0; cursor: grab; }
+.k3d-canvas.is-dragging { cursor: grabbing; }
+.k3d-canvas.is-reading { cursor: crosshair; }
+.k3d-canvas canvas { display: block; width: 100%; height: 100%; }
+.k3d-still { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 60% 50%; }
+.k3d.is-live .k3d-still { display: none; }
+.k3d-labels { position: absolute; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; }
+.k3d-labels > * { position: absolute; left: 0; top: 0; opacity: 0; will-change: transform, opacity; }
+.k3d-frame { position: absolute; inset: 14px; z-index: 1; pointer-events: none; }
+.k3d-frame i { position: absolute; width: 22px; height: 22px; border: 0 solid #9fb0e8; }
+.k3d-frame .tl { left: 0; top: 0; border-left-width: 1px; border-top-width: 1px; }
+.k3d-frame .tr { right: 0; top: 0; border-right-width: 1px; border-top-width: 1px; }
+.k3d-frame .bl { left: 0; bottom: 0; border-left-width: 1px; border-bottom-width: 1px; }
+.k3d-frame .br { right: 0; bottom: 0; border-right-width: 1px; border-bottom-width: 1px; }
+.k3d-status {
+  position: absolute; left: 24px; top: 24px; z-index: 2; display: flex; flex-direction: column; gap: 4px;
+  max-width: 300px; padding: 12px 14px; border: 1px solid #d8e0e5; background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 5px 24px rgba(30, 50, 60, 0.05); pointer-events: none;
+}
+.k3d-step { color: #68737d; font: 11px var(--font-mono); }
+.k3d-status strong { font-size: 19px; font-weight: 650; letter-spacing: -0.035em; line-height: 1.2; }
+.k3d-status > span:last-child { color: #5b6570; font-size: 12.5px; line-height: 1.45; }
+.k3d-telemetry {
+  position: absolute; right: 26px; bottom: 22px; z-index: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+  color: #56616b; font: 11px/1.4 var(--font-mono); pointer-events: none; text-shadow: 0 0 4px var(--scene);
+}
+.k3d-telemetry .hot { color: var(--hot); }
+.k3d-controls {
+  display: flex; align-items: center; gap: 12px; min-height: 46px; padding: 7px 14px;
+  border-top: 1px solid var(--rule); color: var(--fg-3); font: 11px var(--font-mono);
+}
+.k3d-phases { display: flex; gap: 2px; flex-wrap: wrap; }
+.k3d-phases button, .k3d-replay { padding: 7px 10px; border: 0; background: transparent; color: #6f7a84; font: 11px var(--font-mono); cursor: pointer; }
+.k3d-phases button span { margin-right: 5px; color: #9ba5ad; }
+.k3d-phases button[aria-pressed="true"] { background: #eef1f4; color: var(--ink); }
+.k3d-phases button:hover, .k3d-replay:hover { color: var(--ink); }
+.k3d-note { margin-left: auto; color: #8a959f; }
+.k3d-replay { border: 1px solid var(--rule); }
+.k3d:not(.is-live) .k3d-phases, .k3d:not(.is-live) .k3d-replay, .k3d:not(.is-live) .k3d-note { visibility: hidden; }
+
+.k3d-labels .anno { --mk: #9aa5b0; display: flex; align-items: flex-start; gap: 7px; width: max-content; color: var(--ink); font: 400 11.5px/1.3 var(--font-mono); white-space: nowrap; text-shadow: 0 0 3px var(--scene), 0 0 6px var(--scene), 0 0 10px var(--scene); transition: opacity 0.4s; }
+.k3d-labels .anno i { flex: none; width: 6px; height: 6px; margin-top: 4px; border: 1px solid var(--mk); background: var(--scene); transform: rotate(45deg); }
+.k3d-labels .anno.is-hot { --mk: var(--hot); }
+.k3d-labels .anno.is-hot i { background: var(--mk); }
+.k3d-labels .anno b { font-weight: 500; }
+.k3d-labels .anno small { display: block; color: #7c8791; font-size: 0.88em; }
+.k3d-labels .anno.anno-row { color: #56616b; text-align: right; }
+.k3d-labels .k3d-axis { color: #8a959f; font: 10px var(--font-mono); white-space: nowrap; }
+.k3d-labels .k3d-tag, .k3d-labels .k3d-tip { width: max-content; max-width: 240px; padding: 7px 10px 8px; border: 1px solid #d3dae0; border-top: 2px solid var(--hit); background: rgba(255, 255, 255, 0.96); box-shadow: 0 6px 20px rgba(30, 50, 60, 0.07); font-size: 12px; line-height: 1.4; }
+.k3d-labels .k3d-tip { border-top-color: var(--hot); transition: none; }
+.k3d-tag-id { display: block; color: #7c8791; font: 10px var(--font-mono); }
+.k3d-labels .k3d-tag b { display: block; margin-top: 1px; font-size: 13px; font-weight: 650; letter-spacing: -0.01em; }
+.k3d-labels .k3d-tag small { display: block; margin-top: 3px; color: #5f6a74; font-size: 10.5px; }
+.k3d-labels .k3d-tip b { font-weight: 650; }
+
+.k3d-labels .k3d-axis.is-hot { color: var(--hot); }
+.k3d-labels .k3d-axis.is-karna, .k3d-labels .k3d-value.is-karna { color: var(--ink); font-weight: 500; }
+.k3d-labels .k3d-value { color: #56616b; font: 11px var(--font-mono); white-space: nowrap; text-shadow: 0 0 3px var(--scene), 0 0 6px var(--scene); }
+.k3d-fallback { padding: 18px; font: 12px var(--font-mono); color: var(--fg-3); }
+.k3d-fallback table { width: 100%; border-collapse: collapse; }
+.k3d-fallback th, .k3d-fallback td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--rule); }
+.k3d-fallback th:first-child, .k3d-fallback td:first-child { text-align: left; }
+.k3d-labels .k3d-lead { color: var(--hot); font: 600 13px var(--font-mono); white-space: nowrap; text-shadow: 0 0 3px var(--scene), 0 0 6px var(--scene); }
+.k3d-labels .k3d-lead.is-behind { color: var(--hit); }
+.k3d-labels .k3d-group { display: flex; flex-direction: column; align-items: center; gap: 1px; width: max-content; font: 11px/1.45 var(--font-mono); color: var(--hot); text-shadow: 0 0 3px var(--scene), 0 0 6px var(--scene); white-space: nowrap; }
+.k3d-labels .k3d-group b { color: var(--ink); font-weight: 500; margin-bottom: 3px; }
+.k3d-labels .k3d-group em { font-style: normal; color: #7c8791; }
+.k3d-labels .k3d-group .is-behind { color: var(--hit); }

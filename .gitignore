@@ -116,7 +116,6 @@ bench/
 tests/reports/
 
 # Local work-in-progress (not for commit)
-dashboard/
 plans/
 
 # Agent tooling mirrors, kept local for now (the canonical copies live under
