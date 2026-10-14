@@ -7,6 +7,23 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Karna Console.** A web console for Karna, now in the repo under
+  `dashboard/`: traffic and blocks over the last 24 hours, the events Karna
+  recorded (one per request, with every matched rule), the Kong services that
+  run Karna and their mode, custom rules and overrides, a change log, and an
+  optional AI assistant that proposes changes you authorize one by one. It
+  reads Karna's audit log and talks to the Kong Admin API. One administrator,
+  created with a one-time setup token. See `dashboard/README.md`.
+- **Quickstart.** `./quickstart.sh` (or `docker compose up -d --build` with the
+  new root `compose.yaml`) starts Kong with Karna, the console and a demo
+  service on your machine and prints the setup token. Ports are published on
+  127.0.0.1 only, each container sits on a network with just the services it
+  talks to (the Kong Admin API is reachable from the console only), the
+  Postgres password is generated on the first run, and every container drops
+  its Linux capabilities.
+
 ## [1.7.3] - 2026-10-13
 
 ### Added

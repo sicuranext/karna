@@ -1,0 +1,9 @@
+# local state and build output, never committed
+.env
+.env.*
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dist/

@@ -1,0 +1,36 @@
+{
+  "name": "karna-dashboard-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Karna WAF management console — frontend",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node --test src/**/*.test.js",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .js,.jsx",
+    "audit": "npm audit --omit=dev"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.43.1",
+    "codemirror": "^6.0.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react": "^7.37.3",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "vite": "^8.0.16"
+  }
+}

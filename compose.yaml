@@ -1,0 +1,219 @@
+# Karna quickstart: Kong with Karna, the Karna Console and a demo service.
+#
+#   ./quickstart.sh                       # up -d, wait, print the next steps
+# or
+#   docker compose up -d --build          # --build picks up a `git pull`
+#   docker compose logs dashboard-api     # one-time setup token for the console
+#
+# Then:
+#   console  http://127.0.0.1:9080
+#   proxy    http://127.0.0.1:8000        # demo service, Karna in blocking mode
+#
+# Ports can be changed with KARNA_PROXY_PORT and KARNA_CONSOLE_PORT. Both are
+# published on 127.0.0.1 only; KARNA_PROXY_BIND=0.0.0.0 opens the proxy to the
+# network (see "Exposing the console" in dashboard/README.md for the console).
+#
+# Each container only sees what it talks to: the demo upstream reaches Kong's
+# proxy and nothing else, Postgres and Redis are reachable from Kong only, and
+# the Kong Admin API (never published) listens on the network Kong shares with
+# the console API only.
+# For plugin development use docker/docker-compose.dev.yml, for a DB-less
+# production gateway docker/docker-compose.prod.yml (see docker/README.md).
+
+name: karna
+
+services:
+  postgres:
+    image: postgres:17@sha256:0027bef26712baaee437a4ea48fdf3d2d2e2bc5f0d81615374408ca320f3c7e3
+    environment:
+      # Reachable from Kong only, never published to the host. quickstart.sh
+      # generates the password into .env on the first run; `kong` otherwise.
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: ${KARNA_PG_PASSWORD:-kong}
+      POSTGRES_DB: kong
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: during first-run init Postgres listens on its socket only.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U kong -d kong"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [db]
+    # The entrypoint starts as root to own the data directory, then switches
+    # to the postgres user: only the capabilities those two steps need.
+    cap_drop:
+      - ALL
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  redis:
+    # Used by rate_limit rules only. No password, as Karna expects: Kong is the
+    # only container on its network.
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks: [cache]
+    # Starts as root to own /data, then switches to the redis user.
+    cap_drop:
+      - ALL
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  echo:
+    # Demo upstream: answers every request with the request it received.
+    image: mendhak/http-https-echo:31@sha256:0fefe04350131d7bb28355e3bf037062643e45f4a8a32f23679529e1b09d8ce4
+    environment:
+      HTTP_PORT: 8080
+    networks: [upstream]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  kong:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: prod
+      args:
+        KARNA_COMMIT: ${KARNA_COMMIT:-unknown}
+        KARNA_BUILD_DATE: ${KARNA_BUILD_DATE:-unknown}
+    image: karna:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Prepares the database, adds the demo service on the first start only,
+    # binds the Admin API to the control network, then starts Kong.
+    entrypoint: ["sh", "/quickstart/kong-start.sh"]
+    command: []
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KARNA_PG_PASSWORD:-kong}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_LOG_LEVEL: warn
+      # Not published. kong-start.sh binds it to Kong's address on the control
+      # network (alias kong-admin) and to loopback, so the demo upstream and
+      # the databases cannot reach it.
+      KONG_ADMIN_GUI_LISTEN: "off"
+    ports:
+      # Loopback by default; KARNA_PROXY_BIND=0.0.0.0 to reach the demo from
+      # other machines.
+      - "${KARNA_PROXY_BIND:-127.0.0.1}:${KARNA_PROXY_PORT:-8000}:8000"
+    networks:
+      control:
+        aliases: [kong-admin]
+      db: {}
+      cache: {}
+      upstream: {}
+    volumes:
+      - ./docker/quickstart:/quickstart:ro
+      # Karna's audit log directory, shared with the console.
+      - audit_logs:/usr/local/openresty/nginx/logs
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    # Runs as the kong user and listens on ports above 1024: no capabilities.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  dashboard-api:
+    build:
+      context: dashboard/api
+      additional_contexts:
+        skills: .claude/skills/karna
+    image: karna-console-api:latest
+    depends_on:
+      kong:
+        condition: service_healthy
+    environment:
+      # `kong` resolves to Kong's control-network address: the only network
+      # the API shares with it.
+      KONG_ADMIN_URL: http://kong:8001
+      KARNA_AUDITLOG_DIR: /var/log/karna
+      KARNA_DASH_DATA: /data
+      # Keep in step with CRS_VERSION in docker/Dockerfile.
+      KARNA_CRS_VERSION: "4.28.0"
+      # Optional, see dashboard/README.md. Empty = generated on first start.
+      KARNA_DASH_SETUP_TOKEN: ${KARNA_DASH_SETUP_TOKEN:-}
+      KARNA_DASH_CREDENTIAL_KEY: ${KARNA_DASH_CREDENTIAL_KEY:-}
+    extra_hosts:
+      # Lets the assistant reach Ollama / LM Studio on this machine, on Linux too.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # rw: each audit file is deleted once it is stored in the event store.
+      - audit_logs:/var/log/karna:rw
+      - console_data:/data
+    networks: [control, console]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  dashboard-web:
+    build:
+      context: dashboard/web
+      args:
+        VITE_DATA_MODE: live
+    image: karna-console-web:latest
+    depends_on:
+      - dashboard-api
+    ports:
+      # Loopback only. To reach it from another machine read "Exposing the
+      # console" in dashboard/README.md (Docker publishing bypasses ufw).
+      - "127.0.0.1:${KARNA_CONSOLE_PORT:-9080}:8080"
+    networks: [console]
+    # nginx writes its pid and temp files under /tmp only.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  # Kong <-> console API: the Admin API. Not internal: the API also reaches AI
+  # providers, and Kong publishes the proxy port through it.
+  control: {}
+  # Browser-facing nginx <-> console API. Not internal: the console port is
+  # published through it.
+  console: {}
+  # Kong <-> Postgres, Kong <-> Redis, Kong <-> the demo upstream.
+  db:
+    internal: true
+  cache:
+    internal: true
+  upstream:
+    internal: true
+
+volumes:
+  pg_data:
+  redis_data:
+  audit_logs:
+  console_data:

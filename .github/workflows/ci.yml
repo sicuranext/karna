@@ -145,9 +145,9 @@ jobs:
           # are the only legitimate sicuranext.* references. The
           # workflow itself is excluded — it references these tokens as
           # part of its own scanning regex and would trip on itself.
-          PATHS="kong/ docker/ README.md crs-regression-test/ ka-unittest/"
-          if grep -rni 'octofence\|kong-armor\|waap-private\|\.claude/plans' $PATHS \
-              --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
+          PATHS="kong/ docker/ README.md crs-regression-test/ ka-unittest/ dashboard/ compose.yaml quickstart.sh"
+          INCLUDE="--include=*.lua --include=*.md --include=*.sh --include=*.py --include=*.js --include=*.jsx --include=*.yml --include=*.yaml --include=*.conf --include=*.html --include=*.css"
+          if grep -rni 'octofence\|kong-armor\|waap-private\|\.claude/plans' $PATHS $INCLUDE \
               2>/dev/null; then
             echo "::error::internal naming leak found"
             fail=1
@@ -158,10 +158,14 @@ jobs:
           #    (CI badge, clone instruction, link text)
           #  - "SicuraNext s.r.l" — Elastic License 2.0 attribution / licensor
           #  - karna@sicuranext.com — public project contact / commercial-license email
-          if grep -rni 'sicuranext' $PATHS \
-              --include='*.lua' --include='*.md' --include='*.sh' --include='*.py' \
+          #  - karna.sicuranext.com — the project's public site and docs
+          #  - the console's "By SicuraNext" signature (brand.jsx, its mark image)
+          #    and the trademark note in dashboard/README.md
+          if grep -rni 'sicuranext' $PATHS $INCLUDE \
               2>/dev/null \
-              | grep -v 'blog\.sicuranext\.com\|github\.com/sicuranext/karna\|SicuraNext s\.r\.l\|karna@sicuranext\.com'; then
+              | grep -v 'blog\.sicuranext\.com\|github\.com/sicuranext/karna\|SicuraNext s\.r\.l\|karna@sicuranext\.com\|karna\.sicuranext\.com' \
+              | grep -v '^dashboard/web/src/components/brand\.jsx:.*\(sicuranextMark\|sicuranext-mark\|"By SicuraNext"\|alt="SicuraNext"\)' \
+              | grep -v '^dashboard/README\.md:.*SicuraNext and the SicuraNext logo'; then
             echo "::error::unexpected sicuranext reference in code"
             fail=1
           fi

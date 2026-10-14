@@ -183,6 +183,24 @@ all guarded — when no sibling plugin sets them, Karna works fine in isolation.
 - `kong.ctx.shared.karna.log_entries` (array) — sibling plugins can append `{source, rule_id, message, tags?, metadata?}` records here and Karna will emit them as `external_matches[]` in the audit log v2. Malformed entries are silently dropped; oversize strings are clipped (`source`/`rule_id` at 100B, `message` at 1000B). The presence of valid entries forces an audit log write even when no Karna rule matched (overrides `auditlog_only_on_match`). Under `auditlog_format = "v1"` the same entries become extra `transaction.messages[]` elements (`message` + `details.ruleId` / `details.data` = `"Source: <source>"` / `details.tags`) — no new keys in the v1 document, and `metadata` is deliberately dropped there (no structured slot; free-text flattening is a secret-leak path). Normalisation lives in `ka_utils.lua:build_external_matches`, the v1 mapping in `ka_utils.lua:build_v1_external_messages` (unit-tested in `ka-unittest/external_log_entries.lua` and `ka-unittest/external_log_entries_v1.lua`).
 - **Karna rules writing into `kong.ctx.shared`** — the rule action `set_variable` with `type: "shared"` writes a value (literal or `%{...}`-resolved template string) into `kong.ctx.shared[<name>]`, where sibling Kong plugins downstream can read it. This is how a Karna detection (e.g. "this looks like a trusted internal request") can switch off another plugin's behaviour without that plugin knowing about Karna. The mirror action `type: "plugin"` writes into `kong.ctx.plugin[<name>]` (Karna-private). Implementation: `ka_engine.lua:apply_set_variable` (unit-tested in `ka-unittest/set_variable_action.lua`).
 
+## Karna Console and quickstart
+- `dashboard/` — the Karna Console: `web/` (React + Vite, nginx-unprivileged
+  image, strict CSP) and `api/` (FastAPI, stdlib SQLite event store). It ingests
+  the audit-log JSONL files (and deletes each closed file once stored), reads
+  and writes Kong through the Admin API, and has an optional AI assistant whose
+  writes wait for the admin's authorization (`app.py:_review_write`; raw
+  `kong_request` writes are risky by default, `_kong_write_review`). What reaches
+  the AI provider goes through `assistant_tools.redact` (name patterns, header
+  strings, URI / body parameters, sensitive `matched_parts`); `/config` is never
+  read. Details and security model in `dashboard/README.md`. Backend tests:
+  `cd dashboard/api && KARNA_DASH_DATA=$(mktemp -d) python3 -m unittest discover -p "test_*.py"`;
+  frontend: `npm run lint && npm run build` in `dashboard/web`.
+- `compose.yaml` + `quickstart.sh` + `docker/quickstart/` — local trial stack
+  (Kong + Karna + console + demo upstream). Separate networks per pair of
+  services; the Admin API is bound by `kong-start.sh` to Kong's address on the
+  `control` network (alias `kong-admin`) plus loopback. Redis has no password
+  and uses db 0 by design: it is isolated by network placement, not auth.
+
 ## Public site
 - `site/` — the public landing (`index.html`) and benchmark page served at
   karna.sicuranext.com (S3 bucket root; `/docs/` comes from `docs/`). Plain

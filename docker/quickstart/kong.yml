@@ -1,0 +1,18 @@
+# Karna quickstart: the demo service, imported into Kong's database on the
+# first start only. After that, manage it from the console (or delete it).
+_format_version: "3.0"
+
+services:
+  - name: demo
+    url: http://echo:8080
+    routes:
+      - name: demo
+        paths: ["/"]
+    plugins:
+      - name: karna
+        config:
+          engine_blocking_mode: true   # matched attacks get a 403
+          paranoia_level: 1
+          auditlog_enabled: true       # feeds the console
+          redis_host: redis            # used by rate_limit rules
+          redis_port: 6379
