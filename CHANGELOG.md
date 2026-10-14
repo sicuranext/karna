@@ -24,6 +24,13 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Postgres password is generated on the first run, and every container drops
   its Linux capabilities.
 
+### Changed
+
+- **README.** Rewritten as a short entry point: what Karna is, why it differs
+  from other WAFs, how to try it locally, and links to every section of the
+  documentation on karna.sicuranext.com, where the reference material now
+  lives.
+
 ## [1.7.3] - 2026-10-13
 
 ### Added
