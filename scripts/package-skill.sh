@@ -7,11 +7,7 @@
 #
 # The tarball extracts to `karna/SKILL.md` + `karna/reference/*.md`.
 # Run from anywhere; output defaults to dist/karna-skill.tar.gz (gitignored).
-#
-# After building, deploy alongside docs/skill/index.html:
-#   aws s3 cp dist/karna-skill.tar.gz s3://karna.sicuranext.com/skill/karna-skill.tar.gz
-#   aws s3 cp docs/skill/index.html  s3://karna.sicuranext.com/skill/index.html \
-#       --content-type "text/html; charset=utf-8"
+
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist/karna-skill.tar.gz}"

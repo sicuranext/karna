@@ -23,31 +23,11 @@ live in `../docs/` and are published under `/docs/`.
 ## Preview
 
 The scenes are ES modules, so open the pages through a local server. To get
-the site and the docs on one origin, as on S3:
+the site and the docs on one origin, as in production, run from the repo root:
 
 ```sh
-mkdir -p /tmp/karna-preview && cd /tmp/karna-preview
-ln -sf ~/Git/karna/site/index.html ~/Git/karna/site/benchmark.html ~/Git/karna/site/assets .
-ln -sf ~/Git/karna/docs docs && ln -sf ~/Git/karna/docs/skill skill
+repo="$PWD" && mkdir -p /tmp/karna-preview && cd /tmp/karna-preview
+ln -sf "$repo/site/index.html" "$repo/site/benchmark.html" "$repo/site/assets" .
+ln -sf "$repo/docs" docs && ln -sf "$repo/docs/skill" skill
 python3 -m http.server 8765    # http://localhost:8765/
-```
-
-## Deploy
-
-S3 static website, bucket `karna.sicuranext.com`. The bucket root is this
-folder; `/docs/` comes from `../docs/` and `/skill/` is uploaded by
-`scripts/package-skill.sh`, so the root sync must leave both alone:
-
-```sh
-aws s3 sync docs/ s3://karna.sicuranext.com/docs/ --delete
-aws s3 sync site/ s3://karna.sicuranext.com/ --delete --exclude "docs/*" --exclude "skill/*" --exclude "demo/*" --exclude "README.md"
-```
-
-`/demo/` is the Karna Console's live demo: the console built in demo mode (sample
-data, changes kept in the browser tab, a scripted assistant). Rebuild and
-publish it whenever the console changes:
-
-```sh
-(cd dashboard/web && npm ci && npm run build:demo)
-aws s3 sync dashboard/web/dist-demo/ s3://karna.sicuranext.com/demo/ --delete
 ```
