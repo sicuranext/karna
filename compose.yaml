@@ -57,10 +57,12 @@ services:
     volumes:
       - redis_data:/data
     networks: [cache]
-    # Starts as root to own /data, then switches to the redis user.
+    # Starts as root to own /data, then switches to the redis user. Root needs
+    # DAC_READ_SEARCH to walk /data/appendonlydir (mode 0700, owned by redis)
+    # on a restart, or the entrypoint's chown fails and Redis never comes up.
     cap_drop:
       - ALL
-    cap_add: [CHOWN, SETUID, SETGID]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_READ_SEARCH]
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped

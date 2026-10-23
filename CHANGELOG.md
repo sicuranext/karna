@@ -37,6 +37,14 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   documentation on karna.sicuranext.com, where the reference material now
   lives.
 
+### Fixed
+
+- **Quickstart: Redis comes back after a restart.** With every capability
+  dropped, the Redis image's entrypoint could not walk its own
+  `appendonlydir` on an existing volume and Redis restarted in a loop, which
+  silently switched rate limits and bans off. The container now keeps
+  `DAC_READ_SEARCH` as well.
+
 ## [1.7.3] - 2026-10-13
 
 ### Added
