@@ -138,7 +138,7 @@ class KongWriteReviewTests(unittest.TestCase):
         self.assertNotIn("confirm_text", rev)
 
     def test_harmless_karna_setting_is_benign(self):
-        rev = review("PATCH", f"/plugins/{KARNA_ID}", {"config": {"default_block_response_body": "Blocked."}})
+        rev = review("PATCH", f"/plugins/{KARNA_ID}", {"config": {"redis_keepalive_pool_size": 32}})
         self.assertEqual(rev["risks"], [])
 
     def test_strengthening_karna_is_benign(self):

@@ -63,7 +63,7 @@ function ExpiryNote({ secondsLeft }) {
 /* The server's review leads: what the operation changes and what it weakens,
  * written from the operation itself. The model's own summary is shown as its
  * note, because it can be wrong or steered by what the model read. A change
- * that weakens the WAF needs the service name typed back (checked server-side). */
+ * with a listed risk needs the service name typed back (checked server-side). */
 function ProposalCard({ proposal, confirmId, setConfirmId, busyId, onApply, onReject }) {
   const secondsLeft = useSecondsLeft(proposal.expires_at, proposal.status === "pending");
   const status = proposal.status === "pending" && secondsLeft === 0 ? "expired" : proposal.status;
@@ -80,10 +80,16 @@ function ProposalCard({ proposal, confirmId, setConfirmId, busyId, onApply, onRe
       )}
       {risky && (
         <div className="assistant-proposal-risks" role="alert">
-          <strong><Icon name="flame" size={13} /> This weakens the WAF</strong>
+          <strong><Icon name="flame" size={13} /> Read this before applying</strong>
           <ul>{review.risks.map((line) => <li key={line}>{line}</li>)}</ul>
         </div>
       )}
+      {(review.content || []).map((item) => (
+        <div className="assistant-action-content" key={item.label}>
+          <span className="eyebrow">{item.label}</span>
+          <pre>{item.text}</pre>
+        </div>
+      ))}
       <p className="assistant-proposal-note"><span>Assistant's note</span>{proposal.summary}</p>
       <details className="assistant-proposal-raw">
         <summary>Exact operation <code>{proposal.operation.type}</code> → <code>{proposal.operation.plugin_id}</code></summary>

@@ -52,7 +52,7 @@ export const trafficScene = {
       row.area.renderOrder = 2; row.area.frustumCulled = false; stage.root.add(row.area);
       const peakV = Math.max(...s.values);
       row.tag = stage.label("anno anno-row" + (s.hot ? " is-hot" : ""),
-        `<span><b>${s.name}</b><small>max ${s.unit === "%" ? peakV.toFixed(2) + "%" : fmt(peakV) + s.unit}</small></span><i></i>`);
+        `<span><b>${esc(s.name)}</b><small>max ${s.unit === "%" ? peakV.toFixed(2) + "%" : fmt(peakV) + s.unit}</small></span><i></i>`);
       b.rows.push(row);
     });
 

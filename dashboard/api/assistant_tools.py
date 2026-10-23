@@ -285,6 +285,12 @@ _HEADER_STRING_RE = re.compile(r"^(\s*[!#$%&'*+^_`|~0-9A-Za-z-]+\s*:\s*)(\S.*)$"
 _PAIR_RE = re.compile(r"(^|[?&;])([^=&;?#\s]+)=([^&;#]*)")
 _JSON_PAIR_RE = re.compile(r'("([^"\\]{1,128})"\s*:\s*)"((?:[^"\\]|\\.)*)"')
 _URI_KEYS = frozenset({"uri", "url", "raw_uri", "request_uri", "body_raw"})
+# An absolute URL: credentials in the userinfo, sensitive parameters in the query.
+_URL_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*://)([^/?#@\s]*@)?(.*)$", re.S)
+# A multipart part named like a credential, and an XML element named like one.
+_MULTIPART_PART_RE = re.compile(
+    r'(name="([^"\r\n]{1,128})"[^\r\n]*\r?\n(?:[^\r\n]+\r?\n)*\r?\n)(.*?)(?=\r?\n--)', re.S)
+_XML_ELEMENT_RE = re.compile(r"(<((?:[\w.-]+:)?([\w.-]{1,128}))(?:\s[^<>]*)?>)([^<]*)(</\2\s*>)")
 
 
 def is_sensitive_name(name) -> bool:
@@ -305,14 +311,54 @@ def redact_pairs(text: str) -> str:
 
     def json_pair(m):
         return f'{m.group(1)}"{REDACTED}"' if m.group(3) and is_sensitive_name(m.group(2)) else m.group(0)
-    return _JSON_PAIR_RE.sub(json_pair, _PAIR_RE.sub(pair, text))
+
+    def part(m):
+        return m.group(1) + REDACTED if m.group(3) and is_sensitive_name(m.group(2)) else m.group(0)
+
+    def element(m):
+        return m.group(1) + REDACTED + m.group(5) if m.group(4).strip() and is_sensitive_name(m.group(3)) else m.group(0)
+    text = _JSON_PAIR_RE.sub(json_pair, _PAIR_RE.sub(pair, text))
+    if 'name="' in text:
+        text = _MULTIPART_PART_RE.sub(part, text)
+    if "</" in text:
+        text = _XML_ELEMENT_RE.sub(element, text)
+    return text
+
+
+def _redact_url(text: str) -> str | None:
+    """An absolute URL with the password (or a lone token) in the userinfo and
+    the sensitive query parameters masked; None when `text` is not one."""
+    m = _URL_RE.match(text)
+    if not m:
+        return None
+    userinfo = m.group(2)
+    if userinfo:
+        user, sep, _ = userinfo[:-1].partition(":")
+        userinfo = f"{user}:{REDACTED}@" if sep else f"{REDACTED}@"
+    return m.group(1) + (userinfo or "") + redact_pairs(m.group(3))
 
 
 def _redact_string(text: str) -> str:
+    url = _redact_url(text)
+    if url is not None:
+        return url
     m = _HEADER_STRING_RE.match(text)
     if m and is_sensitive_name(m.group(1).strip().rstrip(":").strip()):
         return m.group(1) + REDACTED
     return text
+
+
+def _redact_secret_subtree(value):
+    """Below a key named like a credential (`auth`, `credentials`): every string
+    is masked except the ones that name things (`header_name`, `param_name`)."""
+    if isinstance(value, dict):
+        return {k: (v if isinstance(v, str) and str(k).lower().endswith(_NOT_SECRET_SUFFIXES)
+                    else _redact_secret_subtree(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_secret_subtree(v) for v in value]
+    if isinstance(value, str) and value:
+        return REDACTED
+    return value
 
 
 def _matched_target_is_sensitive(on) -> bool:
@@ -334,11 +380,14 @@ def redact(value, _key: str | None = None):
         if low in SECRET_FIELDS:
             if isinstance(value, (str, int, float)) or (isinstance(value, (list, dict)) and value):
                 return REDACTED
-        elif is_sensitive_name(low) and (
-                isinstance(value, str) or (isinstance(value, list) and all(isinstance(v, str) for v in value))):
-            return REDACTED
+        elif is_sensitive_name(low):
+            if isinstance(value, str) or (isinstance(value, list) and all(isinstance(v, str) for v in value)):
+                return REDACTED
+            if isinstance(value, dict):
+                return _redact_secret_subtree(value)
         if low in _URI_KEYS and isinstance(value, str):
-            return redact_pairs(value)
+            url = _redact_url(value)
+            return url if url is not None else redact_pairs(value)
     if isinstance(value, dict):
         if "on" in value and "value" in value and _matched_target_is_sensitive(value.get("on")):
             return {k: (REDACTED if k == "value" and v not in (None, "") else redact(v, str(k)))

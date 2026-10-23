@@ -65,7 +65,7 @@ def _base_url(provider: str, raw) -> str:
         address = None
     if address and (address.is_link_local or address.is_multicast or address.is_unspecified or address.is_reserved):
         raise HTTPException(422, "Provider URL cannot target a link-local or reserved address.")
-    if parsed.hostname.lower() in {"metadata.google.internal", "metadata.google"}:
+    if parsed.hostname.lower().rstrip(".") in egress.METADATA_HOSTNAMES:
         raise HTTPException(422, "Provider URL cannot target a cloud metadata service.")
     if port is not None and not 1 <= port <= 65535:
         raise HTTPException(422, "Provider URL contains an invalid port.")

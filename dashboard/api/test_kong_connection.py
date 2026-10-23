@@ -57,5 +57,17 @@ class KongConnectionTest(unittest.TestCase):
         self.assertNotIn("admin_token", public)
 
 
+class MetadataHostnameTest(unittest.TestCase):
+    def test_metadata_names_are_refused_with_the_right_reason(self):
+        for host in ("metadata.google.internal", "METADATA.google.internal.", "metadata.google"):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "metadata address"):
+                kong_connection.validate({"protocol": "http", "host": host, "port": 8001})
+
+    def test_names_that_only_contain_the_word_are_accepted(self):
+        for host in ("kong-metadata.internal", "unspecified-kong"):
+            with self.subTest(host=host):
+                self.assertEqual(kong_connection.validate({"protocol": "http", "host": host, "port": 8001})["host"], host)
+
+
 if __name__ == "__main__":
     unittest.main()

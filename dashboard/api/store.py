@@ -152,7 +152,8 @@ def init() -> None:
               status           TEXT NOT NULL DEFAULT 'pending',
               error            TEXT,
               created_at       INTEGER NOT NULL,
-              updated_at       INTEGER NOT NULL
+              updated_at       INTEGER NOT NULL,
+              before_hash      TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_assistant_proposals_conversation
               ON assistant_proposals(conversation_id,created_at,id);
@@ -181,6 +182,9 @@ def init() -> None:
               ON assistant_actions(conversation_id,created_at,id);
             """
         )
+        # Databases created before proposals carried the plugin's digest.
+        if "before_hash" not in {row["name"] for row in c.execute("PRAGMA table_info(assistant_proposals)")}:
+            c.execute("ALTER TABLE assistant_proposals ADD COLUMN before_hash TEXT")
         if c.execute("SELECT 1 FROM settings WHERE key='ttl_days'").fetchone() is None:
             c.execute("INSERT INTO settings(key,value) VALUES('ttl_days',?)", (str(DEFAULT_TTL_DAYS),))
         c.commit()
@@ -650,16 +654,18 @@ def add_assistant_activity(conversation_id: str, run_id: str, seq: int, kind: st
 
 
 def add_assistant_proposal(conversation_id: str, message_id: str, summary: str,
-                           operation: dict) -> dict:
+                           operation: dict, before_hash: str | None = None) -> dict:
+    """`before_hash`: digest of the Karna plugin the proposal was made against;
+    applying it is refused once the plugin no longer matches."""
     proposal_id = str(uuid.uuid4())
     with _lock:
         c = _connect()
         now = _next_assistant_ts(c, conversation_id)
         c.execute(
-            "INSERT INTO assistant_proposals(id,conversation_id,message_id,summary,operation,status,error,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,'pending',NULL,?,?)",
+            "INSERT INTO assistant_proposals(id,conversation_id,message_id,summary,operation,status,error,created_at,updated_at,before_hash) "
+            "VALUES(?,?,?,?,?,'pending',NULL,?,?,?)",
             (proposal_id, conversation_id, message_id, summary,
-             json.dumps(operation, separators=(",", ":")), now, now),
+             json.dumps(operation, separators=(",", ":")), now, now, before_hash),
         )
         c.execute("UPDATE assistant_conversations SET updated_at=? WHERE id=?", (now, conversation_id))
         c.commit()
@@ -672,7 +678,7 @@ def get_assistant_proposal(proposal_id: str) -> dict | None:
     with _lock:
         c = _connect()
         row = c.execute(
-            "SELECT id,conversation_id,message_id,summary,operation,status,error,created_at,updated_at "
+            "SELECT id,conversation_id,message_id,summary,operation,status,error,created_at,updated_at,before_hash "
             "FROM assistant_proposals WHERE id=?", (proposal_id,),
         ).fetchone()
     if row is None:
