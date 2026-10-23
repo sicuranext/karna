@@ -40,5 +40,14 @@ folder; `/docs/` comes from `../docs/` and `/skill/` is uploaded by
 
 ```sh
 aws s3 sync docs/ s3://karna.sicuranext.com/docs/ --delete
-aws s3 sync site/ s3://karna.sicuranext.com/ --delete --exclude "docs/*" --exclude "skill/*" --exclude "README.md"
+aws s3 sync site/ s3://karna.sicuranext.com/ --delete --exclude "docs/*" --exclude "skill/*" --exclude "demo/*" --exclude "README.md"
+```
+
+`/demo/` is the Karna Console's live demo: the console built in demo mode (sample
+data, changes kept in the browser tab, a scripted assistant). Rebuild and
+publish it whenever the console changes:
+
+```sh
+(cd dashboard/web && npm ci && npm run build:demo)
+aws s3 sync dashboard/web/dist-demo/ s3://karna.sicuranext.com/demo/ --delete
 ```

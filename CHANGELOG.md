@@ -9,6 +9,12 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Karna Console live demo.** A demo mode for the console (`npm run
+  build:demo`), published at karna.sicuranext.com/demo/: the sample services,
+  rules and overrides can be changed, the changes stay in the browser tab and
+  show up on the Audit page, and a scripted assistant proposes changes through
+  the same authorization cards as the real one. No backend, nothing is sent
+  anywhere.
 - **Karna Console.** A web console for Karna, now in the repo under
   `dashboard/`: traffic and blocks over the last 24 hours, the events Karna
   recorded (one per request, with every matched rule), the Kong services that
@@ -30,6 +36,47 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   from other WAFs, how to try it locally, and links to every section of the
   documentation on karna.sicuranext.com, where the reference material now
   lives.
+
+### Fixed
+
+- **Console: what Karna answers is part of the review.** A change proposed by
+  the assistant that sets a block page, a rate-limit or 5xx page, a rule's
+  `fixed_response` or `rate_limit.response` with its own body, headers or a
+  non-error status, or a response override, came with no risks and ran with
+  one click, so a steered model could put its own HTML or a redirect on the
+  protected site. These changes now list their risks, show the body and
+  headers in the card and need the confirmation text typed back. So do rules
+  that match every request and act on it, rules that rewrite requests
+  (`fix_matched_parts`), write `kong.ctx.shared`, delete Redis keys, set
+  `setvar`, or write into the MCP stream, and SecLang rules that deny every
+  request or deny with a non-error status.
+- **Console: only neutral settings go through with one click.** The review of
+  Karna settings proposed by the assistant used to list what is risky, and
+  missed switches such as `mcp_origins_allowed`, `mcp_routes`,
+  `try_bas64decode_if_possible`, `redis_inspect_enabled`, `redis_database` or
+  `redis_timeout_ms`. It now lists the few settings known to leave protection
+  as it is (the engine's speed-ups, Redis connection pooling) and asks for the
+  confirmation text for every other change.
+- **Console: fewer secrets reach the AI provider.** Values under a key named
+  like a credential are masked even when nested (`ai-proxy`'s
+  `auth.header_value`, `param_value`, `gcp_service_account_json`), URLs lose the
+  password in their userinfo and their sensitive query parameters
+  (`http-log`'s `http_endpoint`, OpenTelemetry endpoints, a `Location` header),
+  and credential fields in multipart and XML request bodies are masked too.
+- **Console: an assistant change to a Karna service runs only on the
+  configuration it was reviewed against.** If the plugin changed after the card
+  or the proposal was shown, applying it fails and nothing is written, as it
+  already did for raw Admin API writes.
+- **Console: smaller fixes.** A write the console refuses to propose now shows
+  in the activity timeline (with secrets masked), cloud metadata hostnames are
+  refused by name when a Kong connection is saved (and a hostname that only
+  contains the word "metadata" is no longer refused by accident), and the API
+  no longer redirects on a trailing slash, which behind nginx pointed at port 80.
+- **Quickstart: Redis comes back after a restart.** With every capability
+  dropped, the Redis image's entrypoint could not walk its own
+  `appendonlydir` on an existing volume and Redis restarted in a loop, which
+  silently switched rate limits and bans off. The container now keeps
+  `DAC_READ_SEARCH` as well.
 
 ## [1.7.3] - 2026-10-13
 

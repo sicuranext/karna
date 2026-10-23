@@ -1,5 +1,6 @@
 import React from "react";
 import { api, getToken, setToken, onUnauthorized } from "../data/api.js";
+import { MODE } from "../data/mode.js";
 
 const AuthCtx = React.createContext(null);
 export const useAuth = () => React.useContext(AuthCtx);
@@ -10,6 +11,7 @@ export function AuthProvider({ children }) {
   const [email, setEmail] = React.useState(null);
 
   const boot = React.useCallback(async () => {
+    if (MODE !== "live") { setReady(true); return; }   // sample and demo have no backend
     try {
       const st = await api.status();
       setRegistered(!!st.registered);

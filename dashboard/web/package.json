@@ -3,14 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Karna WAF management console — frontend",
+  "description": "Karna WAF management console \u2014 frontend",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "test": "node --test src/**/*.test.js",
     "preview": "vite preview",
     "lint": "eslint src --ext .js,.jsx",
-    "audit": "npm audit --omit=dev"
+    "audit": "npm audit --omit=dev",
+    "dev:demo": "VITE_DATA_MODE=demo vite",
+    "build:demo": "VITE_DATA_MODE=demo vite build --base=/demo/ --outDir dist-demo"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

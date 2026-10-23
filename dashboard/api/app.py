@@ -116,8 +116,9 @@ async def lifespan(_app: FastAPI):
         task.cancel()
 
 
+# No trailing-slash redirects: behind nginx they would point at port 80.
 app = FastAPI(title="Karna dashboard API", docs_url=None, redoc_url=None,
-              openapi_url=None, lifespan=lifespan)
+              openapi_url=None, lifespan=lifespan, redirect_slashes=False)
 
 # ---- category derivation (mirror of web/src/data/categories.js) ----
 _PREFIX = {
@@ -1151,10 +1152,16 @@ _WEAKER_WHEN_FALSE = {
     "mcp_origin_check_enabled": "Turns the MCP Origin check off.",
     "mcp_redact_session_id_in_audit": "Stops redacting the MCP session id in the audit log.",
     "mcp_redact_authorization_in_audit": "Stops redacting Authorization in the audit log.",
+    "mcp_detection_heuristic": "Stops recognising MCP traffic outside the configured MCP routes.",
+    "mcp_block_legacy_sse_transport": "Lets the legacy MCP SSE transport through.",
+    "try_bas64decode_if_possible": "Stops decoding base64 values before inspection: encoded payloads go through.",
+    "redis_inspect_enabled": "Stops reading Redis in rules: ban checks and other redis.* conditions stop matching.",
 }
 _WEAKER_WHEN_TRUE = {
     "private_debug": "Sends rule internals to clients (private_debug).",
     "ignore_from_local_ips": "Skips inspection for requests from local addresses.",
+    "set_karna_headers": "Adds Karna headers to responses, telling clients which rules matched.",
+    "auditlog_only_on_match": "Logs only the requests that matched a rule.",
 }
 _RISKY_ANY_CHANGE = {
     "paranoia_level": "Changes the paranoia level.",
@@ -1173,24 +1180,159 @@ _RISKY_ANY_CHANGE = {
     "redis_host": "Changes the Redis server Karna connects to.",
     "redis_port": "Changes the Redis server Karna connects to.",
     "redis_on_error": "Changes what Karna does when Redis fails.",
+    "redis_database": "Changes the Redis database: counters and bans in the current one are no longer read.",
+    "redis_timeout_ms": "Changes the Redis timeout: too low and every Redis call fails, which switches rate "
+                        "limits and bans off.",
+    "mcp_routes": "Changes which routes are inspected as MCP.",
+    "mcp_origins_allowed": "Changes which Origins may call the MCP endpoints (the DNS-rebinding guard).",
+    "mcp_protocol_versions_allowed": "Changes the allowed MCP protocol versions.",
+    "mcp_max_event_size_bytes": "Changes the MCP stream limits.",
+    "mcp_max_stream_buffer_bytes": "Changes the MCP stream limits.",
+    "auditlog_format": "Changes the audit log format: a collector that expects the other one stops parsing it.",
+    "auditlog_modsec": "Changes the audit log format: a collector that expects the other one stops parsing it.",
+    "limit_arg_name_length": "Changes an argument length limit.",
+    "limit_arg_value_length": "Changes an argument length limit.",
+    "total_arg_value_length": "Changes an argument length limit.",
+    "inspection_table_convert": "Changes how request values are decoded for inspection.",
 }
+# The only settings a change of which leaves protection as it is: the engine's
+# no-regression speed-ups, Redis connection pooling, an extra error-log line.
+# Every other field not listed above gets the generic risk.
+_NEUTRAL_FIELDS = {"engine_fast_path", "engine_re2_scan", "engine_ac_pm", "engine_re2_match",
+                   "redis_keepalive_pool_size", "redis_keepalive_idle_ms", "auditlog_error_log_on_match"}
+# Pages Karna serves on the protected site itself: whoever writes them writes
+# content (HTML, scripts, redirects) on that site's origin.
+_RESPONSE_PAGE_FIELDS = {
+    "default_block_response_body": "Changes the page Karna serves when it blocks a request.",
+    "default_block_response_headers": "Changes the headers Karna sends when it blocks a request.",
+    "default_ratelimit_response_body": "Changes the page Karna serves when it rate-limits a client.",
+    "default_ratelimit_response_headers": "Changes the headers Karna sends when it rate-limits a client.",
+    "default_50x_response_body": "Changes the page that replaces the upstream's 5xx errors.",
+    "default_50x_response_headers": "Changes the headers sent in place of the upstream's 5xx errors.",
+}
+_SERVED_AS_WRITTEN = " Clients of the protected site receive it as written: read it below."
 _WEAKENING_CONTROLS = ("engine_off", "detection_only", "remove_rule", "remove_rules_by_tag",
                        "remove_target_from_rule_by_id", "remove_target_rule_by_tag", "body_access_off")
+_REVIEWED_RULE_ACTIONS = {"fixed_response", "fix_matched_parts", "rate_limit", "redis_incr_key", "redis_set",
+                          "redis_sadd", "redis_del", "set_variable", "set_log_fields", "setvar", "log_only",
+                          "mcp_event_action"}
+# rx patterns that match any value: with them a condition holds for every request.
+_MATCH_ALL_RX = {"", ".", ".*", ".+", "^", "$", "^.*", "^.*$", "^.+$", "(.*)", "[\\s\\S]*"}
+
+
+def _status_of(response: dict, default: int):
+    try:
+        return int(response.get("status_code", default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _response_risks(response, default_status: int, what: str) -> list[str]:
+    """Risks of a response Karna would serve: a non-error status (a 200 or a
+    redirect where a block was), its own body, its own headers."""
+    if not isinstance(response, dict):
+        return []
+    risks = []
+    status = _status_of(response, default_status)
+    if status < 400:
+        risks.append(f"{what} answers with status {status}, not an error: a blocked request looks like a "
+                     "normal answer or a redirect.")
+    if response.get("body") not in (None, ""):
+        risks.append(f"{what} serves its own body." + _SERVED_AS_WRITTEN)
+    if response.get("headers"):
+        names = ", ".join(sorted(str(k) for k in response["headers"]))[:200] \
+            if isinstance(response["headers"], dict) else "?"
+        risks.append(f"{what} sets its own response headers ({names}).")
+    return risks
+
+
+def _response_text(response: dict, default_status: int) -> str:
+    out = [f"status {_status_of(response, default_status)}"]
+    if response.get("headers"):
+        out.append("headers " + json.dumps(response["headers"], ensure_ascii=False))
+    if response.get("body") not in (None, ""):
+        out += ["", str(response["body"])]
+    return "\n".join(out)
+
+
+def _matches_every_request(conditions) -> bool:
+    for cond in conditions if isinstance(conditions, list) else []:
+        if not isinstance(cond, dict) or cond.get("negated") is True:
+            continue
+        if cond.get("op") == "unconditionalMatch":
+            return True
+        if cond.get("op") == "rx" and cond.get("value") in _MATCH_ALL_RX:
+            return True
+    return False
+
+
+def _rule_review(rule: dict) -> tuple[list[str], list[dict]]:
+    """(risks, content) of one native rule: what it switches off, what it
+    answers to clients, what it writes outside its own match."""
+    risks, content = [], []
+    controls = json.dumps(rule.get("rule_control") or {})
+    found = [c for c in _WEAKENING_CONTROLS if f'"{c}"' in controls]
+    if found:
+        risks.append("For matching requests the rule switches parts of the WAF off: " + ", ".join(found) + ".")
+    action = rule.get("action") if isinstance(rule.get("action"), dict) else {}
+    fixed = action.get("fixed_response")
+    if isinstance(fixed, dict):
+        found = _response_risks(fixed, 403, "The rule's block response")
+        risks += found
+        if found:
+            content.append({"label": "fixed_response", "text": _clip_content(_response_text(fixed, 403))})
+    limited = (action.get("rate_limit") or {}).get("response") if isinstance(action.get("rate_limit"), dict) else None
+    if isinstance(limited, dict):
+        found = _response_risks(limited, 429, "The rule's rate-limit response")
+        risks += found
+        if found:
+            content.append({"label": "rate_limit response", "text": _clip_content(_response_text(limited, 429))})
+    if "fix_matched_parts" in action:
+        risks.append("Rewrites matching requests before they reach the upstream (fix_matched_parts).")
+    variable = action.get("set_variable")
+    if isinstance(variable, dict) and variable.get("type") == "shared":
+        risks.append(f"Writes kong.ctx.shared.{variable.get('name')}: other Kong plugins can read it and "
+                     "change what they do.")
+    if "redis_del" in action:
+        risks.append("Deletes a Redis key when it matches: this can lift bans or reset counters.")
+    if "setvar" in action:
+        risks.append("Sets transaction variables (setvar) that other rules read.")
+    mcp = action.get("mcp_event_action")
+    if isinstance(mcp, dict) and mcp.get("type") in ("replace", "terminate", "inject"):
+        risks.append(f"Writes its own content into the MCP stream sent to clients ({mcp.get('type')}).")
+        if mcp.get("data"):
+            content.append({"label": "mcp_event_action data", "text": _clip_content(str(mcp["data"]))})
+    unknown = sorted(set(action) - _REVIEWED_RULE_ACTIONS)
+    if unknown:
+        risks.append("Uses an action the console does not review: " + ", ".join(unknown) + ".")
+    if set(action) - {"log_only"} and _matches_every_request(rule.get("conditions")):
+        risks.append("Matches every request: what the rule does applies to all of the service's traffic.")
+    return risks, content
 
 
 def _proposal_review(operation: dict) -> dict:
-    """{"changes": [...], "risks": [...]} in plain words, derived from the operation."""
-    changes, risks = [], []
+    """{"changes": [...], "risks": [...], "content"?: [...]} in plain words,
+    derived from the operation. `content` carries the text a risk asks the
+    user to read (a page body, a rule's response)."""
+    changes, risks, content = [], [], []
     kind = operation.get("type")
     if kind == "update_config":
         for field, value in sorted((operation.get("changes") or {}).items()):
             changes.append(f"Set {field} to {json.dumps(value, ensure_ascii=False)[:200]}")
-            if value is False and field in _WEAKER_WHEN_FALSE:
-                risks.append(_WEAKER_WHEN_FALSE[field])
-            elif value is True and field in _WEAKER_WHEN_TRUE:
-                risks.append(_WEAKER_WHEN_TRUE[field])
-            elif field in _RISKY_ANY_CHANGE and _RISKY_ANY_CHANGE[field] not in risks:
-                risks.append(_RISKY_ANY_CHANGE[field])
+            if field in _WEAKER_WHEN_FALSE or field in _WEAKER_WHEN_TRUE:
+                if value is False and field in _WEAKER_WHEN_FALSE:
+                    risks.append(_WEAKER_WHEN_FALSE[field])
+                elif value is True and field in _WEAKER_WHEN_TRUE:
+                    risks.append(_WEAKER_WHEN_TRUE[field])
+            elif field in _RESPONSE_PAGE_FIELDS:
+                risks.append(_RESPONSE_PAGE_FIELDS[field] + _SERVED_AS_WRITTEN)
+                text = value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False)
+                content.append({"label": field, "text": _clip_content(text)})
+            elif field in _RISKY_ANY_CHANGE:
+                if _RISKY_ANY_CHANGE[field] not in risks:
+                    risks.append(_RISKY_ANY_CHANGE[field])
+            elif field not in _NEUTRAL_FIELDS:
+                risks.append(f"Changes {field}: the console cannot tell whether this weakens protection.")
     elif kind == "add_override":
         entry = operation.get("entry") or {}
         kind_name = str(operation.get("kind"))
@@ -1199,16 +1341,22 @@ def _proposal_review(operation: dict) -> dict:
         action = (entry.get("action") or {}).get("type")
         if action == "passthrough":
             risks.append("Drops the terminal action of the selected rules (passthrough): they stop blocking.")
+        response = entry.get("response")
+        if isinstance(response, dict):
+            found = _response_risks(response, 403, "The overridden response")
+            risks += found
+            if found:
+                content.append({"label": "response", "text": _clip_content(_response_text(response, 403))})
         if (entry.get("selector") or {}).get("any") is True:
             risks.append("Applies to every rule on the service.")
     elif kind == "add_rule":
         rule = operation.get("rule") or {}
         changes.append(f"Add native rule {rule.get('id', '?')}")
-        controls = json.dumps(rule.get("rule_control") or {})
-        found = [c for c in _WEAKENING_CONTROLS if f'"{c}"' in controls]
-        if found:
-            risks.append("For matching requests the rule switches parts of the WAF off: " + ", ".join(found) + ".")
-    return {"changes": changes, "risks": risks}
+        risks, content = _rule_review(rule)
+    review = {"changes": changes, "risks": risks}
+    if content:
+        review["content"] = content
+    return review
 
 
 # ---- review of raw Admin API writes (kong_request) ----
@@ -1224,6 +1372,8 @@ _RULE_FIELD_LABEL = {
 }
 _SECLANG_WEAKENING_RE = re.compile(
     r"ctl:\s*(?:ruleEngine\s*=\s*(?:off|detectiononly)|ruleRemove\w*|requestBodyAccess\s*=\s*off)", re.I)
+_SECLANG_DENY_RE = re.compile(r"(?:^|[\",])\s*(?:deny|block)\s*(?:[\",]|$)", re.I)
+_SECLANG_STATUS_RE = re.compile(r"status\s*:\s*(\d{3})", re.I)
 _KARNA_SCOPE_FIELDS = ("protocols", "service", "route", "consumer")
 _CODE_PLUGINS = {"pre-function", "post-function", "exit-transformer",
                  "aws-lambda", "azure-functions", "openwhisk"}
@@ -1238,7 +1388,7 @@ _GENERIC_KONG_RISK = ("Changes Kong directly through the Admin API. The console 
 _MAX_CONTENT_CHARS = 4000
 
 
-def _clip(text: str) -> str:
+def _clip_content(text: str) -> str:
     return text if len(text) <= _MAX_CONTENT_CHARS else text[:_MAX_CONTENT_CHARS] + "\n… (truncated)"
 
 
@@ -1268,9 +1418,16 @@ def _rule_field_review(field: str, value) -> tuple[list[str], str]:
              f"entr{'y' if len(entries) == 1 else 'ies'}): entries not listed here are removed."]
     for entry in entries:
         if field == "custom_secrules":
-            found = sorted({m.group(0) for m in _SECLANG_WEAKENING_RE.finditer(str(entry))})
+            text = str(entry)
+            found = sorted({m.group(0) for m in _SECLANG_WEAKENING_RE.finditer(text)})
             if found:
                 risks.append("A SecLang rule switches parts of the WAF off: " + ", ".join(found) + ".")
+            if _SECLANG_DENY_RE.search(text):
+                status = _SECLANG_STATUS_RE.search(text)
+                if status and int(status.group(1)) < 400:
+                    risks.append(f"A SecLang rule blocks with status {status.group(1)}, not an error.")
+                if "@unconditionalmatch" in text.lower():
+                    risks.append("A SecLang rule blocks every request (@unconditionalMatch).")
             continue
         if not isinstance(entry, dict):
             risks.append(f"One of the {label} is not valid JSON.")
@@ -1299,7 +1456,7 @@ def _karna_config_review(new_cfg, old_cfg: dict) -> tuple[list[str], list[dict],
         if field in _RULE_FIELD_LABEL:
             field_risks, text = _rule_field_review(field, value)
             risks += [r for r in field_risks if r not in risks]
-            content.append({"label": field, "text": _clip(text)})
+            content.append({"label": field, "text": _clip_content(text)})
             benign = False
         elif field in _SERVICE_FIELDS and field != "redis_password":
             plain[field] = value
@@ -1311,8 +1468,9 @@ def _karna_config_review(new_cfg, old_cfg: dict) -> tuple[list[str], list[dict],
             normalized = _normalize_service_changes(plain)
         except HTTPException as exc:
             raise ToolError(f"Refused: {exc.detail}. Send a valid value, never null, for a Karna setting.")
-        risks += [r for r in _proposal_review({"type": "update_config", "changes": normalized})["risks"]
-                  if r not in risks]
+        plain_review = _proposal_review({"type": "update_config", "changes": normalized})
+        risks += [r for r in plain_review["risks"] if r not in risks]
+        content += plain_review.get("content", [])
     return risks, content, benign and not risks
 
 
@@ -1338,7 +1496,7 @@ def _kong_write_review(method: str, entity_path: str, body, before) -> tuple[lis
         if plugin_name in _CODE_PLUGINS:
             risks.append(f"Runs custom code on the gateway ({plugin_name}). It can answer, rewrite or "
                          "forward requests around Karna.")
-            content.append({"label": f"{plugin_name} config", "text": _clip(_code_text(body_dict.get("config")))})
+            content.append({"label": f"{plugin_name} config", "text": _clip_content(_code_text(body_dict.get("config")))})
         elif plugin_name == "request-termination":
             risks.append("Answers requests at the gateway (request-termination): the upstream is never reached.")
         if plugin_name == "karna":
@@ -1392,7 +1550,7 @@ async def _present_proposal(proposal: dict | None) -> dict | None:
     review lists risks, the service name to type back before applying."""
     if not proposal:
         return proposal
-    proposal = _expire_proposal(proposal)
+    proposal = {k: v for k, v in _expire_proposal(proposal).items() if k != "before_hash"}
     review = _proposal_review(proposal.get("operation") or {})
     if review["risks"]:
         review["confirm_service"] = await _plugin_service_name((proposal.get("operation") or {}).get("plugin_id", ""))
@@ -1626,6 +1784,10 @@ async def _review_write(name: str, args: dict) -> tuple[dict, dict]:
             review = _proposal_review(operation)
             review["title"] = f"{svc.get('name')}: " + (review["changes"][0] if review["changes"] else name)
             review["operation"] = operation
+            status, plugin = await _kong_call("GET", f"/plugins/{plugin_id}")
+            if status != 200 or not isinstance(plugin, dict):
+                raise ToolError(f"Kong answered {status} for the Karna plugin.")
+            review["before_hash"] = _digest(plugin)
             if review["risks"]:
                 review["confirm_text"] = svc.get("name") or svc.get("id")
             return {"tool_args": args, "operation": operation}, review
@@ -1664,6 +1826,10 @@ async def _execute_action(action: dict, sub: str):
         return {"status": status, "body": data}
     if name in ("karna_update_config", "karna_add_rule", "karna_add_override"):
         op = args["operation"]
+        if review.get("before_hash"):
+            status, current = await _kong_call("GET", f"/plugins/{op['plugin_id']}")
+            if status != 200 or _digest(current) != review["before_hash"]:
+                raise HTTPException(status_code=409, detail="The Karna configuration changed after this action was proposed. Ask the assistant to propose it again.")
         if op["type"] == "update_config":
             return await patch_engine(op["plugin_id"], op["changes"], sub)
         if op["type"] == "add_rule":
@@ -1723,7 +1889,7 @@ async def _agent_run(conversation_id: str, run_id: str, profile: dict, api_key: 
                 verdict = assistant_tools.Verdict("blocked", "the arguments are not valid JSON")
             else:
                 verdict = assistant_tools.classify(name, call["arguments"])
-            label = f"{name} " + json.dumps(call["arguments"] or {}, ensure_ascii=False)[:160]
+            label = f"{name} " + json.dumps(assistant_tools.redact(call["arguments"] or {}), ensure_ascii=False)[:160]
             if verdict.kind == "blocked":
                 result = {"error": f"Blocked by the console: {verdict.reason}"}
                 seq += 1
@@ -1758,6 +1924,9 @@ async def _agent_run(conversation_id: str, run_id: str, profile: dict, api_key: 
                     waiting = True
                 except ToolError as exc:
                     result = {"error": f"Not proposed: {exc}"}
+                    seq += 1
+                    yield event("activity", {"activity": store.add_assistant_activity(
+                        conversation_id, run_id, seq, "tool", "failed", f"Refused: {label}", {"reason": str(exc)})})
                 except httpx.HTTPError:
                     result = {"error": "Kong is unreachable."}
             store.append_transcript(conversation_id, [{
@@ -1954,14 +2123,19 @@ async def _legacy_run(conversation_id, run_id, profile, api_key, history, messag
     if raw_proposal is not None:
         try:
             normalized = _normalize_assistant_proposal(raw_proposal, resources)
+            status, plugin = await _kong_call("GET", f"/plugins/{normalized['operation']['plugin_id']}")
+            if status != 200 or not isinstance(plugin, dict):
+                raise HTTPException(status_code=502, detail=f"Kong answered {status} for the Karna plugin.")
             proposal = store.add_assistant_proposal(
-                conversation_id, assistant_record["id"], normalized["summary"], normalized["operation"])
+                conversation_id, assistant_record["id"], normalized["summary"], normalized["operation"],
+                before_hash=_digest(plugin))
             yield event("proposal.created", {"proposal": await _present_proposal(proposal)})
-        except HTTPException as exc:
+        except (HTTPException, httpx.HTTPError) as exc:
             seq += 1
+            reason = exc.detail if isinstance(exc, HTTPException) else "Kong is unreachable."
             yield event("activity", {"activity": store.add_assistant_activity(
                 conversation_id, run_id, seq, "proposal", "failed",
-                "Unsafe or invalid model proposal was not saved", {"reason": exc.detail})})
+                "Unsafe or invalid model proposal was not saved", {"reason": reason})})
 
 
 @app.post("/api/assistant/proposals/{proposal_id}/apply")
@@ -1979,11 +2153,21 @@ async def assistant_proposal_apply(proposal_id: str, payload: dict | None = Body
             raise HTTPException(status_code=503, detail="The service for this plugin cannot be resolved; refresh the Kong inventory.")
         typed = (payload or {}).get("confirm_service")
         if not isinstance(typed, str) or typed.strip() != expected:
-            raise HTTPException(status_code=428, detail="This change weakens the WAF: type the service name to apply it.")
+            raise HTTPException(status_code=428, detail="This change needs the service name typed back to apply it.")
     claimed = store.transition_assistant_proposal(proposal_id, "pending", "applying")
     if not claimed:
         raise HTTPException(status_code=409, detail="Assistant proposal is no longer pending.")
     operation = claimed["operation"]
+    if claimed.get("before_hash"):
+        try:
+            status, current = await _kong_call("GET", f"/plugins/{operation['plugin_id']}")
+        except httpx.HTTPError:
+            store.transition_assistant_proposal(proposal_id, "applying", "pending", "Kong is unreachable.")
+            raise HTTPException(status_code=502, detail="Kong is unreachable.")
+        if status != 200 or _digest(current) != claimed["before_hash"]:
+            detail = "The Karna configuration changed after this proposal was made. Ask the assistant to propose it again."
+            store.transition_assistant_proposal(proposal_id, "applying", "expired", detail)
+            raise HTTPException(status_code=409, detail=detail)
     try:
         if operation["type"] == "add_rule":
             result = await add_rule(operation["plugin_id"], {"kind": operation["kind"], "rule": operation["rule"]}, sub)

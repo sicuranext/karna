@@ -50,14 +50,15 @@ def validate(payload: dict) -> dict:
         raise ValueError("host must be between 1 and 253 characters")
     try:
         address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None:
         if address.is_unspecified:
             raise ValueError("host cannot be an unspecified address")
         if egress.blocked(address):
             raise ValueError("host cannot be a link-local or cloud metadata address")
         normalized_host = address.compressed
-    except ValueError as exc:
-        if "unspecified" in str(exc) or "metadata" in str(exc):
-            raise
+    else:
         try:
             normalized_host = host.encode("idna").decode("ascii").rstrip(".")
         except UnicodeError:
@@ -65,6 +66,8 @@ def validate(payload: dict) -> dict:
         labels = normalized_host.split(".")
         if not normalized_host or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
             raise ValueError("host is not a valid hostname or IP address")
+        if normalized_host.lower() in egress.METADATA_HOSTNAMES:
+            raise ValueError("host cannot be a link-local or cloud metadata address")
 
     port = payload.get("port")
     if isinstance(port, bool) or not isinstance(port, (int, str)):

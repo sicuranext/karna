@@ -2593,3 +2593,10 @@ strong { font-weight: 700; }
 .assistant-proposal.expired { opacity: .72; }
 .assistant-link-text { text-decoration: underline dotted; text-underline-offset: 2px; }
 .assistant-link-text .mono { color: var(--fg-3); font-size: .92em; word-break: break-all; text-decoration: none; }
+
+/* ---- Public live demo ---- */
+.demo-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 24px; border-bottom: 1px solid var(--border-1); background: var(--inset); color: var(--fg-2); font-size: 12.5px; line-height: 1.45; }
+.demo-banner strong { color: var(--fg-1); font-weight: 600; }
+.demo-banner a { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--fg-1); font-weight: 600; text-decoration: none; }
+.demo-banner a:hover { text-decoration: underline; }
+@media (max-width: 720px) { .demo-banner { padding: 8px 16px; font-size: 12px; } }

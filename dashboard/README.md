@@ -166,8 +166,10 @@ API container (`dashboard-api`):
   address, sign-in locks for everyone and each further failure doubles the
   lockout (30 seconds up to 15 minutes). The console is meant to be reachable
   from trusted addresses only (see [Exposing the console](#exposing-the-console)),
-  so the count is global instead of per address. Restarting the API container
-  clears a lockout. nginx also rate-limits the credential endpoints.
+  so the count is global instead of per address. The other side of that choice:
+  anyone who can reach the sign-in page can keep the admin out, which is one
+  more reason to keep it off the public internet. Sessions already open keep
+  working, and restarting the API container clears a lockout. nginx also rate-limits the credential endpoints.
 - **What the console can change.** From its own pages: the configuration of
   Karna plugins (engine settings, custom rules, overrides) and its own settings.
   Through the assistant, after your authorization: anything the Kong Admin API
@@ -181,8 +183,9 @@ API container (`dashboard-api`):
   skill); anything else is a write, which never runs during the model's turn;
   unknown tools, paths outside the Admin API and malformed calls are refused.
   A write becomes a card in the chat, with the server's own description of the
-  change (the entity now, the entity after, and what weakens the WAF or deletes
-  something), and runs only when you click **Authorize**: once, for exactly
+  change (the entity now, the entity after, and what weakens the WAF, deletes
+  something or changes what Karna answers to clients, with the page or response
+  shown in full), and runs only when you click **Authorize**: once, for exactly
   that operation, within ten minutes, and only if the entity has not changed
   since. Risky changes also need their confirmation text typed back. Audit
   events contain data chosen by whoever sent the request, so a prompt injection
@@ -218,10 +221,18 @@ sent. The console displays them as text and never renders them as HTML.
 ```sh
 cd dashboard/web
 npm ci
-npm run dev        # http://localhost:5173 with built-in sample data, no backend needed
+npm run dev        # http://localhost:5173 with built-in sample data, read-only, no backend needed
+npm run dev:demo   # same data, but writable in the browser, with a scripted assistant
 npm run lint
 npm run build
+npm run build:demo # the live demo published at karna.sicuranext.com/demo/
 ```
+
+In demo mode (`src/data/demo.js`) the write calls are answered in the browser:
+the sample services, rules and overrides change in memory, the Audit page
+records them, and a reload starts over. The assistant follows a short script
+(ask about false positives, a login rate limit or detection mode) and proposes
+changes through the same cards as the real one.
 
 Backend tests:
 

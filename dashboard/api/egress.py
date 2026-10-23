@@ -26,6 +26,8 @@ _METADATA = (
     ipaddress.ip_network("fd00:ec2::254/128"),    # AWS metadata over IPv6
     ipaddress.ip_network("100.100.100.200/32"),   # Alibaba Cloud metadata
 )
+# Metadata services reached by name; refused when a URL is saved, before any lookup.
+METADATA_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.google"})
 
 
 def blocked(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

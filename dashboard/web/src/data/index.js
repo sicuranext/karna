@@ -5,9 +5,11 @@
 import { useCallback, useEffect, useState } from "react";
 import * as S from "./sample.js";
 import { api } from "./api.js";
+import { MODE } from "./mode.js";
+import { demoPayload, onDemoChange } from "./demo.js";
 import { categoryForRule, categoryMeta } from "./categories.js";
 
-export const MODE = import.meta.env.VITE_DATA_MODE === "live" ? "live" : "sample";
+export { MODE };
 
 export const fmt = (n) => Number(n).toLocaleString("en-US");
 export const dateOf = (iso) => new Date(iso);
@@ -123,10 +125,16 @@ export function useDashboard() {
     setInventoryState({ loading: false, error: null });
   }, []);
 
+  useEffect(() => (MODE === "demo" ? onDemoChange(refresh) : undefined), [refresh]);
+
   useEffect(() => {
     let alive = true;
     if (MODE === "sample") {
       setState({ data: assemble(SAMPLE_SRC), loading: false, error: null });
+      return;
+    }
+    if (MODE === "demo") {
+      setState({ data: assemble(demoPayload(SAMPLE_SRC)), loading: false, error: null });
       return;
     }
     setState((s) => ({ ...s, loading: true, error: null }));

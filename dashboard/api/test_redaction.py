@@ -84,5 +84,49 @@ class RedactionTests(unittest.TestCase):
         json.loads(text)
 
 
+class Round2RedactionTests(unittest.TestCase):
+    """Shapes the 2026-10-23 review still saw reach the provider."""
+
+    def test_ai_proxy_credentials_under_auth(self):
+        out = tools.redact({"config": {"auth": {"header_name": "Authorization", "header_value": "Bearer sk-AI",
+                                                "param_name": "key", "param_value": "PV",
+                                                "gcp_service_account_json": '{"private_key":"PK"}',
+                                                "allow_override": False}}})["config"]["auth"]
+        self.assertEqual(out["header_name"], "Authorization")
+        self.assertEqual(out["param_name"], "key")
+        self.assertIs(out["allow_override"], False)
+        for field in ("header_value", "param_value", "gcp_service_account_json"):
+            self.assertEqual(out[field], tools.REDACTED, field)
+
+    def test_urls_lose_userinfo_and_sensitive_query(self):
+        out = tools.redact({"http_endpoint": "https://user:PW@logs.example/in?api_key=Q&x=1",
+                            "traces_endpoint": "https://otel.example/v1?token=T",
+                            "url": "https://GHTOKEN@github.com/repo"})
+        self.assertEqual(out["http_endpoint"], f"https://user:{tools.REDACTED}@logs.example/in?api_key={tools.REDACTED}&x=1")
+        self.assertEqual(out["traces_endpoint"], f"https://otel.example/v1?token={tools.REDACTED}")
+        self.assertEqual(out["url"], f"https://{tools.REDACTED}@github.com/repo")
+
+    def test_location_header_query(self):
+        out = tools.redact({"headers": {"location": "https://app/cb?access_token=LOC&state=s"}})
+        self.assertEqual(out["headers"]["location"], f"https://app/cb?access_token={tools.REDACTED}&state=s")
+
+    def test_multipart_and_xml_bodies(self):
+        mp = ('--b\r\nContent-Disposition: form-data; name="password"\r\n\r\nMPPW\r\n'
+              '--b\r\nContent-Disposition: form-data; name="user"\r\n\r\nbob\r\n--b--')
+        out = tools.redact({"body_raw": mp})["body_raw"]
+        self.assertNotIn("MPPW", out)
+        self.assertIn("bob", out)
+        xml = '<login><user>bob</user><ns:password a="1">XMLPW</ns:password></login>'
+        out = tools.redact({"body_raw": xml})["body_raw"]
+        self.assertNotIn("XMLPW", out)
+        self.assertIn("<user>bob</user>", out)
+        matched = tools.redact({"on": "request.body", "value": "<password>MV</password>"})
+        self.assertNotIn("MV", matched["value"])
+
+    def test_rule_variables_and_plain_urls_survive(self):
+        self.assertEqual(tools.redact("request.cookie.value:session"), "request.cookie.value:session")
+        self.assertEqual(tools.redact("https://docs.example/rules?page=2"), "https://docs.example/rules?page=2")
+
+
 if __name__ == "__main__":
     unittest.main()

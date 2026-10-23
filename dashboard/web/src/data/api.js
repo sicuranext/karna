@@ -2,6 +2,9 @@
  * closes); every call carries Authorization. A 401 on a non-auth path means
  * the session expired or was revoked → clear + notify so the app falls back to
  * the login screen. No cookies → no CSRF surface. */
+import { MODE } from "./mode.js";
+import { demoApi } from "./demo.js";
+
 const TOKEN_KEY = "karna.token";
 const store = (() => { try { return window.sessionStorage; } catch { return null; } })();
 try { window.localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }  // tokens used to live here
@@ -80,7 +83,7 @@ async function streamNdjson(path, body, onEvent, signal) {
   if (buffer.trim()) onEvent(JSON.parse(buffer));
 }
 
-export const api = {
+const liveApi = {
   status: () => apiFetch("/api/auth/status"),
   logout: () => apiFetch("/api/auth/logout", { method: "POST" }),
   changePassword: (currentPassword, newPassword) => apiFetch("/api/auth/password", {
@@ -131,3 +134,6 @@ export const api = {
   editRule: (pluginId, kind, index, body, etag) => apiFetch(`/api/plugins/${seg(pluginId)}/rules/${seg(kind)}/${seg(index)}?expected=${seg(etag)}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteRule: (pluginId, kind, index, etag) => apiFetch(`/api/plugins/${seg(pluginId)}/rules/${seg(kind)}/${seg(index)}?expected=${seg(etag)}`, { method: "DELETE" }),
 };
+
+// The public live demo answers the write calls in the browser (data/demo.js).
+export const api = MODE === "demo" ? { ...liveApi, ...demoApi } : liveApi;
