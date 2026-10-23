@@ -207,7 +207,7 @@ all guarded — when no sibling plugin sets them, Karna works fine in isolation.
   HTML/CSS in the Karna Console look (white, ink, 1px rules, Manrope + IBM Plex
   Mono, self-hosted). The hero runs the console's 3D traffic scene
   (`site/assets/scene/`, vendored three.js). Logo = `site/assets/karna-mark*.svg`.
-  Preview and deploy commands in `site/README.md`.
+  Preview commands in `site/README.md`; the deploy steps are kept outside the repo.
 
 ## Tests
 - `tests/` — ad-hoc Lua scripts (run from repo root: `lua tests/<name>.lua`)
