@@ -71,7 +71,7 @@ function Sidebar({ view, nav, data }) {
           <React.Fragment>
             <span className="mono" style={{ fontSize: 11, color: "var(--fg-3)" }}>karna {data.engine.version}</span>
             <span className="spacer" style={{ flex: 1 }} />
-            <span className="mono" style={{ fontSize: 11, color: "var(--fg-4)" }}>read-only</span>
+            <span className="mono" style={{ fontSize: 11, color: "var(--fg-4)" }}>{MODE === "demo" ? "live demo" : "read-only"}</span>
           </React.Fragment>
         )}
       </div>
@@ -176,7 +176,7 @@ function DashboardApp() {
   if (loading && !data) return <LoadingScreen />;
   if (error && !data) return <ErrorScreen error={error} onRetry={refresh} />;
 
-  const writable = mode === "live";
+  const writable = mode === "live" || mode === "demo";
   const common = {
     data, nav, navReplace, writable, refresh, refreshInventory,
     inventoryRefreshing, inventoryError, param: route.param,
@@ -195,11 +195,22 @@ function DashboardApp() {
     <div className="app" data-theme="dark" data-accent="gold" data-density="airy" data-charts="rich">
       <Sidebar view={view} nav={nav} data={data} />
       <div className="main">
+        {MODE === "demo" && <DemoBanner />}
         <Topbar onSearch={() => setPaletteOpen(true)} onOpenConnections={() => nav("settings")} data={data} />
         <div className="view" key={view}><React.Suspense fallback={<LoadingScreen />}>{Body}</React.Suspense></div>
       </div>
       <MobileNav view={view} nav={nav} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} data={data} nav={nav} />
+    </div>
+  );
+}
+
+/* The public demo says what it is: sample data, changes kept in this tab only. */
+function DemoBanner() {
+  return (
+    <div className="demo-banner" role="note">
+      <span><strong>Live demo.</strong> Sample data, no real traffic. Your changes stay in this browser tab and reset when you reload.</span>
+      <a href="https://github.com/sicuranext/karna" target="_blank" rel="noreferrer noopener">Get Karna <Icon name="arrowr" size={12} /></a>
     </div>
   );
 }
@@ -234,7 +245,7 @@ function SetupGate() {
 
 function Gate() {
   const { ready, authed } = useAuth();
-  if (MODE === "sample") return <DashboardApp />;
+  if (MODE !== "live") return <DashboardApp />;
   if (!ready) return <LoadingScreen />;
   if (!authed) return <Login />;
   return <SetupGate />;

@@ -9,6 +9,12 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Karna Console live demo.** A demo mode for the console (`npm run
+  build:demo`), published at karna.sicuranext.com/demo/: the sample services,
+  rules and overrides can be changed, the changes stay in the browser tab and
+  show up on the Audit page, and a scripted assistant proposes changes through
+  the same authorization cards as the real one. No backend, nothing is sent
+  anywhere.
 - **Karna Console.** A web console for Karna, now in the repo under
   `dashboard/`: traffic and blocks over the last 24 hours, the events Karna
   recorded (one per request, with every matched rule), the Kong services that

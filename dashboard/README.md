@@ -218,10 +218,18 @@ sent. The console displays them as text and never renders them as HTML.
 ```sh
 cd dashboard/web
 npm ci
-npm run dev        # http://localhost:5173 with built-in sample data, no backend needed
+npm run dev        # http://localhost:5173 with built-in sample data, read-only, no backend needed
+npm run dev:demo   # same data, but writable in the browser, with a scripted assistant
 npm run lint
 npm run build
+npm run build:demo # the live demo published at karna.sicuranext.com/demo/
 ```
+
+In demo mode (`src/data/demo.js`) the write calls are answered in the browser:
+the sample services, rules and overrides change in memory, the Audit page
+records them, and a reload starts over. The assistant follows a short script
+(ask about false positives, a login rate limit or detection mode) and proposes
+changes through the same cards as the real one.
 
 Backend tests:
 

@@ -8,7 +8,7 @@ import {
   createServiceConfig, diffServiceConfig, McpSettings, RedisSettings,
   RequestValidationSettings, ResponsesAndLogsSettings, RulesBoundary,
 } from "../components/ServiceAdvancedSettings.jsx";
-import { fmt } from "../data/index.js";
+import { fmt, MODE } from "../data/index.js";
 import { api } from "../data/api.js";
 import { useMutation } from "../data/hooks.js";
 
@@ -234,7 +234,7 @@ export default function Services({
           </div>
           <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
             {inventoryError && <span className="tag danger">{inventoryError}</span>}
-            {writable && <button className="btn ghost" disabled={inventoryRefreshing} onClick={refreshInventory}>
+            {writable && MODE === "live" && <button className="btn ghost" disabled={inventoryRefreshing} onClick={refreshInventory}>
               <Icon name="refresh" size={15} />
               {inventoryRefreshing ? "Refreshing inventory…" : "Refresh Kong inventory"}
             </button>}

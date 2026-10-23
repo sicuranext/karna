@@ -10,7 +10,7 @@
 
 export const ENGINE = {
   name: "karna",
-  version: "1.7.2",
+  version: "1.7.3",
   commit: "unknown",
   commit_short: "unknown",
   built_at: "unknown",
@@ -178,7 +178,7 @@ export const EVENTS = [
       headers: { host: "api.example.com", "user-agent": "python-requests/2.31", "content-type": "application/json" } },
     response: { status: 403, headers: { "content-type": "application/json" }, latency_ms: 0.0,
       latencies: { kong: 1.8, upstream: 0.0, total: 1.8 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 2 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 2 },
     matches: [
       { rule_id: "942100", message: "SQL Injection Attack Detected via libinjection", tags: ["OWASP_CRS", "attack-sqli", "paranoia-level/1"],
         matched_parts: [{ on: "request.body.json.filter", value: "1' OR '1'='1' --" }], action: "block" },
@@ -194,7 +194,7 @@ export const EVENTS = [
       headers: { host: "mcp.example.com", "user-agent": "mcp-client/0.4", "content-type": "application/json", authorization: "[REDACTED]" } },
     response: { status: 403, headers: { "content-type": "application/json" }, latency_ms: 0.0,
       latencies: { kong: 2.9, upstream: 0.0, total: 2.9 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 2 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 2 },
     matches: [
       { rule_id: "mcp_method_not_allowed", message: "MCP method/tool not in allow-list", tags: ["mcp", "jsonrpc"],
         matched_parts: [{ on: "mcp.params.name", value: "shell_exec" }], action: "block" },
@@ -210,7 +210,7 @@ export const EVENTS = [
       headers: { host: "api.example.com", "user-agent": "curl/8.4.0" } },
     response: { status: 403, headers: { "content-type": "application/json" }, latency_ms: 0.0,
       latencies: { kong: 1.1, upstream: 0.0, total: 1.1 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 2 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 2 },
     matches: [
       { rule_id: "930120", message: "OS File Access Attempt", tags: ["OWASP_CRS", "attack-lfi"],
         matched_parts: [{ on: "request.uri.path", value: "../../etc/passwd" }], action: "block" },
@@ -226,7 +226,7 @@ export const EVENTS = [
       headers: { host: "portal.example.com", "user-agent": "Mozilla/5.0" } },
     response: { status: 200, headers: { "content-type": "text/html" }, latency_ms: 14.2,
       latencies: { kong: 1.4, upstream: 14.2, total: 15.6 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "detection", paranoia_level: 1 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "detection", paranoia_level: 1 },
     matches: [
       { rule_id: "941100", message: "XSS Attack Detected via libinjection", tags: ["OWASP_CRS", "attack-xss"],
         matched_parts: [{ on: "request.args.q", value: "<script>alert(1)</script>" }], action: "detect" },
@@ -242,7 +242,7 @@ export const EVENTS = [
       headers: { host: "pay.example.com", "user-agent": "Go-http-client/2.0", "content-type": "application/json" } },
     response: { status: 403, headers: { "content-type": "application/json" }, latency_ms: 0.0,
       latencies: { kong: 2.2, upstream: 0.0, total: 2.2 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 3 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 3 },
     matches: [
       { rule_id: "932160", message: "Remote Command Execution: Unix Shell Code Found", tags: ["OWASP_CRS", "attack-rce"],
         matched_parts: [{ on: "request.body.json.note", value: ";cat /etc/shadow" }], action: "block" },
@@ -258,7 +258,7 @@ export const EVENTS = [
       headers: { host: "partners.example.com", "user-agent": "Nuclei - Open-source project (github.com/projectdiscovery/nuclei)" } },
     response: { status: 200, headers: { "content-type": "application/json" }, latency_ms: 9.1,
       latencies: { kong: 1.6, upstream: 9.1, total: 10.7 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "detection", paranoia_level: 1 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "detection", paranoia_level: 1 },
     matches: [
       { rule_id: "913100", message: "Found User-Agent associated with security scanner", tags: ["OWASP_CRS", "attack-scanner"],
         matched_parts: [{ on: "request.headers.user-agent", value: "Nuclei" }], action: "detect" },
@@ -274,7 +274,7 @@ export const EVENTS = [
       headers: { host: "pay.example.com", "user-agent": "Mozilla/5.0", "content-type": "application/json" } },
     response: { status: 200, headers: { "content-type": "application/json" }, latency_ms: 11.3,
       latencies: { kong: 2.1, upstream: 11.3, total: 13.4 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 3 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 3 },
     matches: [
       { rule_id: "941310", message: "US-ASCII Malformed Encoding XSS Filter Evasion", tags: ["OWASP_CRS", "attack-xss"],
         matched_parts: [{ on: "request.body.json.description", value: "<img src=x onerror=fetch('//x')>" }], action: "sanitized" },
@@ -290,7 +290,7 @@ export const EVENTS = [
       headers: { host: "api.example.com", "user-agent": "python-requests/2.31", "content-type": "application/json" } },
     response: { status: 429, headers: { "content-type": "application/json", "retry-after": "60" }, latency_ms: 0.0,
       latencies: { kong: 1.7, upstream: 0.0, total: 1.7 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 2 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 2 },
     matches: [
       { rule_id: "local_login_bruteforce", message: "Login attempts over threshold (rate limit)", tags: ["local", "rate-limit"],
         matched_parts: [{ on: "request.body.json.email", value: "admin@example.com" }], action: "rate_limited" },
@@ -306,7 +306,7 @@ export const EVENTS = [
       headers: { host: "mcp.example.com", "user-agent": "claude-mcp/1.2", "content-type": "application/json", "mcp-session-id": "9f3a***", authorization: "[REDACTED]" } },
     response: { status: 200, headers: { "content-type": "text/event-stream" }, latency_ms: 22.7,
       latencies: { kong: 3.4, upstream: 22.7, total: 26.1 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "detection", paranoia_level: 2 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "detection", paranoia_level: 2 },
     matches: [
       { rule_id: "mcp_method_observed", message: "MCP method observed (allow-listed)", tags: ["mcp", "jsonrpc"],
         matched_parts: [{ on: "mcp.method", value: "resources/read" }], action: "log" },
@@ -324,7 +324,7 @@ export const EVENTS = [
       headers: { host: "portal.example.com", "user-agent": "Mozilla/5.0" } },
     response: { status: 200, headers: { "content-type": "text/html" }, latency_ms: 7.8,
       latencies: { kong: 1.3, upstream: 7.8, total: 9.1 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "detection", paranoia_level: 1 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "detection", paranoia_level: 1 },
     matches: [
       { rule_id: "933200", message: "PHP Injection Attack: Wrapper scheme detected", tags: ["OWASP_CRS", "attack-php"],
         matched_parts: [{ on: "request.args.page", value: "php://filter" }], action: "detect" },
@@ -340,7 +340,7 @@ export const EVENTS = [
       headers: { host: "hooks.example.com", "user-agent": "GitHub-Hookshot/a1b2c3", "content-type": "application/xml" } },
     response: { status: 403, headers: { "content-type": "application/json" }, latency_ms: 0.0,
       latencies: { kong: 1.0, upstream: 0.0, total: 1.0 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "blocking", paranoia_level: 2 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "blocking", paranoia_level: 2 },
     matches: [
       { rule_id: "content_type_not_allowed", message: "Request Content-Type not in allow-list (gate)", tags: ["gate", "protocol"],
         matched_parts: [{ on: "request.headers.content-type", value: "application/xml" }], action: "block" },
@@ -356,7 +356,7 @@ export const EVENTS = [
       headers: { host: "api.example.com", "user-agent": "okhttp/4.12", "content-type": "application/json" } },
     response: { status: 200, headers: { "content-type": "application/json" }, latency_ms: 8.4,
       latencies: { kong: 1.9, upstream: 8.4, total: 10.3 } },
-    engine: { name: "karna", version: "1.7.2", commit: "unknown", mode: "detection", paranoia_level: 1 },
+    engine: { name: "karna", version: "1.7.3", commit: "unknown", mode: "detection", paranoia_level: 1 },
     matches: [
       { rule_id: "942190", message: "Detects MSSQL/Oracle SQLi probes (time-based)", tags: ["OWASP_CRS", "attack-sqli"],
         matched_parts: [{ on: "request.body.json.sort", value: "id; WAITFOR DELAY '0:0:5'" }], action: "detect" },
