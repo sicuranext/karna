@@ -29,7 +29,29 @@ local ipmatcher         = require "resty.ipmatcher"
 -- lockstep — version.lua is the single source of truth.
 plugin.VERSION = ka_version.version
 
-local ka_rules, err = lrucache.new(10000)
+-- The CRS rule pack, loaded once per worker in init_worker and read on every
+-- request. Plain module locals, NOT entries of the conf_cache LRU below: an LRU
+-- entry can be evicted by pressure from the per-instance entries, and an
+-- evicted pack would silently switch CRS evaluation off until the next worker
+-- start (access reads `nil` and skips the rule loop).
+local crs_rules, crs_rcontrol_rules, crs_dfiles
+
+-- The per-config cache prefixes (see conf_cache_key / conf_cache_set below).
+-- Every getter that writes to conf_cache uses one of these, and only these:
+-- conf_cache_set deletes a superseded generation by walking this list.
+local CONF_CACHE_PREFIXES = {
+  "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "redact",
+}
+
+-- conf_cache keeps ONE generation per plugin instance (conf_cache_set), so the
+-- live set is instances x prefixes. The capacity is sized for that: room for
+-- CONF_CACHE_INSTANCES live instances. Beyond it the LRU evicts, which costs a
+-- recompile on the next request of the evicted instance, never a wrong answer.
+-- The other entries it ever holds are orphans of instances Kong deleted, and
+-- the capacity bounds those. No TTL: resty.lrucache only drops an expired
+-- entry when it is read or pushed out, so a TTL frees nothing an orphan holds.
+local CONF_CACHE_INSTANCES = 2000
+local conf_cache = lrucache.new(CONF_CACHE_INSTANCES * #CONF_CACHE_PREFIXES)
 
 local debug = kong.log.debug
 
@@ -39,12 +61,13 @@ local _KARNA_PROFILE_ENABLED = os.getenv("KARNA_PROFILE") ~= nil
 
 
 
--- Per-plugin_conf cache key for the three compiled-config caches below
--- (get_plugin_dynamic_rules, get_local_request_rules, get_overrides_cached).
+-- Per-plugin_conf cache key for the compiled-config caches below
+-- (get_plugin_dynamic_rules, get_local_request_rules, get_overrides_cached,
+-- resolve_arg_limit_override, get_redact_spec_cached).
 --
 -- A table address (`tostring(plugin_conf)`) is NOT unique over time. Kong
 -- hands us a new config table on every Admin API write and never tells us
--- the old one is gone, so its ka_rules entry stays behind (no TTL); once
+-- the old one is gone, so an entry can outlive its table; once
 -- the old table is garbage-collected, LuaJIT can hand the same address to
 -- the config table of a DIFFERENT plugin instance, which then hits the
 -- stale entry and evaluates another service's compiled rules_request /
@@ -66,6 +89,49 @@ local function conf_cache_key(prefix, plugin_conf)
     return nil
   end
   return prefix .. ":" .. tostring(plugin_conf.__plugin_id) .. ":" .. tostring(seq)
+end
+
+-- Newest `__seq__` this worker has cached for each `__plugin_id`.
+local conf_cache_live_seq = {}
+
+-- Write side of the per-config caches. Keeps one generation per plugin
+-- instance alive.
+--
+-- Kong rebuilds its plugins iterator in every worker after ANY plugin write,
+-- of any plugin on any service, and (with a database) re-reads every plugin
+-- row while doing it, so every Karna instance gets a new config table with a
+-- new `__seq__` and recompiles on its next request. The entries under the
+-- previous `__seq__` are never read again, and with nothing removing them
+-- the LRU would hold one full compiled generation per rebuild, up to its
+-- capacity: worker memory growing in steps with the number of
+-- reconfigurations rather than with traffic.
+--
+-- So the first write under a newer `__seq__` deletes the instance's entries
+-- under the previous one, for every prefix. A config table OLDER than the live
+-- generation (a request still in flight across the rebuild) gets its value
+-- built fresh and not cached, so it cannot evict the live generation and the
+-- two cannot keep displacing each other. Only cache misses come here: a hit
+-- costs exactly what it did.
+--
+-- `__seq__` comes from a shared-dict counter, so it only grows. A non-numeric
+-- one is never expected, and is treated as "different means newer".
+local function conf_cache_set(plugin_conf, key, value)
+  local pid = tostring(plugin_conf.__plugin_id)
+  local seq = plugin_conf.__seq__
+  local live = conf_cache_live_seq[pid]
+  if live ~= seq then
+    if live ~= nil and type(live) == "number" and type(seq) == "number" and seq < live then
+      return
+    end
+    if live ~= nil then
+      local suffix = ":" .. pid .. ":" .. tostring(live)
+      for i = 1, #CONF_CACHE_PREFIXES do
+        conf_cache:delete(CONF_CACHE_PREFIXES[i] .. suffix)
+      end
+    end
+    conf_cache_live_seq[pid] = seq
+  end
+  conf_cache:set(key, value)
 end
 
 -- Namespace for the `rate_limit` Redis keys. Two Karna instances on two
@@ -169,7 +235,7 @@ end
 -- the same reason.
 local get_plugin_dynamic_rules = function(plugin_conf)
   local key = conf_cache_key("plugin_dyn_rules", plugin_conf)
-  local cached = key and ka_rules:get(key)
+  local cached = key and conf_cache:get(key)
   if cached then return cached end
   local parsed = load_plugin_dynamic_rules(plugin_conf)
   -- Compile dynamic rules into closures before caching. plugin_conf is
@@ -208,7 +274,7 @@ local get_plugin_dynamic_rules = function(plugin_conf)
     end
   end
 
-  if key then ka_rules:set(key, split) end
+  if key then conf_cache_set(plugin_conf, key, split) end
   return split
 end
 
@@ -244,7 +310,7 @@ local get_local_request_rules = function(plugin_conf)
     return { all = {}, access = {}, header_filter = {}, access_prebody = {} }
   end
   local key = conf_cache_key("local_request_rules", plugin_conf)
-  local cached = key and ka_rules:get(key)
+  local cached = key and conf_cache:get(key)
   if cached then return cached end
 
   local all = {}
@@ -280,7 +346,7 @@ local get_local_request_rules = function(plugin_conf)
     all = all, access = access_rest, header_filter = header_filter,
     access_prebody = access_prebody,
   }
-  if key then ka_rules:set(key, result) end
+  if key then conf_cache_set(plugin_conf, key, result) end
   return result
 end
 
@@ -407,7 +473,7 @@ local DEFAULT_FIX_PATTERN = [=[[<>"';&|`$()]]=]
 
 local get_overrides_cached = function(plugin_conf)
   local key = conf_cache_key("overrides", plugin_conf)
-  local cached = key and ka_rules:get(key)
+  local cached = key and conf_cache:get(key)
   if cached then return cached end
 
   local out = { action_overrides = {}, response_overrides = {} }
@@ -430,7 +496,7 @@ local get_overrides_cached = function(plugin_conf)
     end
   end
 
-  if key then ka_rules:set(key, out) end
+  if key then conf_cache_set(plugin_conf, key, out) end
   return out
 end
 
@@ -445,14 +511,14 @@ local resolve_arg_limit_override = function(plugin_conf)
   if type(entries) ~= "table" or #entries == 0 then return nil end
 
   local key = conf_cache_key("arg_limits", plugin_conf)
-  local compiled = key and ka_rules:get(key)
+  local compiled = key and conf_cache:get(key)
   if not compiled then
     local errs
     compiled, errs = ka_arg_limits.compile(entries)
     for _, e in ipairs(errs) do
       kong.log.err("[karna] limit_arg_num_overrides: " .. e)
     end
-    if key then ka_rules:set(key, compiled) end
+    if key then conf_cache_set(plugin_conf, key, compiled) end
   end
 
   return ka_arg_limits.resolve(compiled, kong.request.get_method(), kong.request.get_path())
@@ -466,7 +532,7 @@ end
 local get_redact_spec_cached = function(plugin_conf)
   local key = conf_cache_key("redact", plugin_conf)
   if key then
-    local cached = ka_rules:get(key)
+    local cached = conf_cache:get(key)
     if cached ~= nil then
       if cached == false then return nil end
       return cached
@@ -479,9 +545,9 @@ local get_redact_spec_cached = function(plugin_conf)
     -- never yield false in Lua, so the sentinel would be stored as nil and the
     -- "nothing to mask" answer would recompile on every logged request.
     if spec == nil then
-      ka_rules:set(key, false)
+      conf_cache_set(plugin_conf, key, false)
     else
-      ka_rules:set(key, spec)
+      conf_cache_set(plugin_conf, key, spec)
     end
   end
   return spec
@@ -918,27 +984,27 @@ local evaluate_rules = function(plugin_conf, rules, phase)
 end
 
 function plugin:init_worker()
-  if ka_rules then
+  if conf_cache then
     debug("Loading rules on worker number "..ngx.worker.id())
 
     local rules = {}
     local rcontrol_rules = {}
     local dfiles = {}
 
-    -- flush ka_rules cache
-    ka_rules:flush_all()
+    -- flush the per-config cache
+    conf_cache:flush_all()
+    conf_cache_live_seq = {}
 
-    -- set rule to cache
+    -- the CRS pack lives in module locals, out of reach of LRU eviction
     rules, rcontrol_rules, dfiles = engine:load_rules()
-    ka_rules:set("ka_rules", rules)
-    ka_rules:set("rcontrol_rules", rcontrol_rules)
+    crs_rules = rules
+    crs_rcontrol_rules = rcontrol_rules
 
-    -- set dfiles to cache
     local ka_dfiles = {}
     for condition_value,dfile in pairs(dfiles) do
       ka_dfiles[condition_value] = dfile
     end
-    ka_rules:set("ka_dfiles", ka_dfiles)
+    crs_dfiles = ka_dfiles
 
     debug("#########> Loaded "..tostring(#rules).." CRS rules on worker number "..ngx.worker.id())
 
@@ -1017,7 +1083,7 @@ local function enforce_service_bans(plugin_conf)
   local global = ka_global_rules.get()
   if global then collect(global.detection.access) end
   if plugin_conf.local_rules_enabled then collect(get_local_request_rules(plugin_conf).access) end
-  if plugin_conf.coreruleset_enabled then collect(ka_rules:get("ka_rules")) end
+  if plugin_conf.coreruleset_enabled then collect(crs_rules) end
   if #keys == 0 then return end
   local index, ttl = utils:redis_first_active_ban(engine:get_redis_conf(plugin_conf), keys)
   if not index then return end
@@ -1280,18 +1346,18 @@ function plugin:access(plugin_conf)
   kong.ctx.plugin.rule_controls = new_rule_controls()
 
   -- get the CRS rule pack (loaded from disk at init_worker)
-  local rules = ka_rules:get("ka_rules")
+  local rules = crs_rules
   if rules then
     debug("Loaded "..tostring(#rules).." CRS rules")
   end
 
-  local rcontrol_rules = ka_rules:get("rcontrol_rules")
+  local rcontrol_rules = crs_rcontrol_rules
   if rcontrol_rules then
     debug("Loaded "..tostring(#rcontrol_rules).." CRS Rule Control rules")
   end
 
   -- get dfiles
-  local dfiles = ka_rules:get("ka_dfiles")
+  local dfiles = crs_dfiles
 
   -- get service local request rules from the per-plugin_conf cache.
   -- The cache carries the full list (for cross-phase consumption via
@@ -1693,6 +1759,8 @@ end
 -- (`_wasm`, `_go`) to the same table.
 plugin._internals = {
   conf_cache_key           = conf_cache_key,
+  conf_cache               = function() return conf_cache end,
+  crs_pack                 = function() return crs_rules, crs_rcontrol_rules, crs_dfiles end,
   rate_limit_scope         = rate_limit_scope,
   evaluate_rules           = evaluate_rules,
   get_plugin_dynamic_rules = get_plugin_dynamic_rules,

@@ -12,7 +12,8 @@ plugin with no required dependency on other plugins.
 ### Entry Point
 - `kong/plugins/karna/handler.lua` — Kong plugin handler (priority 8300).
   Implements `init_worker`, `access`, `header_filter`, `body_filter`, and `log` phases.
-  - On `init_worker`: loads and caches CRS rules (parsed from SecLang `.conf` files) into an LRU cache.
+  - On `init_worker`: loads the CRS rules (parsed from SecLang `.conf` files) into module locals (`crs_rules`, `crs_rcontrol_rules`, `crs_dfiles`), never into an LRU, so no eviction can switch CRS off.
+  - Per-instance compiled config (`plugin_dyn_rules`, `local_request_rules`, `overrides`, `arg_limits`, `redact`) lives in the `conf_cache` LRU under `conf_cache_key` = `prefix:<__plugin_id>:<__seq__>`. Writes go through `conf_cache_set`, which keeps ONE generation per `__plugin_id`: the first write under a newer `__seq__` deletes the previous generation's keys for every prefix (`CONF_CACHE_PREFIXES`, add a new prefix there), and a config table older than the live one is built fresh and not cached. Kong rebuilds the plugins iterator after any plugin write and hands every instance a new `__seq__`, so without this the LRU held one compiled generation per rebuild (memory growth in steps with reconfigurations). Unit-tested in `ka-unittest/conf_cache_key.lua`.
   - On `access`: evaluates rules against the incoming request (rule controls first, then local rules, then global CRS rules).
   - On `log`: writes JSON audit logs to disk asynchronously.
   - **Self-identification** (always on, no toggle): a request to the reserved path `GET /.well-known/karna` short-circuits in `access` and returns `{engine, version, commit, commit_short, built_at}` (build identity from `version.lua`). The same `version`/`commit` are also embedded in the `engine` block of audit log v2 (`ka_utils.lua:get_auditlog_v2`). This is a transparent license-compliance watermark — passive (no phone-home), reserved path does not reach the upstream.

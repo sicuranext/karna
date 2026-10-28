@@ -39,6 +39,16 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Worker memory no longer grows with every plugin change.** Kong hands every
+  plugin instance a new configuration after any plugin write, on any service,
+  and Karna recompiles each instance's rules on its next request. The compiled
+  rules of the previous configuration stayed in the per-worker cache until it
+  filled up, so with many Karna instances each worker could hold many copies of
+  every instance's rules, and memory grew in steps with each reconfiguration
+  rather than with traffic. Each worker now keeps one compiled copy per plugin
+  instance and drops the previous one when the new one is built. The CRS rule
+  pack also moved out of that cache: under enough pressure it could be evicted,
+  and the worker would then stop evaluating CRS until it restarted.
 - **Console: what Karna answers is part of the review.** A change proposed by
   the assistant that sets a block page, a rate-limit or 5xx page, a rule's
   `fixed_response` or `rate_limit.response` with its own body, headers or a

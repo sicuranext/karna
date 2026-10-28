@@ -1,7 +1,7 @@
 -- ka-unittest/conf_cache_key.lua
 --
--- handler.lua keeps three compiled views of a plugin instance's configuration
--- in the worker-local `ka_rules` LRU (10000 entries, no TTL): the parsed
+-- handler.lua keeps compiled views of a plugin instance's configuration
+-- in the worker-local `conf_cache` LRU (no TTL), among them the parsed
 -- `rules_request` (get_local_request_rules), the parsed `custom_secrules` and
 -- CRS exclusion plugins (get_plugin_dynamic_rules), and the two override arrays
 -- (get_overrides_cached). Up to 1.5.4 the cache key was the config table's
@@ -19,6 +19,13 @@
 -- and unique across workers. No `__seq__`, or `__seq__ == 0` (Kong's own
 -- incr-failed sentinel), means no safe identity: the getters then build the
 -- value fresh and never write to the cache.
+--
+-- The key alone left every superseded generation in the LRU: Kong rebuilds its
+-- plugins iterator after any plugin write, every instance arrives with a new
+-- `__seq__`, and the old entries waited for capacity eviction, so worker memory
+-- grew with the number of reconfigurations. conf_cache_set now keeps one
+-- generation per `__plugin_id`, and the CRS pack sits in module locals where no
+-- eviction can reach it. Both are pinned by the last two sections.
 --
 -- This test loads the REAL handler.lua behind stubbed Kong modules and drives
 -- the getters through the `plugin._internals` seam, so it pins the actual
@@ -42,19 +49,38 @@ end
 -- ---------------------------------------------------------------------------
 
 -- resty.lrucache: the subset handler.lua uses, plus write accounting so a test
--- can assert "nothing was cached".
+-- can assert "nothing was cached", a live-entry count, and eviction of the
+-- least recently written entry past `size` (enough to saturate it).
 local CACHE
 package.preload["resty.lrucache"] = function()
     return {
         new = function(size)
-            local store, writes = {}, {}
+            local store, writes, order = {}, {}, {}
+            local live = 0
+            local function evict()
+                while live > size do
+                    local k = table.remove(order, 1)
+                    if store[k] ~= nil then store[k] = nil; live = live - 1 end
+                end
+            end
             CACHE = {
                 size = size,
                 get = function(_, k) return store[k] end,
-                set = function(_, k, v) store[k] = v; writes[#writes + 1] = k end,
-                delete = function(_, k) store[k] = nil end,
-                flush_all = function(_) store = {} end,
+                set = function(_, k, v)
+                    if store[k] == nil then live = live + 1 end
+                    for i = #order, 1, -1 do
+                        if order[i] == k then table.remove(order, i) end
+                    end
+                    store[k] = v; order[#order + 1] = k; writes[#writes + 1] = k
+                    evict()
+                end,
+                delete = function(_, k)
+                    if store[k] ~= nil then store[k] = nil; live = live - 1 end
+                end,
+                flush_all = function(_) store, order, live = {}, {}, 0 end,
                 writes = function() return writes end,
+                count = function() return live end,
+                has = function(_, k) return store[k] ~= nil end,
             }
             return CACHE
         end,
@@ -141,6 +167,7 @@ _G.kong = {
         err    = function(...) ERRORS[#ERRORS + 1] = table.concat({ ... }, "") end,
     },
     response = { exit = function() end, set_header = function() end },
+    request = { get_method = function() return "GET" end, get_path = function() return "/" end },
     ctx = { plugin = {}, shared = {} },
 }
 
@@ -284,7 +311,19 @@ local oa2 = I.get_overrides_cached(A2)
 ok(not rawequal(oa2, oa) and #oa2.action_overrides == 0,
    "new conf without overrides → empty overrides, not the previous ones")
 ok(#COMPILES == compiles_before + 2, "reconfiguration recompiles (rules_request + dynamic)")
-ok(rawequal(I.get_local_request_rules(A), la), "the previous conf table keeps its own entry")
+
+-- One generation per instance: the new __seq__ replaced the old entries, and
+-- a request still holding the previous table (in flight across the rebuild)
+-- gets its own rules built fresh, without writing them back.
+ok(not CACHE:has("local_request_rules:plugin-a:1") and not CACHE:has("plugin_dyn_rules:plugin-a:1")
+   and not CACHE:has("overrides:plugin-a:1"), "the previous generation's entries are gone")
+ok(CACHE:has("local_request_rules:plugin-b:2"), "another instance's entries are untouched")
+local w_old = writes()
+local la_old = I.get_local_request_rules(A)
+ok(not rawequal(la_old, la) and #la_old.all == 1 and la_old.all[1].id == "svc_a_block",
+   "the previous conf table still evaluates its own rules")
+ok(writes() == w_old, "…built fresh and not cached, so it cannot evict the live generation")
+ok(rawequal(I.get_local_request_rules(A2), la2), "the live generation is still a cache hit")
 
 -- ---------------------------------------------------------------------------
 print("\n- address reuse: B's config table prints as A's did")
@@ -422,6 +461,102 @@ ok(I.rate_limit_scope({}) ~= nil and I.rate_limit_scope({}) ~= "",
    "no __plugin_id → still a usable scope (service id, else a constant)")
 ok(I.rate_limit_scope({ __plugin_id = "" }) ~= "", "an empty id is not a scope")
 ok(I.rate_limit_scope(nil) ~= nil, "nil config → still a usable scope")
+
+-- ---------------------------------------------------------------------------
+print("\n- one generation per instance: entries do not grow with reconfigurations")
+-- ---------------------------------------------------------------------------
+-- Kong rebuilds its plugins iterator after ANY plugin write and every Karna
+-- instance then arrives with a new __seq__. K instances, R rebuilds, all five
+-- per-config caches populated each round: the cache must hold K x 5 entries
+-- after the first round and after the last, whatever R is.
+local RULE_G = fixture(
+    '{"id":"gen_block","phase":"access","action":{"fixed_response":{"status_code":403}}}',
+    { id = "gen_block", phase = "access", action = { fixed_response = { status_code = 403 } } })
+local SEC_G = 'SecRule ARGS "@rx g" "id:100009,phase:2,deny"'
+local function full_conf(pid, seq)
+    return conf(pid, seq, {
+        rules_request = { RULE_G }, custom_secrules = { SEC_G },
+        rule_action_overrides = { OVR_A },
+        limit_arg_num_overrides = { { path_rx = "^/upload", methods = { "POST" }, limit = 500 } },
+        auditlog_redact_enabled = true, auditlog_redact_headers = REDACT_HEADERS,
+    })
+end
+local function touch_all(c)
+    I.get_local_request_rules(c); I.get_plugin_dynamic_rules(c); I.get_overrides_cached(c)
+    I.resolve_arg_limit_override(c); I.get_redact_spec_cached(c)
+end
+
+CACHE:flush_all()
+local K, R, PREFIXES = 40, 30, 5
+local seq = 1000
+local after_first, max_seen = nil, 0
+for round = 1, R do
+    for k = 1, K do
+        seq = seq + 1
+        touch_all(full_conf("gen-" .. k, seq))
+    end
+    if round == 1 then after_first = CACHE:count() end
+    if CACHE:count() > max_seen then max_seen = CACHE:count() end
+end
+ok(after_first == K * PREFIXES, "after the first round: K x prefixes entries (" .. tostring(after_first) .. ")")
+ok(CACHE:count() == K * PREFIXES, "after " .. R .. " rounds: still K x prefixes (" .. CACHE:count() .. ")")
+ok(max_seen == K * PREFIXES, "never above K x prefixes in between")
+
+-- A rebuild of one instance does not cost the others their compiled sets.
+local live = {}
+for k = 1, K do live[k] = full_conf("gen-" .. k, seq - K + k) end
+local before_c = #COMPILES
+for k = 1, K do touch_all(live[k]) end
+ok(#COMPILES == before_c, "every live generation is a hit, no recompile")
+seq = seq + 1
+local g1_new = full_conf("gen-1", seq)
+touch_all(g1_new)
+ok(#COMPILES == before_c + 2, "the reconfigured instance recompiles once (rules_request + dynamic)")
+for k = 2, K do touch_all(live[k]) end
+ok(#COMPILES == before_c + 2, "the other instances keep their compiled sets")
+ok(CACHE:count() == K * PREFIXES, "still K x prefixes entries")
+
+-- In-flight requests on the old table interleaved with the new one: the old
+-- table recompiles each time (it is never cached), the new one stays a hit,
+-- and the two never displace each other.
+before_c = #COMPILES
+for _ = 1, 5 do touch_all(live[1]); touch_all(g1_new) end
+ok(#COMPILES == before_c + 10, "old table: fresh build per call (5 x 2), new table: no compile")
+ok(CACHE:has("local_request_rules:gen-1:" .. seq), "the new generation is still cached")
+ok(CACHE:count() == K * PREFIXES, "and the entry count did not move")
+
+-- ---------------------------------------------------------------------------
+print("\n- the CRS pack lives outside the per-config LRU")
+-- ---------------------------------------------------------------------------
+-- The CRS pack is loaded once in init_worker and never reloaded. If it shared
+-- the LRU with the per-instance entries, pressure on the LRU could evict it and
+-- the access phase would skip CRS evaluation without a word.
+local CRS_RULES = { { id = "crs-1", phase = "access" }, { id = "crs-2", phase = "access" } }
+local CRS_RCONTROL = { { id = "crs-ctl-1", phase = "access" } }
+package.loaded["kong.plugins.karna.ka_engine"].load_rules = function()
+    return CRS_RULES, CRS_RCONTROL, { ["data.txt"] = { "x" } }
+end
+package.loaded["kong.plugins.karna.ka_global_rules"].init = function() end
+package.loaded["kong.plugins.karna.ka_tls"].init = function() end
+package.loaded["kong.plugins.karna.ka_re2_gate"].build = function() return nil end
+local w_init = writes()
+handler:init_worker()
+local r1, rc1c, df1 = I.crs_pack()
+ok(rawequal(r1, CRS_RULES) and rawequal(rc1c, CRS_RCONTROL) and df1["data.txt"] ~= nil,
+   "init_worker loads the CRS pack")
+ok(writes() == w_init and CACHE:count() == 0, "init_worker writes nothing to the per-config LRU")
+
+-- saturate the LRU three times over with per-instance entries
+local cap = CACHE.size
+for i = 1, cap * 3 do
+    seq = seq + 1
+    I.get_overrides_cached(conf("sat-" .. i, seq, { rule_action_overrides = { OVR_A } }))
+end
+ok(CACHE:count() == cap, "the LRU is full (" .. CACHE:count() .. " / " .. cap .. ")")
+local r2, rc2, df2 = I.crs_pack()
+ok(rawequal(r2, CRS_RULES) and rawequal(rc2, CRS_RCONTROL) and rawequal(df2, df1),
+   "the CRS pack is still there after saturating the LRU")
+ok(cap == 2000 * PREFIXES, "capacity is sized as instances x prefixes")
 
 print(string.format("\n%d test(s) failed", fails))
 os.exit(fails == 0 and 0 or 1)
