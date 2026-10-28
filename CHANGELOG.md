@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-10-28
+
 ### Added
 
 - **Karna Console live demo.** A demo mode for the console (`npm run
@@ -1858,7 +1860,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.3...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.4...HEAD
+[1.7.4]: https://github.com/sicuranext/karna/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/sicuranext/karna/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/sicuranext/karna/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/sicuranext/karna/compare/v1.7.0...v1.7.1
