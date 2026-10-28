@@ -13,7 +13,7 @@
 -- compiled rules (seen as 403s carrying a foreign rule id, right after Admin
 -- API writes, on services whose own rules_request is non-empty).
 --
--- The key is now conf_cache_key(prefix, conf) = "<prefix>:<__plugin_id>:<__seq__>".
+-- The key became conf_cache_key(prefix, conf) = "<prefix>:<__plugin_id>:<__seq__>".
 -- Kong's plugins iterator stamps both fields on every new config table;
 -- `__seq__` is a shared-dict counter, so it is fresh on every reconfiguration
 -- and unique across workers. No `__seq__`, or `__seq__ == 0` (Kong's own
@@ -23,9 +23,12 @@
 -- The key alone left every superseded generation in the LRU: Kong rebuilds its
 -- plugins iterator after any plugin write, every instance arrives with a new
 -- `__seq__`, and the old entries waited for capacity eviction, so worker memory
--- grew with the number of reconfigurations. conf_cache_set now keeps one
--- generation per `__plugin_id`, and the CRS pack sits in module locals where no
--- eviction can reach it. Both are pinned by the last two sections.
+-- grew with the number of reconfigurations. One generation per `__plugin_id` is
+-- now kept, and the CRS pack sits in module locals where no eviction can reach
+-- it. The `__seq__` in the key is replaced by a hash of the whole configuration
+-- (except `__seq__`), so a rebuild that changed nothing for an instance reuses
+-- its compiled sets; the schema-walk section checks that every field of
+-- schema.lua is part of that hash.
 --
 -- This test loads the REAL handler.lua behind stubbed Kong modules and drives
 -- the getters through the `plugin._internals` seam, so it pins the actual
@@ -132,9 +135,11 @@ package.preload["kong.plugins.karna.ka_compile"] = function()
 end
 
 -- seclang: one detection rule per inline SecLang string, id taken from it.
+-- CRS exclusion plugin files come from DISK[dir] (dir -> { fname = content }).
+DISK = {}
 package.preload["kong.plugins.karna.ka_seclang"] = function()
     return {
-        collect_plugin_conf_files = function() return {} end,
+        collect_plugin_conf_files = function(dir) return deep_copy(DISK[dir] or {}) end,
         parse_isolated = function(raw)
             local id = raw:match("id:(%d+)") or raw
             return { { id = id, phase = "access", action = { fixed_response = { status_code = 403 } } } }
@@ -156,6 +161,25 @@ package.preload["kong.plugins.karna.version"] = function()
     return { version = "0.0.0-test", commit = "deadbee", commit_short = "deadbee", built_at = "test" }
 end
 package.preload["resty.ipmatcher"] = function() return {} end
+-- resty.sha256 / resty.string: a 64-bit FNV-1a stands in for sha256 (no
+-- OpenResty here). Only the key identity matters to this test.
+package.preload["resty.sha256"] = function()
+    return { new = function()
+        local parts = {}
+        return {
+            update = function(_, s) parts[#parts + 1] = s end,
+            final = function()
+                local h = -3750763034362895579
+                local s = table.concat(parts)
+                for i = 1, #s do h = (h ~ s:byte(i)) * 1099511628211 end
+                return h
+            end,
+        }
+    end }
+end
+package.preload["resty.string"] = function()
+    return { to_hex = function(h) return string.format("%016x", h) end }
+end
 
 local ERRORS = {}
 _G.ngx = { worker = { id = function() return 0 end } }
@@ -230,20 +254,22 @@ local function distinct(list)
 end
 
 -- ---------------------------------------------------------------------------
-print("\n- conf_cache_key: identity is plugin id + __seq__, never the address")
+print("\n- conf_cache_key: identity is plugin id + configuration hash, never the address")
 -- ---------------------------------------------------------------------------
 local c1 = conf("plugin-1", 7)
-ok(I.conf_cache_key("p", c1) == "p:plugin-1:7", "format is <prefix>:<__plugin_id>:<__seq__>")
-ok(I.conf_cache_key("p", conf("plugin-1", 8)) ~= I.conf_cache_key("p", c1),
-   "same plugin, new __seq__ → different key")
-ok(I.conf_cache_key("p", conf("plugin-2", 7)) ~= I.conf_cache_key("p", c1),
-   "different plugin, same __seq__ → different key")
+local k1 = I.conf_cache_key("p", c1)
+ok(k1 and k1:match("^p:plugin%-1:%x+$") ~= nil, "format is <prefix>:<__plugin_id>:<hash> (" .. tostring(k1) .. ")")
+ok(I.conf_cache_key("p", conf("plugin-1", 8)) == k1,
+   "same plugin, same content, new __seq__ → same key")
 ok(I.conf_cache_key("p", c1) ~= I.conf_cache_key("q", c1), "prefix is part of the key")
 ok(not I.conf_cache_key("p", c1):find(tostring(c1), 1, true), "the table address is not in the key")
+ok(I.conf_cache_key("p", conf("plugin-2", 7)) ~= k1, "different plugin, same content → different key")
+ok(I.conf_cache_key("p", conf("plugin-1", 9, { engine_blocking_mode = true })) ~= k1,
+   "same plugin, different content → different key")
 ok(I.conf_cache_key("p", conf("plugin-1", nil)) == nil, "__seq__ missing → nil (no safe identity)")
 ok(I.conf_cache_key("p", conf("plugin-1", 0)) == nil, "__seq__ == 0 (Kong incr-failed sentinel) → nil")
-ok(I.conf_cache_key("p", conf(nil, 7)) == "p:nil:7",
-   "__plugin_id missing but __seq__ present → still a key (__seq__ alone is unique)")
+local knil = I.conf_cache_key("p", conf(nil, 7))
+ok(knil and knil:match("^p:nil:%x+$") ~= nil, "__plugin_id missing but __seq__ present → still a key")
 
 -- ---------------------------------------------------------------------------
 print("\n- two plugin instances: each getter returns its own rules")
@@ -287,7 +313,11 @@ ok(#ob.action_overrides == 1 and ob.action_overrides[1].selector.ids[1] == "svc_
 
 ok(writes() == 6 and distinct(CACHE.writes()), "six cache entries, all under distinct keys")
 ok(keys_contain("plugin-a") and keys_contain("plugin-b"), "keys carry the plugin id")
-ok(keys_contain(":1") and keys_contain(":2"), "keys carry __seq__")
+local all_shaped = true
+for _, k in ipairs(CACHE.writes()) do
+    if not k:match("^[%l_]+:plugin%-[ab]:%x+$") then all_shaped = false end
+end
+ok(all_shaped, "every key is <prefix>:<__plugin_id>:<hash>, no __seq__ in it")
 ok(not keys_contain("table:"), "no key carries a table address")
 
 local compiles_before = #COMPILES
@@ -299,6 +329,7 @@ ok(rawequal(I.get_local_request_rules(B), lb), "B's hit is B's entry")
 -- ---------------------------------------------------------------------------
 print("\n- reconfiguration: same plugin id, higher __seq__, new rules")
 -- ---------------------------------------------------------------------------
+local A_HASH = I.conf_cache_key("x", A):match("^x:plugin%-a:(%x+)$")
 local A2 = conf("plugin-a", 3, { rules_request = { RULE_A2 }, custom_secrules = { SEC_A2 } })
 compiles_before = #COMPILES
 local la2 = I.get_local_request_rules(A2)
@@ -315,9 +346,12 @@ ok(#COMPILES == compiles_before + 2, "reconfiguration recompiles (rules_request 
 -- One generation per instance: the new __seq__ replaced the old entries, and
 -- a request still holding the previous table (in flight across the rebuild)
 -- gets its own rules built fresh, without writing them back.
-ok(not CACHE:has("local_request_rules:plugin-a:1") and not CACHE:has("plugin_dyn_rules:plugin-a:1")
-   and not CACHE:has("overrides:plugin-a:1"), "the previous generation's entries are gone")
-ok(CACHE:has("local_request_rules:plugin-b:2"), "another instance's entries are untouched")
+ok(not CACHE:has("local_request_rules:plugin-a:" .. A_HASH)
+   and not CACHE:has("plugin_dyn_rules:plugin-a:" .. A_HASH)
+   and not CACHE:has("overrides:plugin-a:" .. A_HASH), "the previous generation's entries are gone")
+ok(I.conf_cache_key("local_request_rules", A) == nil,
+   "the previous table's generation is dead: it has no key any more")
+ok(CACHE:has(I.conf_cache_key("local_request_rules", B)), "another instance's entries are untouched")
 local w_old = writes()
 local la_old = I.get_local_request_rules(A)
 ok(not rawequal(la_old, la) and #la_old.all == 1 and la_old.all[1].id == "svc_a_block",
@@ -406,7 +440,7 @@ local spec1 = I.get_redact_spec_cached(rc1)
 ok(type(spec1) == "table" and spec1.names["authorization"] == "auth",
    "a spec is compiled from the config")
 ok(writes() == before_r + 1, "the compile is cached (one write)")
-ok(keys_contain("redact:plugin-r:40"), "keyed by prefix + plugin id + __seq__")
+ok(keys_contain("redact:plugin-r:"), "keyed by prefix + plugin id + hash")
 
 local spec2 = I.get_redact_spec_cached(rc1)
 ok(spec2 == spec1, "the second call returns the cached table, it does not recompile")
@@ -465,16 +499,18 @@ ok(I.rate_limit_scope(nil) ~= nil, "nil config → still a usable scope")
 -- ---------------------------------------------------------------------------
 print("\n- one generation per instance: entries do not grow with reconfigurations")
 -- ---------------------------------------------------------------------------
--- Kong rebuilds its plugins iterator after ANY plugin write and every Karna
--- instance then arrives with a new __seq__. K instances, R rebuilds, all five
--- per-config caches populated each round: the cache must hold K x 5 entries
--- after the first round and after the last, whatever R is.
+-- K instances, R rounds in which EVERY instance's content changes (a new
+-- `revision` value), all five per-config caches populated each round: the
+-- cache must hold K x 5 entries after the first round and after the last,
+-- whatever R is. (When only __seq__ changes nothing is rebuilt at all, see
+-- the next section.)
 local RULE_G = fixture(
     '{"id":"gen_block","phase":"access","action":{"fixed_response":{"status_code":403}}}',
     { id = "gen_block", phase = "access", action = { fixed_response = { status_code = 403 } } })
 local SEC_G = 'SecRule ARGS "@rx g" "id:100009,phase:2,deny"'
-local function full_conf(pid, seq)
+local function full_conf(pid, seq, rev)
     return conf(pid, seq, {
+        revision = rev or 0,
         rules_request = { RULE_G }, custom_secrules = { SEC_G },
         rule_action_overrides = { OVR_A },
         limit_arg_num_overrides = { { path_rx = "^/upload", methods = { "POST" }, limit = 500 } },
@@ -493,7 +529,7 @@ local after_first, max_seen = nil, 0
 for round = 1, R do
     for k = 1, K do
         seq = seq + 1
-        touch_all(full_conf("gen-" .. k, seq))
+        touch_all(full_conf("gen-" .. k, seq, round))
     end
     if round == 1 then after_first = CACHE:count() end
     if CACHE:count() > max_seen then max_seen = CACHE:count() end
@@ -504,12 +540,12 @@ ok(max_seen == K * PREFIXES, "never above K x prefixes in between")
 
 -- A rebuild of one instance does not cost the others their compiled sets.
 local live = {}
-for k = 1, K do live[k] = full_conf("gen-" .. k, seq - K + k) end
+for k = 1, K do live[k] = full_conf("gen-" .. k, seq - K + k, R) end
 local before_c = #COMPILES
 for k = 1, K do touch_all(live[k]) end
 ok(#COMPILES == before_c, "every live generation is a hit, no recompile")
 seq = seq + 1
-local g1_new = full_conf("gen-1", seq)
+local g1_new = full_conf("gen-1", seq, R + 1)
 touch_all(g1_new)
 ok(#COMPILES == before_c + 2, "the reconfigured instance recompiles once (rules_request + dynamic)")
 for k = 2, K do touch_all(live[k]) end
@@ -522,8 +558,204 @@ ok(CACHE:count() == K * PREFIXES, "still K x prefixes entries")
 before_c = #COMPILES
 for _ = 1, 5 do touch_all(live[1]); touch_all(g1_new) end
 ok(#COMPILES == before_c + 10, "old table: fresh build per call (5 x 2), new table: no compile")
-ok(CACHE:has("local_request_rules:gen-1:" .. seq), "the new generation is still cached")
+ok(CACHE:has(I.conf_cache_key("local_request_rules", g1_new)), "the new generation is still cached")
 ok(CACHE:count() == K * PREFIXES, "and the entry count did not move")
+
+-- ---------------------------------------------------------------------------
+print("\n- only __seq__ changed: nothing is rebuilt")
+-- ---------------------------------------------------------------------------
+-- After a write to ANY plugin, Kong hands every Karna instance a new config
+-- table with a new __seq__ and, almost always, the same content. The compiled
+-- sets must then be reused as they are: no compile, no cache write.
+local function rebuilt(c, new_seq)
+    local copy = deep_copy(c)
+    copy.__seq__ = new_seq
+    return copy
+end
+local same0 = full_conf("same-1", seq + 1, 7)
+seq = seq + 1
+touch_all(same0)
+local s_lrr, s_dyn, s_ovr = I.get_local_request_rules(same0), I.get_plugin_dynamic_rules(same0),
+                            I.get_overrides_cached(same0)
+local s_red = I.get_redact_spec_cached(same0)
+local c0, w0 = #COMPILES, writes()
+for _ = 1, 5 do
+    seq = seq + 1
+    local again = rebuilt(same0, seq)
+    touch_all(again)
+    ok(rawequal(I.get_local_request_rules(again), s_lrr) and rawequal(I.get_plugin_dynamic_rules(again), s_dyn)
+       and rawequal(I.get_overrides_cached(again), s_ovr) and rawequal(I.get_redact_spec_cached(again), s_red),
+       "__seq__ " .. seq .. ": every getter returns the compiled set already built")
+end
+ok(#COMPILES == c0, "no compile across five rebuilds")
+ok(writes() == w0, "no cache write across five rebuilds")
+ok(rawequal(I.get_local_request_rules(same0), s_lrr), "the first table keeps hitting too")
+
+-- the key does not depend on the order keys were inserted into the table
+local reversed = {}
+do
+    local ks = {}
+    for k in pairs(same0) do ks[#ks + 1] = tostring(k) end
+    table.sort(ks, function(a, b) return a > b end)
+    for _, k in ipairs(ks) do reversed[k] = deep_copy(same0[k]) end
+    seq = seq + 1
+    reversed.__seq__ = seq
+end
+ok(I.conf_cache_key("overrides", reversed) == I.conf_cache_key("overrides", same0),
+   "same content inserted in another order → same key")
+-- array order is content: rules run in order
+local swapped = rebuilt(same0, seq + 1)
+seq = seq + 1
+swapped.auditlog_redact_headers = { REDACT_HEADERS[2], REDACT_HEADERS[1] }
+ok(I.conf_cache_key("redact", swapped) ~= I.conf_cache_key("redact", reversed),
+   "same elements in another array order → different key")
+
+-- a value the encoding cannot pin (a function) can only cost a recompile
+local fn1, fn2 = function() end, function() end
+local f1 = conf("fn-1", seq + 1, { odd = fn1 })
+local f2 = conf("fn-1", seq + 2, { odd = fn1 })
+local f3 = conf("fn-1", seq + 3, { odd = fn2 })
+seq = seq + 3
+local kf1 = I.conf_cache_key("overrides", f1)
+ok(I.conf_cache_key("overrides", f2) == kf1, "same function value → same key")
+ok(I.conf_cache_key("overrides", f3) ~= kf1, "a different function value → a different key, never a shared one")
+
+-- ---------------------------------------------------------------------------
+print("\n- a table replaced while in use never writes its generation back")
+-- ---------------------------------------------------------------------------
+-- A request that started before the change still holds the old table, and
+-- its log phase builds the redaction spec after the new table has taken over.
+local old_t = full_conf("inflight-1", seq + 1, 1)
+seq = seq + 1
+touch_all(old_t)
+local new_t = full_conf("inflight-1", seq + 1, 2)
+seq = seq + 1
+touch_all(new_t)
+local cnt, w1 = CACHE:count(), writes()
+local spec_old = I.get_redact_spec_cached(old_t)
+ok(type(spec_old) == "table", "the old table still gets a usable redaction spec")
+I.get_local_request_rules(old_t); I.get_overrides_cached(old_t); I.get_plugin_dynamic_rules(old_t)
+ok(writes() == w1 and CACHE:count() == cnt, "…built fresh, nothing written back under the dead generation")
+
+-- ---------------------------------------------------------------------------
+print("\n- every schema field is part of the identity")
+-- ---------------------------------------------------------------------------
+-- The hash covers the whole configuration, so changing ANY field of the Karna
+-- schema must give a new key and a fresh compile. Walks the real schema.lua,
+-- nested records included, so a field added tomorrow is covered the day it
+-- lands.
+package.preload["kong.db.schema.typedefs"] = function()
+    return { no_consumer = { type = "foreign" }, protocols_http = { type = "set" } }
+end
+local schema = assert(loadfile("./kong/plugins/karna/schema.lua"))("kong.plugins.karna.schema")
+local config_fields
+for _, f in ipairs(schema.fields) do
+    if f.config then config_fields = f.config.fields end
+end
+assert(config_fields, "schema: no config record")
+
+local function defaults_of(fields)
+    local out = {}
+    for _, f in ipairs(fields) do
+        local name, def = next(f)
+        if def.type == "record" then
+            out[name] = defaults_of(def.fields)
+        elseif def.default ~= nil then
+            out[name] = deep_copy(def.default)
+        end
+    end
+    return out
+end
+local function mutated(def, cur)
+    local t = def.type
+    if t == "boolean" then return not cur end
+    if t == "number" or t == "integer" then return (cur or 0) + 1 end
+    if t == "string" then return (cur or "") .. "x" end
+    if t == "array" or t == "set" then
+        local v = deep_copy(cur or {})
+        local et = def.elements and def.elements.type
+        v[#v + 1] = (et == "number" or et == "integer") and 1 or (et == "record") and {} or "x"
+        return v
+    end
+    if t == "map" then
+        local v = deep_copy(cur or {})
+        v["x"] = "x"
+        return v
+    end
+    error("schema field of an unhandled type: " .. tostring(t))
+end
+
+local BASE = defaults_of(config_fields)
+BASE.__plugin_id = "schema-1"
+BASE.route_id, BASE.service_id, BASE.plugin_instance_name = nil, "svc-1", nil
+local cases = {}
+for _, f in ipairs(config_fields) do
+    local name, def = next(f)
+    if def.type == "record" then
+        for _, sf in ipairs(def.fields) do
+            local sname, sdef = next(sf)
+            cases[#cases + 1] = { label = name .. "." .. sname, apply = function(c)
+                c[name][sname] = mutated(sdef, c[name][sname]) end }
+        end
+    else
+        cases[#cases + 1] = { label = name, apply = function(c) c[name] = mutated(def, c[name]) end }
+    end
+end
+ok(#cases > 50, "the schema walk found " .. #cases .. " fields")
+
+local missed = {}
+for _, case in ipairs(cases) do
+    -- the base content is the live generation...
+    seq = seq + 1
+    local b = deep_copy(BASE); b.__seq__ = seq
+    local keys_b = {}
+    for _, pfx in ipairs({ "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "redact" }) do
+        keys_b[pfx] = I.conf_cache_key(pfx, b)
+    end
+    local ovr_b = I.get_overrides_cached(b)
+    -- ...then the same content with one field changed arrives
+    seq = seq + 1
+    local m = deep_copy(BASE); m.__seq__ = seq
+    case.apply(m)
+    local differs = true
+    for pfx, kb in pairs(keys_b) do
+        if I.conf_cache_key(pfx, m) == kb then differs = false end
+    end
+    if not differs or rawequal(I.get_overrides_cached(m), ovr_b) then
+        missed[#missed + 1] = case.label
+    end
+end
+ok(#missed == 0, "changing any one field gives a new key on every prefix and a fresh compile"
+   .. (#missed > 0 and (" — missed: " .. table.concat(missed, ", ")) or ""))
+
+-- The Kong stamps that name the instance are in the hash too; only __seq__
+-- is left out.
+seq = seq + 1
+local st1 = deep_copy(BASE); st1.__seq__ = seq
+local kst = I.conf_cache_key("overrides", st1)
+seq = seq + 1
+local st2 = deep_copy(BASE); st2.__seq__ = seq; st2.route_id = "route-2"
+ok(I.conf_cache_key("overrides", st2) ~= kst, "a Kong stamp (route_id) change → new key")
+
+-- ---------------------------------------------------------------------------
+print("\n- CRS exclusion plugin files on disk are part of the identity")
+-- ---------------------------------------------------------------------------
+-- plugin_dyn_rules parses the enabled plugins' .conf files from disk. A
+-- rebuild has always picked up an edit there, and still does.
+local WP_DIR = "/opt/coreruleset-plugins/wp-excl/plugins/"
+DISK[WP_DIR] = { ["wp.conf"] = 'SecRule ARGS "@rx w" "id:100020,phase:2,deny"' }
+local wp1 = conf("disk-1", seq + 1, { crs_plugins_enabled = { "wp-excl" } })
+seq = seq + 1
+local d_wp1 = I.get_plugin_dynamic_rules(wp1)
+ok(d_wp1.detection.access[1].id == "100020", "the plugin file's rule is loaded")
+local wp2 = rebuilt(wp1, seq + 1); seq = seq + 1
+ok(rawequal(I.get_plugin_dynamic_rules(wp2), d_wp1), "same files, new __seq__ → reused")
+DISK[WP_DIR] = { ["wp.conf"] = 'SecRule ARGS "@rx w2" "id:100021,phase:2,deny"' }
+local wp3 = rebuilt(wp1, seq + 1); seq = seq + 1
+local d_wp3 = I.get_plugin_dynamic_rules(wp3)
+ok(not rawequal(d_wp3, d_wp1) and d_wp3.detection.access[1].id == "100021",
+   "a file edited on disk, new __seq__ → reparsed")
+DISK[WP_DIR] = nil
 
 -- ---------------------------------------------------------------------------
 print("\n- the CRS pack lives outside the per-config LRU")

@@ -46,7 +46,9 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   filled up, so with many Karna instances each worker could hold many copies of
   every instance's rules, and memory grew in steps with each reconfiguration
   rather than with traffic. Each worker now keeps one compiled copy per plugin
-  instance and drops the previous one when the new one is built. The CRS rule
+  instance and drops the previous one when the new one is built. An instance
+  whose own configuration did not change keeps its compiled rules, so a write
+  to another plugin no longer makes every worker recompile every instance. The CRS rule
   pack also moved out of that cache: under enough pressure it could be evicted,
   and the worker would then stop evaluating CRS until it restarted.
 - **Console: what Karna answers is part of the review.** A change proposed by
