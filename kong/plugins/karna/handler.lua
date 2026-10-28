@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.7.3",
+  VERSION = "1.7.4",
 }
 
 local ngx                 = ngx
@@ -29,7 +29,29 @@ local ipmatcher         = require "resty.ipmatcher"
 -- lockstep — version.lua is the single source of truth.
 plugin.VERSION = ka_version.version
 
-local ka_rules, err = lrucache.new(10000)
+-- The CRS rule pack, loaded once per worker in init_worker and read on every
+-- request. Plain module locals, NOT entries of the conf_cache LRU below: an LRU
+-- entry can be evicted by pressure from the per-instance entries, and an
+-- evicted pack would silently switch CRS evaluation off until the next worker
+-- start (access reads `nil` and skips the rule loop).
+local crs_rules, crs_rcontrol_rules, crs_dfiles
+
+-- The per-config cache prefixes (see conf_cache_key below). Every getter that
+-- writes to conf_cache uses one of these, and only these: conf_identity_new
+-- deletes a superseded generation by walking this list.
+local CONF_CACHE_PREFIXES = {
+  "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "redact",
+}
+
+-- conf_cache keeps ONE generation per plugin instance (conf_identity_new), so the
+-- live set is instances x prefixes. The capacity is sized for that: room for
+-- CONF_CACHE_INSTANCES live instances. Beyond it the LRU evicts, which costs a
+-- recompile on the next request of the evicted instance, never a wrong answer.
+-- The other entries it ever holds are orphans of instances Kong deleted, and
+-- the capacity bounds those. No TTL: resty.lrucache only drops an expired
+-- entry when it is read or pushed out, so a TTL frees nothing an orphan holds.
+local CONF_CACHE_INSTANCES = 2000
+local conf_cache = lrucache.new(CONF_CACHE_INSTANCES * #CONF_CACHE_PREFIXES)
 
 local debug = kong.log.debug
 
@@ -39,33 +61,197 @@ local _KARNA_PROFILE_ENABLED = os.getenv("KARNA_PROFILE") ~= nil
 
 
 
--- Per-plugin_conf cache key for the three compiled-config caches below
--- (get_plugin_dynamic_rules, get_local_request_rules, get_overrides_cached).
+-- Per-plugin_conf cache key for the compiled-config caches below
+-- (get_plugin_dynamic_rules, get_local_request_rules, get_overrides_cached,
+-- resolve_arg_limit_override, get_redact_spec_cached).
 --
 -- A table address (`tostring(plugin_conf)`) is NOT unique over time. Kong
 -- hands us a new config table on every Admin API write and never tells us
--- the old one is gone, so its ka_rules entry stays behind (no TTL); once
+-- the old one is gone, so an entry can outlive its table; once
 -- the old table is garbage-collected, LuaJIT can hand the same address to
 -- the config table of a DIFFERENT plugin instance, which then hits the
 -- stale entry and evaluates another service's compiled rules_request /
 -- custom_secrules / CRS plugin rules / overrides.
 --
 -- Kong's plugins iterator (get_plugin_config) stamps every new config
--- table with `__seq__` — a shared-dict counter, unique across workers and
--- fresh on every reconfiguration — and with `__plugin_id`. Together they
--- name one (plugin instance, configuration) pair for the life of the
--- process, which is exactly what a cached compile is valid for.
+-- table with `__plugin_id` and `__seq__`, a shared-dict counter that is
+-- fresh on every iterator rebuild. The key is `prefix:<__plugin_id>:<hash>`,
+-- where the hash covers the whole configuration except `__seq__` (see
+-- conf_hash): the plugin id keeps two instances apart, the hash
+-- keeps two configurations of one instance apart, and neither depends on
+-- where the table happens to live.
 --
 -- Returns nil when no safe identity is available (`__seq__` absent, or 0 =
--- Kong's own "shared-dict incr failed" sentinel). The caller must then
--- build the value fresh and skip the cache — never fall back to the
--- address.
-local function conf_cache_key(prefix, plugin_conf)
-  local seq = plugin_conf.__seq__
-  if not seq or seq == 0 then
-    return nil
+-- Kong's own "shared-dict incr failed" sentinel, or a stale table, see
+-- below). The caller must then build the value fresh and skip the cache —
+-- never fall back to the address.
+
+-- Live generation per `__plugin_id`: { seq = newest __seq__ seen, id =
+-- "<__plugin_id>:<hash>", dead = true once a different configuration has
+-- replaced it }.
+local conf_cache_live = {}
+
+-- Generation record per config table, or false for "do not cache". Weak
+-- keys: an entry goes away with its table, and a table is a key by identity,
+-- never by address string, so a new table that reuses a collected one's
+-- address starts with no entry.
+local conf_identity = setmetatable({}, { __mode = "k" })
+
+-- Appends an injective encoding of `v` to `out`: every string is
+-- length-prefixed, every table is delimited and its keys are sorted, so two
+-- different configurations can never encode the same. Anything the encoding
+-- cannot pin (a function, an exotic userdata) goes in as tostring(), which
+-- at worst makes two equal configurations differ: one recompile more, never
+-- a compiled set reused for a different configuration.
+local function key_order(a, b)
+  local ta, tb = type(a), type(b)
+  if ta ~= tb then return ta < tb end
+  if ta == "number" or ta == "string" then return a < b end
+  return tostring(a) < tostring(b)
+end
+
+local function conf_encode(v, out, skip_seq)
+  local t = type(v)
+  if t == "string" then
+    out[#out + 1] = "s" .. #v .. ":"
+    out[#out + 1] = v
+  elseif t == "number" then
+    out[#out + 1] = string.format("n%.17g;", v)
+  elseif t == "boolean" then
+    out[#out + 1] = v and "T" or "F"
+  elseif t == "table" then
+    local keys = {}
+    for k in pairs(v) do
+      if not (skip_seq and k == "__seq__") then keys[#keys + 1] = k end
+    end
+    table.sort(keys, key_order)
+    out[#out + 1] = "{"
+    for i = 1, #keys do
+      conf_encode(keys[i], out)
+      conf_encode(v[keys[i]], out)
+    end
+    out[#out + 1] = "}"
+  else
+    out[#out + 1] = "u" .. tostring(v) .. ";"
   end
-  return prefix .. ":" .. tostring(plugin_conf.__plugin_id) .. ":" .. tostring(seq)
+end
+
+-- The CRS exclusion plugin directories a configuration names, validated.
+-- Directory names are identifiers, not paths: traversal and shell
+-- metacharacters are rejected even though the directory scanner also quotes
+-- its input. Returns a list of { name, dir } and, for logging, the indexes
+-- that were rejected.
+local function crs_plugin_dirs(plugin_conf)
+  local base_dir = plugin_conf.crs_plugins_path or "/opt/coreruleset-plugins/"
+  if not base_dir:match("/$") then base_dir = base_dir .. "/" end
+  local dirs, rejected = {}, {}
+  for idx, plugin_name in ipairs(plugin_conf.crs_plugins_enabled or {}) do
+    if type(plugin_name) == "string"
+       and plugin_name:match("^[A-Za-z0-9][A-Za-z0-9._-]*$")
+       and plugin_name ~= "." and plugin_name ~= ".." then
+      dirs[#dirs + 1] = { name = plugin_name, dir = base_dir .. plugin_name .. "/plugins/" }
+    else
+      rejected[#rejected + 1] = idx
+    end
+  end
+  return dirs, rejected
+end
+
+local sha256_hex_ok, resty_sha256, resty_str
+local function sha256_hex(s)
+  if sha256_hex_ok == nil then
+    local ok1, m1 = pcall(require, "resty.sha256")
+    local ok2, m2 = pcall(require, "resty.string")
+    sha256_hex_ok = ok1 and ok2 and m1 ~= nil and m2 ~= nil
+    resty_sha256, resty_str = m1, m2
+  end
+  if not sha256_hex_ok then return nil end
+  local h = resty_sha256:new()
+  h:update(s)
+  return resty_str.to_hex(h:final())
+end
+
+-- Hash of everything a compiled set is built from: the whole configuration
+-- except `__seq__`, plus the CRS exclusion plugin files on disk when the
+-- configuration enables any (they are parsed into plugin_dyn_rules, and a
+-- rebuild has always picked up an edit there). The whole configuration and
+-- not a list of fields: the compile paths take `plugin_conf` itself
+-- (ka_compile reads private_debug, ka_redact four fields, the getters their
+-- own), so a hand-kept list would go stale the day one of them reads a new
+-- field, and the service would keep its old rules without a word. A change
+-- to a field no compile reads only costs that instance one recompile.
+local function conf_hash(plugin_conf)
+  local out = {}
+  conf_encode(plugin_conf, out, true)
+  local dirs = crs_plugin_dirs(plugin_conf)
+  for i = 1, #dirs do
+    out[#out + 1] = "D"
+    conf_encode(dirs[i].dir, out)
+    conf_encode(seclang.collect_plugin_conf_files(dirs[i].dir), out)
+  end
+  return sha256_hex(table.concat(out))
+end
+
+-- Computes a config table's identity, once per table per worker, and keeps
+-- ONE generation per plugin instance alive.
+--
+-- Kong rebuilds its plugins iterator in every worker after ANY plugin write,
+-- of any plugin on any service, and (with a database) re-reads every plugin
+-- row while doing it, so every Karna instance gets a new config table with a
+-- new `__seq__`. Most of the time its content did not change: then the hash
+-- is the same, the key is the same and the compiled sets are reused, with no
+-- recompile. When the content did change, the previous generation's entries
+-- are deleted for every prefix here, before the new ones are built, so the
+-- LRU never holds more than one generation per instance. Without this it
+-- held one per rebuild, up to its capacity: worker memory growing in steps
+-- with the number of reconfigurations rather than with traffic.
+--
+-- A table OLDER than the live generation (a request still in flight across
+-- the rebuild) reuses the live entries when its content is the same, and is
+-- otherwise built fresh and never cached, so it cannot bring a superseded
+-- generation back. The same holds for a table that was live when its
+-- generation was replaced: the record is marked dead. `__seq__` comes from a
+-- shared-dict counter and only grows; a non-numeric one is never expected and
+-- counts as newer.
+--
+-- If sha256 is unavailable the hash falls back to `s<__seq__>`: one
+-- generation per rebuild, recompiled each time, still never two alive.
+local function conf_identity_new(plugin_conf)
+  local seq = plugin_conf.__seq__
+  if not seq or seq == 0 then return false end
+  local pid = tostring(plugin_conf.__plugin_id)
+  local id = pid .. ":" .. (conf_hash(plugin_conf) or ("s" .. tostring(seq)))
+  local live = conf_cache_live[pid]
+  if live and type(live.seq) == "number" and type(seq) == "number" and seq < live.seq then
+    return live.id == id and live
+  end
+  if live then
+    if live.id == id then
+      live.seq = seq
+      return live
+    end
+    live.dead = true
+    for i = 1, #CONF_CACHE_PREFIXES do
+      conf_cache:delete(CONF_CACHE_PREFIXES[i] .. ":" .. live.id)
+    end
+  end
+  local gen = { seq = seq, id = id }
+  conf_cache_live[pid] = gen
+  return gen
+end
+
+-- The per-request part: one weak-table lookup and one field read. A table
+-- whose generation was replaced while it was still in use (a request in
+-- flight across the change, its log phase) gets nil, so it builds fresh and
+-- cannot write the deleted generation back.
+local function conf_cache_key(prefix, plugin_conf)
+  local gen = conf_identity[plugin_conf]
+  if gen == nil then
+    gen = conf_identity_new(plugin_conf)
+    conf_identity[plugin_conf] = gen
+  end
+  if not gen or gen.dead then return nil end
+  return prefix .. ":" .. gen.id
 end
 
 -- Namespace for the `rate_limit` Redis keys. Two Karna instances on two
@@ -103,9 +289,9 @@ end
 -- i.e. CRS exclusion plugins loaded from disk (`crs_plugins_enabled`
 -- entries under `crs_plugins_path/<name>/plugins/`) and inline SecLang
 -- strings (`custom_secrules`). Cached by get_plugin_dynamic_rules under the
--- conf_cache_key identity (plugin id + Kong's `__seq__` stamp), one entry
--- per (plugin instance, configuration): a reconfiguration gets a new
--- `__seq__`, so it never sees the rules parsed from the previous config.
+-- conf_cache_key identity (plugin id + configuration hash), one entry
+-- per (plugin instance, configuration): a configuration change gets a new
+-- hash, so it never sees the rules parsed from the previous config.
 local load_plugin_dynamic_rules = function(plugin_conf)
   local enabled = plugin_conf.crs_plugins_enabled or {}
   local inline = plugin_conf.custom_secrules or {}
@@ -113,28 +299,20 @@ local load_plugin_dynamic_rules = function(plugin_conf)
 
   local out = {}
 
-  local base_dir = plugin_conf.crs_plugins_path or "/opt/coreruleset-plugins/"
-  if not base_dir:match("/$") then base_dir = base_dir .. "/" end
-
-  for idx, plugin_name in ipairs(enabled) do
-    -- Directory names are identifiers, not paths. Reject traversal and shell
-    -- metacharacters even though the directory scanner also quotes its input.
-    if type(plugin_name) == "string"
-       and plugin_name:match("^[A-Za-z0-9][A-Za-z0-9._-]*$")
-       and plugin_name ~= "." and plugin_name ~= ".." then
-      local plugin_dir = base_dir .. plugin_name .. "/plugins/"
-      local files = seclang.collect_plugin_conf_files(plugin_dir)
-      for fname, content in pairs(files) do
-        local parsed = seclang.parse_isolated(content)
-        local count = 0
-        for _ in pairs(parsed) do count = count + 1 end
-        debug("CRS plugin '" .. plugin_name .. "/" .. fname
-              .. "' parsed " .. tostring(count) .. " rules")
-        for _, r in pairs(parsed) do table.insert(out, r) end
-      end
-    else
-      kong.log.warn("Ignoring invalid CRS plugin directory name at index "
-                    .. tostring(idx))
+  local dirs, rejected = crs_plugin_dirs(plugin_conf)
+  for _, idx in ipairs(rejected) do
+    kong.log.warn("Ignoring invalid CRS plugin directory name at index "
+                  .. tostring(idx))
+  end
+  for _, d in ipairs(dirs) do
+    local files = seclang.collect_plugin_conf_files(d.dir)
+    for fname, content in pairs(files) do
+      local parsed = seclang.parse_isolated(content)
+      local count = 0
+      for _ in pairs(parsed) do count = count + 1 end
+      debug("CRS plugin '" .. d.name .. "/" .. fname
+            .. "' parsed " .. tostring(count) .. " rules")
+      for _, r in pairs(parsed) do table.insert(out, r) end
     end
   end
 
@@ -164,12 +342,12 @@ end
 --
 -- Splitting here rather than per request means it is paid once per (worker,
 -- plugin instance, configuration): the key comes from conf_cache_key (plugin
--- id + `__seq__`), so an Admin API write simply lands on a new key. Mirrors
+-- id + configuration hash), so a configuration change lands on a new key. Mirrors
 -- get_local_request_rules, which precomputes its own per-phase subsets for
 -- the same reason.
 local get_plugin_dynamic_rules = function(plugin_conf)
   local key = conf_cache_key("plugin_dyn_rules", plugin_conf)
-  local cached = key and ka_rules:get(key)
+  local cached = key and conf_cache:get(key)
   if cached then return cached end
   local parsed = load_plugin_dynamic_rules(plugin_conf)
   -- Compile dynamic rules into closures before caching. plugin_conf is
@@ -208,13 +386,13 @@ local get_plugin_dynamic_rules = function(plugin_conf)
     end
   end
 
-  if key then ka_rules:set(key, split) end
+  if key then conf_cache:set(key, split) end
   return split
 end
 
 -- Parse + compile the rules carried inline by `plugin_conf.rules_request`
 -- (JSON strings authored by service operators). Cached under the
--- conf_cache_key identity (plugin id + Kong's `__seq__` stamp), NOT the
+-- conf_cache_key identity (plugin id + configuration hash), NOT the
 -- table address: the GC recycles addresses, and an address-keyed entry
 -- would let another plugin instance pick up this service's compiled rules
 -- (see conf_cache_key). cjson.decode used to run twice per rule per
@@ -244,7 +422,7 @@ local get_local_request_rules = function(plugin_conf)
     return { all = {}, access = {}, header_filter = {}, access_prebody = {} }
   end
   local key = conf_cache_key("local_request_rules", plugin_conf)
-  local cached = key and ka_rules:get(key)
+  local cached = key and conf_cache:get(key)
   if cached then return cached end
 
   local all = {}
@@ -280,7 +458,7 @@ local get_local_request_rules = function(plugin_conf)
     all = all, access = access_rest, header_filter = header_filter,
     access_prebody = access_prebody,
   }
-  if key then ka_rules:set(key, result) end
+  if key then conf_cache:set(key, result) end
   return result
 end
 
@@ -400,14 +578,14 @@ end
 
 -- Lazy-parse + cache the two override arrays per (plugin instance,
 -- configuration). Same caching scheme as `get_plugin_dynamic_rules`: keyed
--- by conf_cache_key (plugin id + Kong's `__seq__` stamp), never by the
--- table address, which the GC recycles across plugin instances; an Admin
--- API reconfiguration lands on a new key.
+-- by conf_cache_key (plugin id + configuration hash), never by the
+-- table address, which the GC recycles across plugin instances; a
+-- configuration change lands on a new key.
 local DEFAULT_FIX_PATTERN = [=[[<>"';&|`$()]]=]
 
 local get_overrides_cached = function(plugin_conf)
   local key = conf_cache_key("overrides", plugin_conf)
-  local cached = key and ka_rules:get(key)
+  local cached = key and conf_cache:get(key)
   if cached then return cached end
 
   local out = { action_overrides = {}, response_overrides = {} }
@@ -430,7 +608,7 @@ local get_overrides_cached = function(plugin_conf)
     end
   end
 
-  if key then ka_rules:set(key, out) end
+  if key then conf_cache:set(key, out) end
   return out
 end
 
@@ -445,14 +623,14 @@ local resolve_arg_limit_override = function(plugin_conf)
   if type(entries) ~= "table" or #entries == 0 then return nil end
 
   local key = conf_cache_key("arg_limits", plugin_conf)
-  local compiled = key and ka_rules:get(key)
+  local compiled = key and conf_cache:get(key)
   if not compiled then
     local errs
     compiled, errs = ka_arg_limits.compile(entries)
     for _, e in ipairs(errs) do
       kong.log.err("[karna] limit_arg_num_overrides: " .. e)
     end
-    if key then ka_rules:set(key, compiled) end
+    if key then conf_cache:set(key, compiled) end
   end
 
   return ka_arg_limits.resolve(compiled, kong.request.get_method(), kong.request.get_path())
@@ -466,7 +644,7 @@ end
 local get_redact_spec_cached = function(plugin_conf)
   local key = conf_cache_key("redact", plugin_conf)
   if key then
-    local cached = ka_rules:get(key)
+    local cached = conf_cache:get(key)
     if cached ~= nil then
       if cached == false then return nil end
       return cached
@@ -479,9 +657,9 @@ local get_redact_spec_cached = function(plugin_conf)
     -- never yield false in Lua, so the sentinel would be stored as nil and the
     -- "nothing to mask" answer would recompile on every logged request.
     if spec == nil then
-      ka_rules:set(key, false)
+      conf_cache:set(key, false)
     else
-      ka_rules:set(key, spec)
+      conf_cache:set(key, spec)
     end
   end
   return spec
@@ -918,27 +1096,28 @@ local evaluate_rules = function(plugin_conf, rules, phase)
 end
 
 function plugin:init_worker()
-  if ka_rules then
+  if conf_cache then
     debug("Loading rules on worker number "..ngx.worker.id())
 
     local rules = {}
     local rcontrol_rules = {}
     local dfiles = {}
 
-    -- flush ka_rules cache
-    ka_rules:flush_all()
+    -- flush the per-config cache
+    conf_cache:flush_all()
+    conf_cache_live = {}
+    conf_identity = setmetatable({}, { __mode = "k" })
 
-    -- set rule to cache
+    -- the CRS pack lives in module locals, out of reach of LRU eviction
     rules, rcontrol_rules, dfiles = engine:load_rules()
-    ka_rules:set("ka_rules", rules)
-    ka_rules:set("rcontrol_rules", rcontrol_rules)
+    crs_rules = rules
+    crs_rcontrol_rules = rcontrol_rules
 
-    -- set dfiles to cache
     local ka_dfiles = {}
     for condition_value,dfile in pairs(dfiles) do
       ka_dfiles[condition_value] = dfile
     end
-    ka_rules:set("ka_dfiles", ka_dfiles)
+    crs_dfiles = ka_dfiles
 
     debug("#########> Loaded "..tostring(#rules).." CRS rules on worker number "..ngx.worker.id())
 
@@ -1017,7 +1196,7 @@ local function enforce_service_bans(plugin_conf)
   local global = ka_global_rules.get()
   if global then collect(global.detection.access) end
   if plugin_conf.local_rules_enabled then collect(get_local_request_rules(plugin_conf).access) end
-  if plugin_conf.coreruleset_enabled then collect(ka_rules:get("ka_rules")) end
+  if plugin_conf.coreruleset_enabled then collect(crs_rules) end
   if #keys == 0 then return end
   local index, ttl = utils:redis_first_active_ban(engine:get_redis_conf(plugin_conf), keys)
   if not index then return end
@@ -1280,18 +1459,18 @@ function plugin:access(plugin_conf)
   kong.ctx.plugin.rule_controls = new_rule_controls()
 
   -- get the CRS rule pack (loaded from disk at init_worker)
-  local rules = ka_rules:get("ka_rules")
+  local rules = crs_rules
   if rules then
     debug("Loaded "..tostring(#rules).." CRS rules")
   end
 
-  local rcontrol_rules = ka_rules:get("rcontrol_rules")
+  local rcontrol_rules = crs_rcontrol_rules
   if rcontrol_rules then
     debug("Loaded "..tostring(#rcontrol_rules).." CRS Rule Control rules")
   end
 
   -- get dfiles
-  local dfiles = ka_rules:get("ka_dfiles")
+  local dfiles = crs_dfiles
 
   -- get service local request rules from the per-plugin_conf cache.
   -- The cache carries the full list (for cross-phase consumption via
@@ -1693,6 +1872,8 @@ end
 -- (`_wasm`, `_go`) to the same table.
 plugin._internals = {
   conf_cache_key           = conf_cache_key,
+  conf_cache               = function() return conf_cache end,
+  crs_pack                 = function() return crs_rules, crs_rcontrol_rules, crs_dfiles end,
   rate_limit_scope         = rate_limit_scope,
   evaluate_rules           = evaluate_rules,
   get_plugin_dynamic_rules = get_plugin_dynamic_rules,

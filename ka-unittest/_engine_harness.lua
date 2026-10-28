@@ -305,7 +305,7 @@ package.preload["inspect"]         = function() return function() return "" end 
 package.preload["resty.ipmatcher"] = function() return { new = function() return { match = function() return false end } end } end
 package.preload["resty.redis"]     = function() return { new = function() return {} end } end
 package.preload["resty.http"]      = function() return { new = function() return {} end } end
-package.preload["resty.lrucache"]  = function() return { new = function() return { get = function() return nil end, set = function() end, flush_all = function() end } end } end
+package.preload["resty.lrucache"]  = function() return { new = function() return { get = function() return nil end, set = function() end, delete = function() end, flush_all = function() end } end } end
 package.preload["bit"]             = function() return { bor = function(a, b) return a + b end } end
 package.preload["ffi"]             = function() return {
     new = function() return {} end, string = function() return "" end,

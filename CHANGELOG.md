@@ -7,6 +7,8 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-10-28
+
 ### Added
 
 - **Karna Console live demo.** A demo mode for the console (`npm run
@@ -39,6 +41,18 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Worker memory no longer grows with every plugin change.** Kong hands every
+  plugin instance a new configuration after any plugin write, on any service,
+  and Karna recompiles each instance's rules on its next request. The compiled
+  rules of the previous configuration stayed in the per-worker cache until it
+  filled up, so with many Karna instances each worker could hold many copies of
+  every instance's rules, and memory grew in steps with each reconfiguration
+  rather than with traffic. Each worker now keeps one compiled copy per plugin
+  instance and drops the previous one when the new one is built. An instance
+  whose own configuration did not change keeps its compiled rules, so a write
+  to another plugin no longer makes every worker recompile every instance. The CRS rule
+  pack also moved out of that cache: under enough pressure it could be evicted,
+  and the worker would then stop evaluating CRS until it restarted.
 - **Console: what Karna answers is part of the review.** A change proposed by
   the assistant that sets a block page, a rate-limit or 5xx page, a rule's
   `fixed_response` or `rate_limit.response` with its own body, headers or a
@@ -1846,7 +1860,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.3...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.4...HEAD
+[1.7.4]: https://github.com/sicuranext/karna/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/sicuranext/karna/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/sicuranext/karna/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/sicuranext/karna/compare/v1.7.0...v1.7.1
