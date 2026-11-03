@@ -500,8 +500,8 @@ ok(I.rate_limit_scope(nil) ~= nil, "nil config → still a usable scope")
 print("\n- one generation per instance: entries do not grow with reconfigurations")
 -- ---------------------------------------------------------------------------
 -- K instances, R rounds in which EVERY instance's content changes (a new
--- `revision` value), all five per-config caches populated each round: the
--- cache must hold K x 5 entries after the first round and after the last,
+-- `revision` value), all six per-config caches populated each round: the
+-- cache must hold K x 6 entries after the first round and after the last,
 -- whatever R is. (When only __seq__ changes nothing is rebuilt at all, see
 -- the next section.)
 local RULE_G = fixture(
@@ -514,16 +514,18 @@ local function full_conf(pid, seq, rev)
         rules_request = { RULE_G }, custom_secrules = { SEC_G },
         rule_action_overrides = { OVR_A },
         limit_arg_num_overrides = { { path_rx = "^/upload", methods = { "POST" }, limit = 500 } },
+        request_body_limit_overrides = { { path_rx = "^/import", limit = 4194304 } },
         auditlog_redact_enabled = true, auditlog_redact_headers = REDACT_HEADERS,
     })
 end
 local function touch_all(c)
     I.get_local_request_rules(c); I.get_plugin_dynamic_rules(c); I.get_overrides_cached(c)
-    I.resolve_arg_limit_override(c); I.get_redact_spec_cached(c)
+    I.resolve_arg_limit_override(c); I.resolve_body_limit_override(c)
+    I.get_redact_spec_cached(c)
 end
 
 CACHE:flush_all()
-local K, R, PREFIXES = 40, 30, 5
+local K, R, PREFIXES = 40, 30, 6
 local seq = 1000
 local after_first, max_seen = nil, 0
 for round = 1, R do

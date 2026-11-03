@@ -67,6 +67,7 @@ for _, method in ipairs({'method_allowed','uri_path_check_violation',
     engine[method] = function() end
 end
 engine.check_request_arg_count = function() return false end
+engine.check_request_body_limit = function() return false end
 engine.loop_rules = function(_, _, rules)
     if rules and #rules > 0 then return true, rules[1], {} end
     return false
