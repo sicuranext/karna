@@ -13,7 +13,9 @@
 --   H.ka_compile    the ka_compile module (compile_variable_resolver, …)
 --   H.body_parser   the ka_body_parser module
 --   H.request       mutable request: method, path, raw_path, raw_query,
---                   headers (name → value, any case), body
+--                   headers (name → value, any case), body, body_file (path
+--                   of a temp file holding the body, as nginx does for a
+--                   large one: then `body` should be nil)
 --   H.reset()       fresh kong.ctx.plugin (caches + rule_controls store) and
 --                   kong.ctx.shared; returns the rule_controls store
 --   H.plugin_conf   default plugin_conf for H.match (fast path ON)
@@ -42,6 +44,7 @@ H.request = {
     raw_query = "",
     headers   = {},
     body      = nil,
+    body_file = nil,
 }
 
 local function header(name)
@@ -201,7 +204,8 @@ _G.ngx = {
     NOTICE = 1, WARN = 2, ERR = 3, DEBUG = 4, INFO = 5,
     worker = { id = function() return 0 end },
     req    = {
-        get_body_file = function() return nil end,
+        get_body_file = function() return H.request.body_file end,
+        get_body_data = function() return H.request.body end,
         get_post_args = function() return {} end,
         read_body     = function() end,
     },

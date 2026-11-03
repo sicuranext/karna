@@ -1,4 +1,5 @@
--- ka_arg_limits — per-path overrides for the `limit_arg_num` gate.
+-- ka_arg_limits — per-path overrides for the `limit_arg_num` gate, and the same
+-- compile / resolve for `request_body_limit_overrides` (same entry shape).
 --
 -- `limit_arg_num` is an always-on gate that runs before the rule loop, so no
 -- rule control can raise it for one endpoint. When a single endpoint

@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.7.4",
+  VERSION = "1.8.0",
 }
 
 local ngx                 = ngx
@@ -40,7 +40,7 @@ local crs_rules, crs_rcontrol_rules, crs_dfiles
 -- writes to conf_cache uses one of these, and only these: conf_identity_new
 -- deletes a superseded generation by walking this list.
 local CONF_CACHE_PREFIXES = {
-  "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "redact",
+  "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "body_limits", "redact",
 }
 
 -- conf_cache keeps ONE generation per plugin instance (conf_identity_new), so the
@@ -612,28 +612,36 @@ local get_overrides_cached = function(plugin_conf)
   return out
 end
 
--- Compiled `limit_arg_num_overrides`, cached per (plugin instance,
--- configuration) like the override arrays above, then resolved against the
--- request method and normalized path. Returns the matching entry or nil. No
--- overrides configured = one table length check per request, nothing else.
--- An entry this node cannot compile is logged and dropped, so its path keeps
--- the service limit.
-local resolve_arg_limit_override = function(plugin_conf)
-  local entries = plugin_conf.limit_arg_num_overrides
+-- Compiled per-path limit overrides (`limit_arg_num_overrides`,
+-- `request_body_limit_overrides`), cached per (plugin instance, configuration)
+-- like the override arrays above, then resolved against the request method and
+-- normalized path. Returns the matching entry or nil. No overrides configured =
+-- one table length check per request, nothing else. An entry this node cannot
+-- compile is logged and dropped, so its path keeps the service limit.
+local resolve_path_limit_override = function(plugin_conf, field, cache_prefix)
+  local entries = plugin_conf[field]
   if type(entries) ~= "table" or #entries == 0 then return nil end
 
-  local key = conf_cache_key("arg_limits", plugin_conf)
+  local key = conf_cache_key(cache_prefix, plugin_conf)
   local compiled = key and conf_cache:get(key)
   if not compiled then
     local errs
     compiled, errs = ka_arg_limits.compile(entries)
     for _, e in ipairs(errs) do
-      kong.log.err("[karna] limit_arg_num_overrides: " .. e)
+      kong.log.err("[karna] " .. field .. ": " .. e)
     end
     if key then conf_cache:set(key, compiled) end
   end
 
   return ka_arg_limits.resolve(compiled, kong.request.get_method(), kong.request.get_path())
+end
+
+local resolve_arg_limit_override = function(plugin_conf)
+  return resolve_path_limit_override(plugin_conf, "limit_arg_num_overrides", "arg_limits")
+end
+
+local resolve_body_limit_override = function(plugin_conf)
+  return resolve_path_limit_override(plugin_conf, "request_body_limit_overrides", "body_limits")
 end
 
 -- Compiled audit-log redaction spec, cached per (plugin instance,
@@ -1513,6 +1521,16 @@ function plugin:access(plugin_conf)
   -- "uninspectable", it is uninspected by decision).
   engine:check_request_content_type_enforce(plugin_conf)
 
+  -- Body size cap (request_body_limit / request_body_limit_overrides): an
+  -- oversized body is refused (413) before the parser gate below reads or
+  -- parses it. In detection mode the violation is logged and rule evaluation
+  -- is skipped, like the argument-count gate: inspecting it is the cost the cap
+  -- exists to bound. An oversized octet-stream body that does not look like
+  -- JSON passes uninspected instead (see check_request_body_limit).
+  if engine:check_request_body_limit(plugin_conf, resolve_body_limit_override(plugin_conf)) then
+    return
+  end
+
   -- pre-validate request body parser (multipart hardening flags reject
   -- malformed payloads upstream of rule evaluation; without this gate
   -- the rejection produces an empty values table and slips through).
@@ -1881,6 +1899,7 @@ plugin._internals = {
   get_overrides_cached     = get_overrides_cached,
   get_redact_spec_cached   = get_redact_spec_cached,
   resolve_arg_limit_override = resolve_arg_limit_override,
+  resolve_body_limit_override = resolve_body_limit_override,
 }
 
 return plugin

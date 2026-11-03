@@ -342,8 +342,14 @@ end
 -- logic to get wrong. When the control comes from the pre-body pass
 -- (handler.lua:access) the flag is set before any getter runs, and the body is
 -- never parsed at all.
+-- Also true when check_request_body_limit let an oversized octet-stream body
+-- through uninspected (ka_body_uninspected): every body getter then resolves
+-- empty, exactly as under the control.
 local function body_access_off()
-    local rc = kong.ctx and kong.ctx.plugin and kong.ctx.plugin.rule_controls
+    local ctx = kong.ctx and kong.ctx.plugin
+    if not ctx then return false end
+    if ctx.ka_body_uninspected == true then return true end
+    local rc = ctx.rule_controls
     return (rc and rc.body_access_off) == true
 end
 local function body_cache_key(try_b64)
@@ -4659,6 +4665,138 @@ _M.check_request_arg_count = function(self, plugin_conf, override)
 
     -- detection mode: don't scan a pathological request (the scan is the
     -- DoS); signal the access handler to skip rule evaluation.
+    return true
+end
+
+-- Size of the buffered request body and its first `head_len` bytes, without
+-- copying the whole body into Lua: nginx keeps a large body in a temp file, and
+-- only the file size and a short prefix are read here. A body already read
+-- (ka_raw_body) is measured as is.
+local function request_body_size_and_head(head_len)
+    local ctx = kong.ctx and kong.ctx.plugin
+    if ctx and ctx.ka_raw_body ~= nil then
+        local b = ctx.ka_raw_body or ""
+        return #b, b:sub(1, head_len)
+    end
+    ngx.req.read_body()
+    local data = ngx.req.get_body_data()
+    if data then
+        return #data, data:sub(1, head_len)
+    end
+    local file = ngx_req_get_body_file()
+    if file then
+        local fh = io.open(file, "rb")
+        if fh then
+            local head = fh:read(head_len) or ""
+            local size = fh:seek("end") or #head
+            fh:close()
+            return size, head
+        end
+    end
+    return 0, ""
+end
+
+local BODY_SNIFF_BYTES = 4096
+
+-- Request body size cap (request_body_limit, or the matching
+-- request_body_limit_overrides entry passed as `override`). Inspection cost
+-- grows with every byte inspected (~200 CRS patterns over several transform
+-- chains), so the cap bounds the CPU one request can take, and a refused body
+-- is never parsed or copied. ModSecurity's SecRequestBodyNoFilesLimit with
+-- SecRequestBodyLimitAction Reject.
+--
+-- What counts:
+--   * the bytes nginx buffered (request_body_size_and_head), so a chunked
+--     body with no Content-Length is measured like any other;
+--   * multipart: only the parts without a filename. File content is never
+--     inspected (it is kept out of ARGS and out of the RE2 pre-pass), so a
+--     large upload is not refused for its files. The body is parsed only
+--     when its total size is over the limit;
+--   * application/octet-stream over the limit: treated as a file, let through
+--     and not inspected (ka_body_uninspected makes every body getter resolve
+--     empty) unless its first bytes look like JSON, which Karna would fold
+--     into ARGS (see __get_values_request_body, "text"): that body is
+--     refused. A prefix of whitespace only is treated as JSON-like.
+-- Under body_access_off (pre-body controls pass) the body is not inspected,
+-- so it is not measured either.
+--
+-- Over the limit: 413 in blocking mode; in detection mode the violation is
+-- logged and true is returned so the access handler skips rule evaluation,
+-- like check_request_arg_count.
+_M.check_request_body_limit = function(self, plugin_conf, override)
+    local limit = plugin_conf.request_body_limit
+    if override then
+        limit = override.limit
+    end
+    if not limit or limit <= 0 then
+        return false
+    end
+    if not request_has_body() or body_access_off() then
+        return false
+    end
+
+    local size, head = request_body_size_and_head(BODY_SNIFF_BYTES)
+    if size <= limit then
+        return false
+    end
+
+    local counted = size
+    local what = "request body"
+    local body_type = utils:request_body_parser_type()
+    if body_type == "multipart" then
+        counted = 0
+        what = "multipart non-file parts"
+        local values = self.__get_values_request_body(plugin_conf.try_bas64decode_if_possible)
+        for k, v in pairs(values or {}) do
+            if string_find(k, "request.body.multipart.value:", 1, true) == 1
+               and not string_find(k, "_ka_b64_decoded", 1, true) then
+                counted = counted + #tostring(v)
+            end
+        end
+        if counted <= limit then
+            return false
+        end
+    else
+        local ct = request_get_header("content-type")
+        local base = ct and string_match(ct:lower(), "^%s*([^;%s]+)")
+        if base == "application/octet-stream" then
+            local first = string_match(head, "^%s*(%S)")
+            if first ~= nil and first ~= "{" and first ~= "[" then
+                kong.ctx.plugin.ka_body_uninspected = true
+                return false
+            end
+        end
+    end
+
+    local detail = tostring(counted) .. " > " .. tostring(limit)
+    if override then
+        detail = detail .. ", override " .. override.path_rx
+    end
+
+    table_insert(kong.ctx.plugin.ka_matched_rules, {
+        rule = {
+            id = "request_body_limit",
+            log = true,
+            logdata = "",
+            message = "Request body size limit reached (" .. what .. ", " .. detail .. ")",
+            phase = "access",
+            tags = { "karna", "access", "paranoia-level/1", "dos/body-size" },
+            response_status_override = 413
+        },
+        part = {
+            {
+                matched_on = "request.body.length",
+                matched_value = tostring(counted)
+            }
+        }
+    })
+
+    if plugin_conf.engine_blocking_mode then
+        local body, headers = utils:build_block_response(plugin_conf, nil, nil,
+            "Request Entity Too Large", { ["x-karna-rule-id"] = "request_body_limit" })
+        return kong.response.exit(413, body, headers)
+    end
+
     return true
 end
 

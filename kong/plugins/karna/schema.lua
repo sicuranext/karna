@@ -175,6 +175,34 @@ local schema = {
               } },
           } },
 
+          -- request_body_limit (bytes, default 1 MiB)
+          -- Largest request body Karna accepts. A bigger one is refused with
+          -- 413 before it is parsed or inspected (in detection mode it is
+          -- logged and the rules are skipped). The size is the bytes nginx
+          -- buffered, not Content-Length, so a chunked body is measured too.
+          -- Multipart counts only the parts without a filename (form fields):
+          -- uploaded files are never inspected and do not count. An
+          -- application/octet-stream body over the limit is let through
+          -- uninspected, like a file, unless it starts like JSON (Karna would
+          -- parse it into ARGS): that one is refused. Inspection costs CPU in
+          -- proportion to the bytes inspected, so this also bounds the worst
+          -- case of one request. Raise it, or use the overrides below, for
+          -- the endpoints that need bigger bodies.
+          { request_body_limit = { type = "integer", default = 1048576, gt = 0 } },
+
+          -- request_body_limit_overrides
+          -- Per-path replacement for request_body_limit, same shape and rules
+          -- as limit_arg_num_overrides (first match wins, path_rx unanchored).
+          { request_body_limit_overrides = {
+              type = "array", default = {}, len_max = ka_arg_limits.MAX_OVERRIDES,
+              elements = { type = "record", fields = {
+                { path_rx = { type = "string", required = true,
+                    custom_validator = ka_arg_limits.validate_path_rx } },
+                { methods = { type = "array", elements = { type = "string" } } },
+                { limit = { type = "integer", required = true, gt = 0 } },
+              } },
+          } },
+
           { inspection_table_convert = { type = "array", elements = { type = "string" } } },
           { paranoia_level = { type = "number", default = 1 } },
 

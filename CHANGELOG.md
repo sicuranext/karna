@@ -7,6 +7,39 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-03
+
+### Added
+
+- **Request body size limit.** New setting `request_body_limit` (bytes,
+  default 1 MiB). A bigger body is refused with 413 before Karna parses or
+  inspects it; in detection mode the request is logged as
+  `request_body_limit` and the rules are skipped for it. The size is what
+  nginx buffered, so chunked bodies without `Content-Length` are measured
+  too, and a body nginx kept in a temp file is measured without being read.
+  Uploaded files do not count: for multipart only the parts without a
+  filename are counted, and an `application/octet-stream` body over the
+  limit is treated like a file (let through, not inspected) unless it starts
+  like JSON. `request_body_limit_overrides` sets the limit per path, with the
+  same entries as `limit_arg_num_overrides`. Inspecting a request costs CPU
+  in proportion to the bytes inspected (about 3 µs per byte of arguments with
+  the CRS), so the limit also bounds what a single request can cost. Before,
+  Karna inspected bodies of any size. Upgrade note: check that your
+  endpoints don't take larger non-file bodies (big JSON or form posts)
+  before upgrading, and add an override for those that do.
+  Test: `ka-unittest/request_body_limit.lua`.
+
+### Security
+
+- **CPU exhaustion with crafted request bodies.** Some request bodies made the
+  pre-pass that decides which CRS rules to run cost far more CPU per byte than
+  ordinary traffic, enough for a few requests to keep every worker busy. Any
+  service running Karna was exposed with the default allowed content types,
+  without authentication. The pre-pass now bounds that cost; which rules run,
+  and what they detect, does not change. Upgrade is recommended for every
+  deployment. Test: `ka-unittest/re2_gate_entropy.lua` (runs in the Kong
+  image).
+
 ## [1.7.4] - 2026-10-28
 
 ### Added
@@ -1860,7 +1893,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.7.4...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/sicuranext/karna/compare/v1.7.4...v1.8.0
 [1.7.4]: https://github.com/sicuranext/karna/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/sicuranext/karna/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/sicuranext/karna/compare/v1.7.1...v1.7.2

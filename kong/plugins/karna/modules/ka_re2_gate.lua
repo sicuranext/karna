@@ -175,11 +175,18 @@ function _M.build(rules)
     -- leave their rule UNGATED (no entry) -> it stays on the Lua @rx path.
     local gate = {}
     local gateable = 0
+    -- One single-pattern Set per accepted pattern, for the sharded scan (see
+    -- scan_sharded). A shard that fails to build is recorded as `false`: the
+    -- sharded scan then reports its id as matched (= run the rule), never as
+    -- a silent skip.
+    local shards = {}
     for i = 1, #patterns do
         local set_id = id_map[i]
         if set_id ~= false then
             gate[rule_at[i]] = set_id
             gateable = gateable + 1
+            local sh = ka_re2.build({ patterns[i] }, true)
+            shards[#shards + 1] = { id = set_id, handle = sh or false }
         end
     end
 
@@ -190,6 +197,7 @@ function _M.build(rules)
 
     local gate_obj = {
         handle     = handle,
+        shards     = shards,
         gate       = gate,
         specs      = specs,
         n_patterns = handle.n_patterns,
@@ -207,12 +215,92 @@ function _M.build(rules)
     return gate_obj
 end
 
+-- Sharded scan: the combined Set is cheap on ordinary text (its lazily built
+-- DFA states are reused across values and requests) but on high-entropy input
+-- almost every byte reaches a DFA state that does not exist yet, and building a
+-- state of the ~200-pattern program costs tens of microseconds per byte, paid
+-- again for every transform chain the value is scanned under.
+-- One Set per pattern keeps every DFA small: ~0.7 us per byte on the same
+-- input, but a fixed ~20 us per value (one FFI call per pattern), which is
+-- why short values stay on the combined Set while it is fast.
+--   LONG_VALUE     : a value longer than this always goes to the shards, so
+--                    one combined scan costs at most ~25 ms.
+--   COMBINED_BUDGET: seconds of combined-Set scanning per request above what
+--                    warm-cache input costs (ALLOW_PER_VALUE + ALLOW_PER_BYTE
+--                    for each value scanned); past it every remaining value
+--                    goes to the shards. Only the scan calls are timed, not
+--                    parsing or transforms. Measuring the excess instead of
+--                    the total keeps a large benign body (thousands of
+--                    values, each well under a microsecond) on the combined
+--                    Set, while new-state input trips it within a few values.
+--                    Benign values padded in to earn allowance buy at most
+--                    ALLOW_PER_BYTE per byte: under the default arg limits
+--                    that is a few hundred ms per request at worst.
+-- Both paths scan the same patterns, so the matched set and every gating
+-- decision are identical; only the cost changes.
+local LONG_VALUE      = 1024
+local COMBINED_BUDGET = 0.003
+local ALLOW_PER_VALUE = 2e-6
+local ALLOW_PER_BYTE  = 2e-8
+
+_M.LONG_VALUE      = LONG_VALUE
+_M.COMBINED_BUDGET = COMBINED_BUDGET
+
+-- CLOCK_MONOTONIC through the vDSO: ~10 ns a read, against ~180 ns for
+-- os.clock(), so every combined scan can be timed. Kong (and other modules)
+-- may already have declared clock_gettime / struct timespec, so each
+-- declaration is attempted on its own and the result is probed once; any
+-- failure keeps os.clock.
+local now = os.clock
+do
+    local ok_ffi, ffi = pcall(require, "ffi")
+    if ok_ffi and ffi.os == "Linux" then
+        pcall(ffi.cdef, "struct timespec { long tv_sec; long tv_nsec; };")
+        pcall(ffi.cdef, "int clock_gettime(int clk_id, struct timespec *tp);")
+        local ok_ts, ts = pcall(ffi.new, "struct timespec")
+        if ok_ts then
+            local C = ffi.C
+            local function mono()
+                C.clock_gettime(1, ts)  -- CLOCK_MONOTONIC
+                return tonumber(ts.tv_sec) + tonumber(ts.tv_nsec) * 1e-9
+            end
+            if pcall(mono) then now = mono end
+        end
+    end
+end
+
+local function scan_sharded(shards, matched, v)
+    for i = 1, #shards do
+        local sh = shards[i]
+        local id = sh.id
+        if not matched[id] then
+            if not sh.handle or ka_re2.scan(sh.handle, v) ~= 0 then
+                matched[id] = true
+            end
+        end
+    end
+end
+
+local function scan_combined(handle, matched, v)
+    local n = ka_re2.scan(handle, v)
+    if n > 0 then
+        local lim = n < handle.max_ids and n or handle.max_ids
+        for k = 0, lim - 1 do
+            matched[ka_re2.id_at(handle, k)] = true
+        end
+    end
+end
+
 -- Per-request pre-pass: resolve+transform every distinct spec's values, scan
 -- the RE2::Set, return the set { [re2_set_id] = true } of all matched patterns.
 -- `engine` is the ka_engine instance (for resolvers + __apply_transformation).
 function _M.scan(gate, engine)
     local handle = gate.handle
+    local shards = gate.shards
     local matched = {}
+    -- combined-Set accounting (see LONG_VALUE / COMBINED_BUDGET above)
+    local sharded = false
+    local excess  = 0
     local resolved = {}          -- variable string -> values table (resolve once)
     local scanned = {}           -- post-transform value string -> true (scan once)
     local dummy_rule = {}        -- resolvers take (engine, rule); no rule_control
@@ -252,11 +340,15 @@ function _M.scan(gate, engine)
                     -- vars share __get_values_request_body + the same chain).
                     if type(v) == "string" and not scanned[v] then
                         scanned[v] = true
-                        local n = ka_re2.scan(handle, v)
-                        if n > 0 then
-                            local lim = n < handle.max_ids and n or handle.max_ids
-                            for k = 0, lim - 1 do
-                                matched[ka_re2.id_at(handle, k)] = true
+                        if shards and (sharded or #v > LONG_VALUE) then
+                            scan_sharded(shards, matched, v)
+                        else
+                            local t0 = now()
+                            scan_combined(handle, matched, v)
+                            excess = excess + (now() - t0)
+                                    - ALLOW_PER_VALUE - #v * ALLOW_PER_BYTE
+                            if shards and excess > COMBINED_BUDGET then
+                                sharded = true
                             end
                         end
                     end
