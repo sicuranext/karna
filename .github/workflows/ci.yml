@@ -129,6 +129,10 @@ jobs:
         run: lua ka-unittest/rate_limit_audit_fields.lua
       - name: header_filter local rules on a sibling-cache hit (context created, single evaluation)
         run: lua ka-unittest/header_filter_cache_hit.lua
+      - name: request_body_limit gate (413, chunked, temp file, octet-stream, overrides)
+        run: lua ka-unittest/request_body_limit.lua
+      - name: RE2 gate on high-entropy input (needs LuaJIT + libka_re2.so + CRS, SKIP here)
+        run: lua ka-unittest/re2_gate_entropy.lua
 
   leak-audit:
     name: Anti-leak audit (internal naming)

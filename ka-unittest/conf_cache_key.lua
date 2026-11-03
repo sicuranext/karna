@@ -709,7 +709,7 @@ for _, case in ipairs(cases) do
     seq = seq + 1
     local b = deep_copy(BASE); b.__seq__ = seq
     local keys_b = {}
-    for _, pfx in ipairs({ "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "redact" }) do
+    for _, pfx in ipairs({ "plugin_dyn_rules", "local_request_rules", "overrides", "arg_limits", "body_limits", "redact" }) do
         keys_b[pfx] = I.conf_cache_key(pfx, b)
     end
     local ovr_b = I.get_overrides_cached(b)

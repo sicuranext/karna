@@ -107,7 +107,7 @@ The actual files live under `kong/plugins/karna/modules/` and `kong/plugins/karn
 The access phase runs the request-validation methods below *before* the rule
 loops, and they fire regardless of `coreruleset_enabled` /
 `local_rules_enabled`. Order inside `handler.lua:access`: the four header-level
-gates → the rule-control store → the **pre-body controls pass** → the three
+gates → the rule-control store → the **pre-body controls pass** → the four
 body gates → everything else:
 
 - `engine:method_allowed(plugin_conf)` — vs `request_methods_allowed`
@@ -115,6 +115,21 @@ body gates → everything else:
 - `engine:check_request_headers_allowed(plugin_conf)` — vs `request_headers_denied`
 - `engine:check_request_content_type_charset(plugin_conf)` — vs `request_content_type_*`
 - `engine:check_request_body_parser(plugin_conf)` — blocks a body whose declared structured type (multipart / JSON / XML) fails to parse. Malformed structure (multipart hardening rejections, JSON with lone NUL / trailing junk / duplicate keys, XML with a raw `<` in an attribute) means the body was never flattened into ARGS, so an attack hidden in it would skip inspection. "Deny what you can't inspect."
+
+`engine:check_request_body_limit(plugin_conf, override)` (`request_body_limit`,
+default 1 MiB, per path via `request_body_limit_overrides`, resolved like the
+arg-count overrides with `conf_cache_key("body_limits")`) runs right after
+`check_request_content_type_enforce` and before the parser gate: over the limit
+= 413 (detection mode: logged, rules skipped). Size = bytes nginx buffered
+(`ngx.req.get_body_data` or the temp file's size, never Content-Length, never a
+full read). Multipart counts only `request.body.multipart.value:*` (non-file
+parts, parsed only when the raw size is over). `application/octet-stream` over
+the limit sets `kong.ctx.plugin.ka_body_uninspected` (honoured by
+`body_access_off()`, so every body getter resolves empty) unless its first
+4 KB look like JSON or are only whitespace: then 413. Why a cap at all: after the
+RE2 gate fix (see `ka_re2_gate.lua`, sharded scan) inspection still costs
+~3 µs per ARGS byte (~200 patterns × ~11 transform outputs), so 1 MiB ≈ 3.4 s
+worst case. Unit-tested in `ka-unittest/request_body_limit.lua`.
 
 `engine:check_request_arg_count(plugin_conf, override)` (the `limit_arg_num`
 gate) takes the `limit_arg_num_overrides` entry resolved by
@@ -146,14 +161,14 @@ are usually the answer.
 Control-only access rules whose conditions never read the body
 (`ka_compile.is_prebody_control`: `_prebody` is computed by `compile_rules`
 from an explicit allow-list of body-free variables — `request.arg.*` counts
-as body, `request.body.processor` does not) are evaluated BEFORE the three
-body gates (`check_request_content_type_enforce`, `check_request_body_parser`,
-`check_request_arg_count`), from every channel: `custom_secrules` / CRS plugins
+as body, `request.body.processor` does not) are evaluated BEFORE the four
+body gates (`check_request_content_type_enforce`, `check_request_body_limit`,
+`check_request_body_parser`, `check_request_arg_count`), from every channel: `custom_secrules` / CRS plugins
 (`get_plugin_dynamic_rules(...).controls_prebody.access`), the global pack
 (`pack.controls_prebody.access`, partitioned after compile in
 `ka_global_rules.build_sources`), `rules_request`
 (`get_local_request_rules(...).access_prebody`, removed from `.access` so each
-rule runs once). A `ctl:requestBodyAccess=Off` they apply makes the three body
+rule runs once). A `ctl:requestBodyAccess=Off` they apply makes the four body
 gates see no body through the getters' `body_cache_key` (`raw:nobody`): the
 body is never read, parsed or counted for that request. This is ModSecurity
 phase 1, and the fix for "legit 20 000-field form on one endpoint": one
