@@ -126,6 +126,42 @@ do
           r ~= nil and r[1] ~= nil)
 end
 
+-- RFC 2231 continuations. Go mime/multipart, Werkzeug and python-multipart
+-- reassemble them into `filename`; they used to be skipped silently here,
+-- so Karna inspected `safe.jpg` while the backend wrote `shell.php`.
+for _, cd in ipairs({
+    'form-data; name="f"; filename="safe.jpg"; filename*0="shell"; filename*1=".php"',
+    'form-data; name="f"; filename="safe.jpg"; filename*0*=UTF-8\'\'shell.php',
+    'form-data; name="f"; filename*0="shell.php"',
+    'form-data; name="f"; filename="safe.jpg"; filename *=UTF-8\'\'shell.php',
+    'form-data; name="f"; filename="safe.jpg"; file-name*=x',
+    'form-data; name*0="f"; filename="a.txt"',
+}) do
+    local r, err = mp:parse(build_body({ { cd_header = "Content-Disposition: " .. cd, body = "x" } }), CT)
+    check("ext-parameter variant rejected: " .. cd:sub(25),
+          r == nil and err and err:find("ext%-parameter disallowed"),
+          "got: " .. tostring(err))
+end
+
+-- Segments that do not read as key=value are refused, not skipped.
+for _, cd in ipairs({
+    'form-data; name="f"; filename="a.txt"; bogus',
+    'form-data; name="f"; filename="a.txt"; file.name="b.php"',
+}) do
+    local r, err = mp:parse(build_body({ { cd_header = "Content-Disposition: " .. cd, body = "x" } }), CT)
+    check("unparseable segment rejected: " .. cd:sub(25),
+          r == nil and err and err:find("unparseable content%-disposition"),
+          "got: " .. tostring(err))
+end
+
+do
+    -- `=` inside a quoted value is not a parameter separator.
+    local r, err = mp:parse(build_body({ { cd_header = 'Content-Disposition: form-data; name="a=b"; filename="x*y.txt"', body = "x" } }), CT)
+    check("'=' and '*' inside quoted values still accepted",
+          r and r[1] and r[1].name == "a=b" and r[1].filename == "x*y.txt",
+          "err: " .. tostring(err))
+end
+
 -- ===========================================================================
 print("== Gap #2: require quoted CD params (Bypass #3 / #8) ==")
 -- ===========================================================================
