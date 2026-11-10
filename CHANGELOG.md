@@ -7,6 +7,24 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **Multipart filename hidden in RFC 2231 continuations.** A file part could
+  carry its real filename in `filename*0=` / `filename*1=` (or `filename*0*=`)
+  next to a harmless `filename=`. Karna rejected only parameter names that end
+  in `*`, and dropped the continuation segments without an error, so the rules
+  inspected the harmless name while Go (`mime/multipart`), Werkzeug and
+  python-multipart reassembled the continuations into the name the
+  application used. Any parameter whose name contains `*` is now rejected,
+  and so is any Content-Disposition segment that does not read as
+  `key=value`, instead of being skipped. Both go through the always-on
+  body-parser gate. This is the same class as ModSecurity
+  GHSA-5pww-8rfg-9crf; the plain `filename*=` form in that advisory was
+  already rejected. Upgrade note: a client that puts a bare token in a part's
+  Content-Disposition (`form-data; name="f"; foo`) is now refused; browsers,
+  curl and the common HTTP libraries do not. Test:
+  `ka-unittest/multipart_security_gaps.lua`.
+
 ## [1.8.0] - 2026-11-03
 
 ### Added

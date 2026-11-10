@@ -63,6 +63,8 @@ _M.validate_param_value = true
 -- Reject RFC 5987 / RFC 6266 ext-parameter (`filename*=`, `name*=`, ...)
 -- in request bodies. Backends process them (and URL-decode `%XX`) while
 -- most WAFs inspect the bare `filename=`. Closes Bypass #5 / #5a.
+-- Covers any `*` in the parameter name, so RFC 2231 continuations
+-- (`filename*0=`, `filename*0*=`) are rejected too.
 _M.reject_filename_star = true
 -- Require RFC 2046 quoted-string form for CD parameter values. When on,
 -- `filename=backdoor.php` (unquoted) is rejected. Closes Bypass #3 / #8.
@@ -338,10 +340,18 @@ function _M.parse(self, body, content_type)
                                     -- URL-decode the value while WAFs typically
                                     -- inspect the bare `filename=` only — the
                                     -- two views diverge.
-                                    if segment:match("^[%w_]+%*%s*=") then
-                                        if self.reject_filename_star then
-                                            return nil, "RFC 5987 '*=' ext-parameter disallowed in request body content-disposition"
-                                        end
+                                    -- A `*` anywhere in the parameter name
+                                    -- counts, not only right before `=`:
+                                    -- RFC 2231 continuations (`filename*0=`,
+                                    -- `filename*1=`, `filename*0*=`) are
+                                    -- reassembled into `filename` by Go
+                                    -- (mime/multipart), Werkzeug and
+                                    -- python-multipart, and used to be
+                                    -- dropped here without an error.
+                                    local param_name = segment:match("^([^=]*)=")
+                                    local is_ext_param = param_name ~= nil and param_name:find("*", 1, true) ~= nil
+                                    if is_ext_param and self.reject_filename_star then
+                                        return nil, "RFC 5987 '*=' ext-parameter disallowed in request body content-disposition"
                                     end
                                     local key, value
                                     key, value = segment:match('^([%w_%-]+)%s*=%s*"([^"]*)"$')
@@ -359,6 +369,17 @@ function _M.parse(self, body, content_type)
                                         else
                                             key, value = segment:match('^([%w_%-]+)%s*=%s*(.*)$')
                                         end
+                                    end
+                                    -- A segment we cannot read as key=value
+                                    -- (bare token, odd characters in the
+                                    -- name) is refused instead of skipped:
+                                    -- a backend may read a parameter out of
+                                    -- it that Karna never inspected.
+                                    -- `reject_filename_star = false` keeps
+                                    -- its old meaning (ext-parameters are
+                                    -- ignored).
+                                    if not key and not is_ext_param then
+                                        return nil, "unparseable content-disposition parameter: " .. segment:sub(1, 80)
                                     end
                                     if key and value then
                                         local key_lowercase = key:lower()
