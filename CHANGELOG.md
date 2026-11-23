@@ -7,6 +7,35 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **Values hidden from inspection by repeated names.** When a name repeats,
+  Karna keys its second occurrence `<name>:2`, the third `<name>:3`, and so
+  on. A client could send an argument, multipart part or cookie whose name
+  already had that shape, and one value then replaced another before the
+  rules ran. In a multipart body this hid a value, or an uploaded file's
+  name, inside a field that the backend still received, and backends that
+  keep the last occurrence (PHP among them) used exactly that value. In the
+  query string and in urlencoded bodies the hidden value reached the backend
+  under the `<name>:<n>` name. Separately, only the first cookie with a given
+  name was inspected, so a second cookie with the same name never was. Every
+  occurrence now gets a key of its own and stays inspectable, and all
+  cookies are kept. JSON bodies were not affected: a key collision there was
+  already refused by the body parser gate. Upgrade is recommended for every
+  deployment. Test: `ka-unittest/duplicate_key_collisions.lua`.
+
+### Fixed
+
+- **Named selectors now see every occurrence of a name.** A rule on
+  `request.arg.value:<n>`, `request.query.value:<n>`,
+  `request.cookie.value:<n>` / `request.cookie.name:<n>` or
+  `request.body.multipart.<x>:<n>` matched only the first occurrence, so
+  `a=1&a=<payload>` hid the second value from a rule written for `a`. The
+  target exclusions already covered every occurrence; the selectors now
+  match the same keys. Upgrade note: a named rule can now match on the
+  second or later occurrence of its argument, and `count:` over cookies
+  counts duplicate cookies.
+
 ## [1.8.1] - 2026-11-10
 
 ### Security

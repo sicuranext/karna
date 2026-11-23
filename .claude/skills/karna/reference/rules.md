@@ -72,12 +72,12 @@ rule load for each such name (`uses condition variable '…', which the engine
 does not resolve`) and `scripts/validate-rules.py` rejects it: run it on every
 rule you write.
 
-- `request.arg.value` / `.name` — query + parsed body args (canonical "any arg"). Target one: `request.arg.value:<name>`.
+- `request.arg.value` / `.name` — query + parsed body args (canonical "any arg"). Target one: `request.arg.value:<name>` (every occurrence of a repeated name: the 2nd `a` is keyed `a:2` and included).
 - `request.query.value` / `.name` — query string only; `request.query.value:<name>` targets one.
 - `request.body.urlencode.value:<name>`, `request.body.json.value:<path>`, `request.body.xml.<path>`, `request.body`.
 - `request.body.length` (bytes, numeric ops), `request.body.processor` (`JSON`|`XML`|`URLENCODED`|`MULTIPART`, from Content-Type; resolves even with no body — ModSec `REQBODY_PROCESSOR`).
 - `request.header.value` (`request.header.value:host`). There is no `request.header.name` condition variable — see Macro-only.
-- `request.cookie.value` — values AND names in one map (the resolved map also carries `request.cookie.name:<n>`, so an operator scans both; ModSec `REQUEST_COOKIES` + `REQUEST_COOKIES_NAMES`). One cookie: `request.cookie.value:<name>` (case-insensitive; a JSON cookie resolves to its `request.cookie.json.<name>.*` keys, so it is present). Names only: `request.cookie.name`, one name: `request.cookie.name:<name>`. These three need Karna >= 1.7.1; on older versions they resolve to nothing in a condition (negated `isSet` always true).
+- `request.cookie.value` — values AND names in one map (the resolved map also carries `request.cookie.name:<n>`, so an operator scans both; ModSec `REQUEST_COOKIES` + `REQUEST_COOKIES_NAMES`). One cookie: `request.cookie.value:<name>` (case-insensitive; a JSON cookie resolves to its `request.cookie.json.<name>.*` keys, so it is present; a repeated cookie name resolves to every occurrence, keyed `<name>:2`, …). Names only: `request.cookie.name`, one name: `request.cookie.name:<name>`. These three need Karna >= 1.7.1; on older versions they resolve to nothing in a condition (negated `isSet` always true).
 - `request.raw_path` (verbatim path — percent-encoding intact, dot segments intact; match this for traversal/encoding evasion), `request.path` (nginx-normalized: dot segments resolved, percent-decoded except `%2F` — the view the upstream routes on), `request.path_with_query` (verbatim + query string), `request.raw_query` (query string alone, verbatim), `request.basename`, `request.method`.
 - `request.line` (`<method> <path?query> HTTP/<ver>`, ModSec `REQUEST_LINE`), `request.http_version` (`HTTP/1.1`, `HTTP/2`).
 - `request.file`, `request.body.multipart.filename` (ModSec FILES), `request.body.multipart.name` (FILES_NAMES), `request.body.multipart.part.<name>` (everything under one part), `request.body.multipart.header.value`.
