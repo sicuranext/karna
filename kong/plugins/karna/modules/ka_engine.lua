@@ -1155,7 +1155,12 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
             -- skip them from the merged ARGS map. This both matches
             -- ModSec scope and keeps multi-KB uploads out of every
             -- ARGS-targeted regex.
-            if string_find(k, ".file_content:", 1, true) then
+            --
+            -- Anchored on the multipart prefix: an unanchored find also
+            -- dropped any OTHER key that merely contained the marker, so an
+            -- urlencoded argument named `a.file_content:b` or a JSON key
+            -- `{"a":{"file_content:b":…}}` left ARGS uninspected.
+            if string_find(k, "request.body.multipart.file_content:", 1, true) == 1 then
                 goto continue
             end
             if not values[k] then

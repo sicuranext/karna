@@ -9,6 +9,14 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+- **Request values hidden by a key that contains `.file_content:`.** File
+  bytes stay out of `request.arg.value`, but the filter that drops them
+  matched the marker anywhere in a key. An urlencoded argument named
+  `a.file_content:b`, or a JSON key `file_content:b` inside an object, was
+  therefore left out of ARGS and never inspected by the CRS. The filter now
+  matches only the multipart file keys. Test:
+  `ka-unittest/duplicate_key_collisions.lua`.
+
 - **Values hidden from inspection by repeated names.** When a name repeats,
   Karna keys its second occurrence `<name>:2`, the third `<name>:3`, and so
   on. A client could send an argument, multipart part or cookie whose name

@@ -23,7 +23,9 @@
 -- Pinned here: every occurrence stays inspectable in the collections and in
 -- the named selectors (dispatcher and compiled resolver), an exclusion strips
 -- the duplicates too (cookie JSON expansion included), and the single-name
--- cases are unchanged.
+-- cases are unchanged. Same family: the filter that keeps uploaded file bytes
+-- out of ARGS matched `.file_content:` anywhere in a key, so an urlencoded
+-- `a.file_content:b` or a JSON key `file_content:b` left ARGS too (section 8).
 --
 -- Run from repo root:
 --   lua    ka-unittest/duplicate_key_collisions.lua
@@ -239,6 +241,18 @@ set_request("POST", "application/json", '{"a":{"b":"clean"},"a.b":"' .. EVIL .. 
 H.reset()
 local _, jerr = engine.__get_values_request_body(false)
 ok(jerr ~= nil, "flattened key collision is a parse error (blocked by the body parser gate)", jerr)
+
+-- ===========================================================================
+print("- 8. the file-content filter is anchored on the multipart prefix")
+-- ===========================================================================
+both("urlencoded `a.file_content:b` stays in ARGS", function() set_request("POST", UE, "a.file_content:b=" .. EVIL) end,
+     "request.arg.value", true)
+both('JSON key `file_content:b` stays in ARGS',
+     function() set_request("POST", "application/json", '{"a":{"file_content:b":"' .. EVIL .. '"}}') end,
+     "request.arg.value", true)
+set_request("POST", MP, mp({ { "f", EVIL, file = "a.jpg" } }))
+H.reset()
+ok(not H.match(rule("request.arg.value")), "a real uploaded file is still out of ARGS")
 
 print("")
 if fails > 0 then
