@@ -228,11 +228,14 @@ local function remove_ctl_target(values, target, variable)
     local b64_colon    = ":" .. t_esc .. "_ka_b64_decoded$"
     local dup_colon    = ":" .. t_esc .. ":%d+$"
     local derived = DERIVED_KEY_PREFIXES[t_ns]
-    local derived_prefixes
+    local derived_prefixes, derived_dup_patterns
     if derived then
-        derived_prefixes = {}
+        derived_prefixes, derived_dup_patterns = {}, {}
         for i = 1, #derived do
             derived_prefixes[i] = derived[i][1] .. t_name .. derived[i][2]
+            -- the expansion of an indexed duplicate (`request.cookie.json.<n>:2.`)
+            derived_dup_patterns[i] = "^" .. escape_lua_pattern(derived[i][1]) .. t_esc
+                .. ":%d+" .. escape_lua_pattern(derived[i][2])
         end
     end
     for k in pairs(values) do
@@ -242,7 +245,8 @@ local function remove_ctl_target(values, target, variable)
             values[k] = nil
         elseif derived_prefixes then
             for i = 1, #derived_prefixes do
-                if string_find(k, derived_prefixes[i], 1, true) == 1 then
+                if string_find(k, derived_prefixes[i], 1, true) == 1
+                   or string_find(k, derived_dup_patterns[i]) then
                     values[k] = nil
                     break
                 end
@@ -1150,8 +1154,15 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
             -- parameters — ModSec keeps file bytes out of ARGS — so
             -- skip them from the merged ARGS map. This both matches
             -- ModSec scope and keeps multi-KB uploads out of every
-            -- ARGS-targeted regex.
-            if string_find(k, ".file_content:", 1, true) then
+            -- ARGS-targeted regex. `.file_head:` (the first bytes of each
+            -- file) stays out for the same reason.
+            --
+            -- Anchored on the multipart prefix: an unanchored find also
+            -- dropped any OTHER key that merely contained the marker, so an
+            -- urlencoded argument named `a.file_content:b` or a JSON key
+            -- `{"a":{"file_content:b":…}}` left ARGS uninspected.
+            if string_find(k, "request.body.multipart.file_content:", 1, true) == 1
+               or string_find(k, "request.body.multipart.file_head:", 1, true) == 1 then
                 goto continue
             end
             if not values[k] then
@@ -1345,6 +1356,14 @@ _M.__get_values_request_cookie = function(try_b64)
 
     local unnamed_n = 0
 
+    -- Duplicate cookie names: every occurrence is kept, the first under the
+    -- plain `<name>` and each further one under the first free `<name>:<n>`
+    -- (the urlencoded / multipart scheme). Only the first used to survive,
+    -- so `c=clean; c=<payload>` was never inspected, while a backend that
+    -- reads the last duplicate got the payload. A literal name that lands on
+    -- a taken suffix (`c:2` after two `c`) is indexed too, never dropped.
+    local used_suffixes, dup_counts = {}, {}
+
     for _,pair in ipairs(key_value_cookies) do
         -- `([^=]+)` needs at least one character, so string_match returns NIL
         -- for an empty segment — and `split` above yields one for every shape a
@@ -1405,8 +1424,20 @@ _M.__get_values_request_cookie = function(try_b64)
             [prefix .. ".name:"..key:lower()] = key
         })]]--
 
-        local element_name = "request.cookie.name:" .. key:lower()
-        local element_value = "request.cookie.value:" .. key:lower()
+        local key_lower = key:lower()
+        local suffix = key_lower
+        if used_suffixes[suffix] then
+            local n = dup_counts[key_lower] or 1
+            repeat
+                n = n + 1
+                suffix = key_lower .. ":" .. tostring(n)
+            until not used_suffixes[suffix]
+            dup_counts[key_lower] = n
+        end
+        used_suffixes[suffix] = true
+
+        local element_name = "request.cookie.name:" .. suffix
+        local element_value = "request.cookie.value:" .. suffix
         if not values[element_name] then
             values[element_name] = key
         end
@@ -1435,7 +1466,7 @@ _M.__get_values_request_cookie = function(try_b64)
         local cookie_val_json_decoded, err = pcall(function()
             -- try to decode cookie value as json
             if string_match(value, "^[%{%[]") then
-                local cookie_json_flat, err = body_parser:json("request.cookie.json." .. key:lower(), value, try_b64)
+                local cookie_json_flat, err = body_parser:json("request.cookie.json." .. suffix, value, try_b64)
                 if err then
                     kong.log.debug("Error decoding cookie " .. key .. " value as JSON: " .. err)
                     goto notjson
@@ -1503,17 +1534,22 @@ _M.__get_values_request_cookie_selector = function(variable)
     end
     name = string_lower(name)
 
+    -- The plain key plus every duplicate the resolver indexed as `<name>:<n>`
+    -- (and, for values, the JSON expansion of each), so a repeated cookie
+    -- cannot hide its second value from a rule written for that name. Same
+    -- key set the target-removal applier strips for `request.cookie.value:<n>`.
     local key = "request.cookie." .. kind .. ":" .. name
-    if all[key] ~= nil then
-        values[key] = all[key]
-    end
-    if kind == "value" then
-        local json_prefix = "request.cookie.json." .. name .. "."
-        local plen = #json_prefix
-        for k, v in pairs(all) do
-            if string_sub(k, 1, plen) == json_prefix then
-                values[k] = v
-            end
+    local esc = escape_lua_pattern(name)
+    local dup_pattern = "^request%.cookie%." .. kind .. ":" .. esc .. ":%d+$"
+    local json_prefix = "request.cookie.json." .. name .. "."
+    local plen = #json_prefix
+    local json_dup_pattern = "^request%.cookie%.json%." .. esc .. ":%d+%."
+    for k, v in pairs(all) do
+        if k == key or string_find(k, dup_pattern) then
+            values[k] = v
+        elseif kind == "value"
+           and (string_sub(k, 1, plen) == json_prefix or string_find(k, json_dup_pattern)) then
+            values[k] = v
         end
     end
     return values, nil
@@ -3307,7 +3343,11 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     if all_values then
                         values = {}
                         for k, v in pairs(all_values) do
-                            if string_find(k, "%." .. arg_name .. "$") or string_find(k, ":" .. arg_name .. "$") then
+                            -- `:<name>:<n>` = an indexed duplicate of the same
+                            -- argument (`a=1&a=2`): without it the second value
+                            -- was invisible to a rule written for that name.
+                            if string_find(k, "%." .. arg_name .. "$") or string_find(k, ":" .. arg_name .. "$")
+                               or string_find(k, ":" .. arg_name .. ":%d+$") then
                                 values[k] = v
                             end
                         end
@@ -3353,7 +3393,8 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     if qvals then
                         values = {}
                         for k, v in pairs(qvals) do
-                            if string_find(k, ":" .. arg_name .. "$") then
+                            if string_find(k, ":" .. arg_name .. "$")
+                               or string_find(k, ":" .. arg_name .. ":%d+$") then
                                 values[k] = v
                             end
                         end
@@ -3491,16 +3532,22 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- @rx/@within etc. operators can scan each part. The
                 -- per-part variants (`.name:<part>`) hit the exact-match
                 -- branch below.
+                --
+                -- request.body.multipart.file_head (no selector) → the first
+                -- bytes of every uploaded file, duplicates included, so a rule
+                -- can check magic bytes without knowing the field names.
                 if variable == "request.body.multipart.name"
-                   or variable == "request.body.multipart.filename" then
+                   or variable == "request.body.multipart.filename"
+                   or variable == "request.body.multipart.file_head" then
                     local body_values = self.__get_values_request_body(false)
                     -- A non-multipart body carries no multipart.* keys, so this
                     -- full-body pairs() scan would find nothing — skip it
                     -- (behaviour-identical to the empty result) unless the body
                     -- was actually routed as multipart. See request_has_multipart.
                     if body_values and request_has_multipart() then
-                        local key_marker = (variable == "request.body.multipart.name")
-                            and "%.name:" or "%.filename:"
+                        local key_marker = (variable == "request.body.multipart.name") and "%.name:"
+                            or (variable == "request.body.multipart.filename") and "%.filename:"
+                            or "%.file_head:"
                         local collected = {}
                         for k, v in pairs(body_values) do
                             if string_find(k, "^request%.body%.multipart" .. key_marker) then
@@ -3519,6 +3566,18 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                     local body_values = self.__get_values_request_body()
                     if body_values and body_values[variable] then
                         values = { [variable] = body_values[variable] }
+                        -- A repeated part name is keyed `<name>:<n>` from the
+                        -- second occurrence on: collect those too, or a rule
+                        -- on `…value:a` / `…filename:a` never sees the second
+                        -- `a`. A duplicate always comes with its first
+                        -- occurrence, so the scan only runs when the plain key
+                        -- exists (the O(1) miss above stays O(1)).
+                        local dup_pattern = "^" .. escape_lua_pattern(variable) .. ":%d+$"
+                        for k, v in pairs(body_values) do
+                            if string_find(k, dup_pattern) then
+                                values[k] = v
+                            end
+                        end
                     end
                 end
 
@@ -6443,6 +6502,24 @@ _M.__apply_transformation = function(self, tfunc, value, txc)
     sub[value] = result_string
 
     return result_string
+end
+
+-- True when a matched part is the content of an uploaded file
+-- (`request.body.multipart.file_head:` / `.file_content:`). Those bytes
+-- cannot be sanitized: the only body-level fix is the raw strip, which would
+-- rewrite every file in the body and still let the request through. The
+-- handler turns `fix_matched_parts` into a block for such a match.
+_M.__matches_upload_content = function(matched_parts)
+    if type(matched_parts) ~= "table" then return false end
+    for _, mp in pairs(matched_parts) do
+        local on = type(mp) == "table" and mp.matched_on
+        if type(on) == "string"
+           and (string_find(on, "request.body.multipart.file_head:", 1, true) == 1
+                or string_find(on, "request.body.multipart.file_content:", 1, true) == 1) then
+            return true
+        end
+    end
+    return false
 end
 
 _M.__fix_matching_parts = function(self, rule, matched_parts)

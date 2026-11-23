@@ -49,12 +49,19 @@ local function body_values_no_file(engine)
     if type(v) ~= "table" then return v end
     local out = {}
     for k, val in pairs(v) do
-        if not string.find(k, ".file_content:", 1, true) then
+        -- anchored: a JSON / urlencoded key that merely CONTAINS the marker
+        -- is not file content and must stay in the scan. `.file_head:` (the
+        -- first bytes of each file) is file content too.
+        if string.find(k, "request.body.multipart.file_content:", 1, true) ~= 1
+           and string.find(k, "request.body.multipart.file_head:", 1, true) ~= 1 then
             out[k] = val
         end
     end
     return out
 end
+
+-- exposed for ka-unittest/multipart_file_head.lua; not an API
+_M._body_values_no_file = body_values_no_file
 
 local GATE_EXTRA_RESOLVERS = {
     ["request.cookie.name"]             = function(engine) return engine.__get_values_request_cookie(false) end,

@@ -14,6 +14,12 @@ local string_sub            = string.sub
 
 local json_flatten_warned   = false
 
+-- Bytes of each uploaded file exposed as request.body.multipart.file_head.
+-- Enough for every common magic number (most fit in 8 bytes; a few, such as
+-- tar's `ustar` at offset 257, are out of reach by design).
+local FILE_HEAD_BYTES       = 64
+_M.FILE_HEAD_BYTES          = FILE_HEAD_BYTES
+
 local cjson                 = require "cjson"
 local b64                   = require("ngx.base64")
 local utils                 = require "kong.plugins.karna.ka_utils"
@@ -44,14 +50,26 @@ _M.urlencoded = function(self, prefix, raw_body, try_base64decode_if_possible)
     -- the abort, ARGS was empty and the rule never fired).
     -- Resolve by appending a `:<n>` index to the label for the 2nd+
     -- occurrence; the engine resolves these via a prefix walk anyway.
+    --
+    -- The index goes to the first FREE `<label>:<n>`. The client picks the
+    -- names, so `a:2` can also arrive as a literal argument: writing the
+    -- second `a` blindly to `<label>:2` overwrote that literal's value, and
+    -- `a:2=<payload>&a=x&a=y` dropped the payload from ARGS while the backend
+    -- still received it. A literal that lands on a taken key is indexed the
+    -- same way (`a:2:2`), so no occurrence can replace another.
     local dup_counts = {}
     local insert_new_value = function(label, value)
-        if not values[label] then
+        if values[label] == nil then
             values[label] = value
             return true, nil
         end
-        dup_counts[label] = (dup_counts[label] or 1) + 1
-        local indexed = label .. ":" .. tostring(dup_counts[label])
+        local n = dup_counts[label] or 1
+        local indexed
+        repeat
+            n = n + 1
+            indexed = label .. ":" .. tostring(n)
+        until values[indexed] == nil
+        dup_counts[label] = n
         values[indexed] = value
         return true, nil
     end
@@ -343,7 +361,16 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
     -- bag relies on that — Karna's coreruleset_fix override targets the
     -- native namespace and needs *every* part's CT to be visible,
     -- not just the last one).
+    --
+    -- Every part gets its OWN suffix. The client picks the part names, so a
+    -- literal `name="a:2"` used to share its keys with the second `a`, and the
+    -- rows below are flattened last-wins: `a`, `a`=<payload>, `a:2` dropped the
+    -- payload (and, for file parts, its filename) from inspection while a
+    -- last-wins backend such as PHP read exactly that value. `used_suffixes`
+    -- makes the suffix unique: a duplicate takes the first free `<name>:<n>`,
+    -- and a literal that lands on a taken suffix is indexed the same way.
     local part_name_counts = {}
+    local used_suffixes = {}
     if multipart_data then
         for _,part in pairs(multipart_data) do
             --[[
@@ -380,11 +407,16 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
             -- resolves `request.body.multipart.part.content_type` by
             -- prefix-matching every key starting with that string, so
             -- both forms participate in rule evaluation.
-            part_name_counts[name_lowercase] = (part_name_counts[name_lowercase] or 0) + 1
             local name_suffix = name_lowercase
-            if part_name_counts[name_lowercase] > 1 then
-                name_suffix = name_lowercase .. ":" .. tostring(part_name_counts[name_lowercase])
+            if used_suffixes[name_suffix] then
+                local n = part_name_counts[name_lowercase] or 1
+                repeat
+                    n = n + 1
+                    name_suffix = name_lowercase .. ":" .. tostring(n)
+                until not used_suffixes[name_suffix]
+                part_name_counts[name_lowercase] = n
             end
+            used_suffixes[name_suffix] = true
 
             table.insert(values, {
                 [prefix .. ".name:"..name_suffix] = part.name
@@ -408,6 +440,17 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
             table.insert(values, {
                 [value_key] = part.body
             })
+            -- The first FILE_HEAD_BYTES of every uploaded file, so a rule can
+            -- check magic bytes (`%!PS`, `<?php`, ELF, …) on every upload
+            -- without knowing the field name and without scanning whole
+            -- files. Out of ARGS and of the RE2 pre-pass like `.file_content:`
+            -- (ka_engine ARGS merge, ka_re2_gate.body_values_no_file). An
+            -- empty file keeps its key with an empty value.
+            if part.filename then
+                table.insert(values, {
+                    [prefix .. ".file_head:" .. name_suffix] = string_sub(part.body or "", 1, FILE_HEAD_BYTES)
+                })
+            end
 
             if try_base64decode_if_possible then
                 self.debug("         ` BASE64 try to decode enabled")

@@ -7,6 +7,59 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-11-23
+
+### Added
+
+- **`request.body.multipart.file_head`: the first bytes of every uploaded
+  file.** For each multipart part with `filename=`, the first 64 bytes of its
+  content, whatever the field name and including repeated names. A rule can
+  now check magic bytes on every upload (PostScript/EPS handed to an image
+  converter, `<?php` in a "photo", ELF or PE executables) without knowing the
+  field names and without scanning whole files. `request.body.multipart.file_head:<name>`
+  selects one file. The match runs on raw bytes (`\xNN` is one byte, also
+  with RE2), and the value is not part of `request.arg.value`, so the CRS
+  behaves as before. A `fix_matched_parts` action cannot clean a file: on a
+  match against file content the rule now blocks instead of rewriting the
+  body. Test: `ka-unittest/multipart_file_head.lua`.
+
+### Security
+
+- **Request values hidden by a key that contains `.file_content:`.** File
+  bytes stay out of `request.arg.value`, but the filter that drops them
+  matched the marker anywhere in a key. An urlencoded argument named
+  `a.file_content:b`, or a JSON key `file_content:b` inside an object, was
+  therefore left out of ARGS and never inspected by the CRS. The filter now
+  matches only the multipart file keys. Test:
+  `ka-unittest/duplicate_key_collisions.lua`.
+
+- **Values hidden from inspection by repeated names.** When a name repeats,
+  Karna keys its second occurrence `<name>:2`, the third `<name>:3`, and so
+  on. A client could send an argument, multipart part or cookie whose name
+  already had that shape, and one value then replaced another before the
+  rules ran. In a multipart body this hid a value, or an uploaded file's
+  name, inside a field that the backend still received, and backends that
+  keep the last occurrence (PHP among them) used exactly that value. In the
+  query string and in urlencoded bodies the hidden value reached the backend
+  under the `<name>:<n>` name. Separately, only the first cookie with a given
+  name was inspected, so a second cookie with the same name never was. Every
+  occurrence now gets a key of its own and stays inspectable, and all
+  cookies are kept. JSON bodies were not affected: a key collision there was
+  already refused by the body parser gate. Upgrade is recommended for every
+  deployment. Test: `ka-unittest/duplicate_key_collisions.lua`.
+
+### Fixed
+
+- **Named selectors now see every occurrence of a name.** A rule on
+  `request.arg.value:<n>`, `request.query.value:<n>`,
+  `request.cookie.value:<n>` / `request.cookie.name:<n>` or
+  `request.body.multipart.<x>:<n>` matched only the first occurrence, so
+  `a=1&a=<payload>` hid the second value from a rule written for `a`. The
+  target exclusions already covered every occurrence; the selectors now
+  match the same keys. Upgrade note: a named rule can now match on the
+  second or later occurrence of its argument, and `count:` over cookies
+  counts duplicate cookies.
+
 ## [1.8.1] - 2026-11-10
 
 ### Security
@@ -1913,7 +1966,8 @@ Core Rule Set. It needs no other plugin to work.
   inspected by default (set it to `true` to bypass trusted internal ranges).
 - The PL1 OWASP CRS regression suite passes at 100%.
 
-[Unreleased]: https://github.com/sicuranext/karna/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/sicuranext/karna/compare/v1.8.2...HEAD
+[1.8.2]: https://github.com/sicuranext/karna/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/sicuranext/karna/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/sicuranext/karna/compare/v1.7.4...v1.8.0
 [1.7.4]: https://github.com/sicuranext/karna/compare/v1.7.3...v1.7.4

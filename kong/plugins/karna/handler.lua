@@ -1,6 +1,6 @@
 local plugin = {
   PRIORITY = 8300,
-  VERSION = "1.8.1",
+  VERSION = "1.8.2",
 }
 
 local ngx                 = ngx
@@ -937,14 +937,27 @@ local evaluate_rules = function(plugin_conf, rules, phase)
     -- disruptive (it rewrites what upstream receives), and detection-only means
     -- observe without altering the transaction. The match is still logged, as
     -- `detect` rather than `sanitized`.
+    --
+    -- The exception is a match on an uploaded file's content
+    -- (`request.body.multipart.file_head` / `file_content`): there is nothing
+    -- to strip safely, so the rule blocks instead (its own fixed_response, or
+    -- the default block page). The swap goes on a shallow copy, never on the
+    -- cached rule.
     if rule_matched_obj.action and rule_matched_obj.action.fix_matched_parts and matches_info then
-      if not detection_only_active() then
-        engine:__fix_matching_parts(rule_matched_obj, matches_info)
-        match_entry.sanitized = true
+      if engine.__matches_upload_content(matches_info) then
+        local blocking_copy = {}
+        for k, v in pairs(rule_matched_obj) do blocking_copy[k] = v end
+        blocking_copy.action = { fixed_response = rule_matched_obj.action.fixed_response or {} }
+        rule_matched_obj = blocking_copy
+      else
+        if not detection_only_active() then
+          engine:__fix_matching_parts(rule_matched_obj, matches_info)
+          match_entry.sanitized = true
+        end
+        -- skip the block branch; sanitize already mutated the upstream
+        -- request and the response should be whatever upstream returns.
+        return
       end
-      -- skip the block branch; sanitize already mutated the upstream
-      -- request and the response should be whatever upstream returns.
-      return
     end
 
     -- Rate-limit action: when a rule with `rate_limit` declared on its

@@ -278,12 +278,14 @@ function _M.compile_variable_resolver(variable)
         arg_name = escape_lua_pattern(arg_name)
         local suffix1 = "%." .. arg_name .. "$"
         local suffix2 = ":" .. arg_name .. "$"
+        -- indexed duplicate of the same argument (`a=1&a=2` -> `a:2`)
+        local suffix3 = ":" .. arg_name .. ":%d+$"
         return function(engine, rule)
             local all_values, all_err = engine:__get_values_request_args(false, rule.rule_control)
             if all_values then
                 local out = {}
                 for k, v in pairs(all_values) do
-                    if string.find(k, suffix1) or string.find(k, suffix2) then
+                    if string.find(k, suffix1) or string.find(k, suffix2) or string.find(k, suffix3) then
                         out[k] = v
                     end
                 end
@@ -327,12 +329,13 @@ function _M.compile_variable_resolver(variable)
     if string.find(variable, "^request%.query%.value%:") then
         local arg_name = escape_lua_pattern(string.match(variable, "^request%.query%.value%:(.*)"))
         local suffix = ":" .. arg_name .. "$"
+        local dup_suffix = ":" .. arg_name .. ":%d+$"
         return function(engine, rule)
             local qvals = engine.__get_values_request_query_value(false)
             if qvals then
                 local out = {}
                 for k, v in pairs(qvals) do
-                    if string.find(k, suffix) then
+                    if string.find(k, suffix) or string.find(k, dup_suffix) then
                         out[k] = v
                     end
                 end
