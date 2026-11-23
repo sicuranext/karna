@@ -14,6 +14,12 @@ local string_sub            = string.sub
 
 local json_flatten_warned   = false
 
+-- Bytes of each uploaded file exposed as request.body.multipart.file_head.
+-- Enough for every common magic number (most fit in 8 bytes; a few, such as
+-- tar's `ustar` at offset 257, are out of reach by design).
+local FILE_HEAD_BYTES       = 64
+_M.FILE_HEAD_BYTES          = FILE_HEAD_BYTES
+
 local cjson                 = require "cjson"
 local b64                   = require("ngx.base64")
 local utils                 = require "kong.plugins.karna.ka_utils"
@@ -434,6 +440,17 @@ _M.multipart = function(self, prefix, raw_body, try_base64decode_if_possible)
             table.insert(values, {
                 [value_key] = part.body
             })
+            -- The first FILE_HEAD_BYTES of every uploaded file, so a rule can
+            -- check magic bytes (`%!PS`, `<?php`, ELF, …) on every upload
+            -- without knowing the field name and without scanning whole
+            -- files. Out of ARGS and of the RE2 pre-pass like `.file_content:`
+            -- (ka_engine ARGS merge, ka_re2_gate.body_values_no_file). An
+            -- empty file keeps its key with an empty value.
+            if part.filename then
+                table.insert(values, {
+                    [prefix .. ".file_head:" .. name_suffix] = string_sub(part.body or "", 1, FILE_HEAD_BYTES)
+                })
+            end
 
             if try_base64decode_if_possible then
                 self.debug("         ` BASE64 try to decode enabled")

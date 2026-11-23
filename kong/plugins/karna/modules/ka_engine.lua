@@ -1154,13 +1154,15 @@ _M.__get_values_request_args = function (self, try_b64, rule_control)
             -- parameters — ModSec keeps file bytes out of ARGS — so
             -- skip them from the merged ARGS map. This both matches
             -- ModSec scope and keeps multi-KB uploads out of every
-            -- ARGS-targeted regex.
+            -- ARGS-targeted regex. `.file_head:` (the first bytes of each
+            -- file) stays out for the same reason.
             --
             -- Anchored on the multipart prefix: an unanchored find also
             -- dropped any OTHER key that merely contained the marker, so an
             -- urlencoded argument named `a.file_content:b` or a JSON key
             -- `{"a":{"file_content:b":…}}` left ARGS uninspected.
-            if string_find(k, "request.body.multipart.file_content:", 1, true) == 1 then
+            if string_find(k, "request.body.multipart.file_content:", 1, true) == 1
+               or string_find(k, "request.body.multipart.file_head:", 1, true) == 1 then
                 goto continue
             end
             if not values[k] then
@@ -3530,16 +3532,22 @@ _M.__match_rule_conditions_impl = function(self, rule, plugin_conf)
                 -- @rx/@within etc. operators can scan each part. The
                 -- per-part variants (`.name:<part>`) hit the exact-match
                 -- branch below.
+                --
+                -- request.body.multipart.file_head (no selector) → the first
+                -- bytes of every uploaded file, duplicates included, so a rule
+                -- can check magic bytes without knowing the field names.
                 if variable == "request.body.multipart.name"
-                   or variable == "request.body.multipart.filename" then
+                   or variable == "request.body.multipart.filename"
+                   or variable == "request.body.multipart.file_head" then
                     local body_values = self.__get_values_request_body(false)
                     -- A non-multipart body carries no multipart.* keys, so this
                     -- full-body pairs() scan would find nothing — skip it
                     -- (behaviour-identical to the empty result) unless the body
                     -- was actually routed as multipart. See request_has_multipart.
                     if body_values and request_has_multipart() then
-                        local key_marker = (variable == "request.body.multipart.name")
-                            and "%.name:" or "%.filename:"
+                        local key_marker = (variable == "request.body.multipart.name") and "%.name:"
+                            or (variable == "request.body.multipart.filename") and "%.filename:"
+                            or "%.file_head:"
                         local collected = {}
                         for k, v in pairs(body_values) do
                             if string_find(k, "^request%.body%.multipart" .. key_marker) then
@@ -6494,6 +6502,24 @@ _M.__apply_transformation = function(self, tfunc, value, txc)
     sub[value] = result_string
 
     return result_string
+end
+
+-- True when a matched part is the content of an uploaded file
+-- (`request.body.multipart.file_head:` / `.file_content:`). Those bytes
+-- cannot be sanitized: the only body-level fix is the raw strip, which would
+-- rewrite every file in the body and still let the request through. The
+-- handler turns `fix_matched_parts` into a block for such a match.
+_M.__matches_upload_content = function(matched_parts)
+    if type(matched_parts) ~= "table" then return false end
+    for _, mp in pairs(matched_parts) do
+        local on = type(mp) == "table" and mp.matched_on
+        if type(on) == "string"
+           and (string_find(on, "request.body.multipart.file_head:", 1, true) == 1
+                or string_find(on, "request.body.multipart.file_content:", 1, true) == 1) then
+            return true
+        end
+    end
+    return false
 end
 
 _M.__fix_matching_parts = function(self, rule, matched_parts)

@@ -7,6 +7,20 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`request.body.multipart.file_head`: the first bytes of every uploaded
+  file.** For each multipart part with `filename=`, the first 64 bytes of its
+  content, whatever the field name and including repeated names. A rule can
+  now check magic bytes on every upload (PostScript/EPS handed to an image
+  converter, `<?php` in a "photo", ELF or PE executables) without knowing the
+  field names and without scanning whole files. `request.body.multipart.file_head:<name>`
+  selects one file. The match runs on raw bytes (`\xNN` is one byte, also
+  with RE2), and the value is not part of `request.arg.value`, so the CRS
+  behaves as before. A `fix_matched_parts` action cannot clean a file: on a
+  match against file content the rule now blocks instead of rewriting the
+  body. Test: `ka-unittest/multipart_file_head.lua`.
+
 ### Security
 
 - **Request values hidden by a key that contains `.file_content:`.** File
